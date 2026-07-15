@@ -8,7 +8,7 @@
   3. JavaScript in Code Blocks requires a Business plan or higher —
      on Personal plans the live demo/interactions are stripped, so use
      the iframe embed instead:
-       <iframe src="https://amateurmenace.github.io/OpenNR/"
+       <iframe src="https://amateurmenace.github.io/Hush/"
                style="width:100%;height:5200px;border:0"
                loading="lazy" title="Hush Open NR"></iframe>
   Images load from GitHub Pages; nothing to upload to Squarespace.
@@ -206,7 +206,7 @@
 <header class="wrap">
   <div class="topline">
     <span>A <a href="https://weirdmachine.org">Weird Machine</a> project in collaboration with <a href="https://brooklineinteractive.org">Brookline Interactive Group</a></span>
-    <span><a href="https://github.com/amateurmenace/OpenNR">source ↗</a></span>
+    <span><a href="https://github.com/amateurmenace/Hush">source ↗</a></span>
   </div>
 
   <div class="hero">
@@ -221,9 +221,9 @@
         <path d="M2 8 Q 12 2, 22 8 T 42 8 T 62 8 T 82 8 T 102 8 T 122 8 T 142 8 T 162 8 T 178 8" stroke="#E5A835" stroke-width="3" stroke-linecap="round"/>
       </svg>
       <div class="cta">
-        <a class="btn btn-green" href="https://github.com/amateurmenace/OpenNR/releases/latest">Download · macOS</a>
-        <a class="btn btn-green" style="background:var(--green-lt)" href="https://github.com/amateurmenace/OpenNR/releases/latest">Download · Windows</a>
-        <a class="btn btn-line" href="https://github.com/amateurmenace/OpenNR">GitHub</a>
+        <a class="btn btn-green" href="https://github.com/amateurmenace/Hush/releases/latest">Download · macOS</a>
+        <a class="btn btn-green" style="background:var(--green-lt)" href="https://github.com/amateurmenace/Hush/releases/latest">Download · Windows</a>
+        <a class="btn btn-line" href="https://github.com/amateurmenace/Hush">GitHub</a>
       </div>
       <div class="meta">v3.1 · Resolve 17+ free &amp; Studio · macOS 11+ (universal) · Windows 10+ x64 (OpenCL) · MIT · Linux builds from source</div>
     </div>
@@ -341,8 +341,8 @@
     <div class="kicker">Before / After</div>
     <h2>Drag the line.</h2>
     <div class="wipe" id="hush-wipe">
-      <img src="https://amateurmenace.github.io/OpenNR/assets/after.jpg" alt="denoised">
-      <div class="top" id="hush-wipeTop"><img src="https://amateurmenace.github.io/OpenNR/assets/before.jpg" alt="noisy"></div>
+      <img src="https://amateurmenace.github.io/Hush/assets/after.jpg" alt="denoised">
+      <div class="top" id="hush-wipeTop"><img src="https://amateurmenace.github.io/Hush/assets/before.jpg" alt="noisy"></div>
       <div class="handle" id="hush-wipeHandle"></div>
       <span class="lab" style="left:10px">NOISY IN</span>
       <span class="lab" style="right:10px">HUSHED</span>
@@ -398,19 +398,19 @@
 
     <div class="tabs" id="hush-scopeTabs">
       <button class="tab on"
-        data-img="https://amateurmenace.github.io/OpenNR/assets/scope-measure.jpg"
+        data-img="https://amateurmenace.github.io/Hush/assets/scope-measure.jpg"
         data-chk="Scope: Measurements" data-step="Step 1 · Measure"
         data-cap="The Measurements panel — input noise (blue) vs what's left after temporal stacking (amber), frames averaged, SNR gain, the noise-vs-brightness curve, and the histogram with its median. Tick it in Step 1; LOCKED appears when the profile is frozen.">Measurements</button>
       <button class="tab"
-        data-img="https://amateurmenace.github.io/OpenNR/assets/scope-motion.jpg"
+        data-img="https://amateurmenace.github.io/Hush/assets/scope-motion.jpg"
         data-chk="Scope: Motion Map" data-step="Step 2 · Temporal"
         data-cap="The Motion Map — green where frames are being stacked, red where motion protection kicked in. This frame is from a drifting camera: motion tracking keeps the flats stacking while every moving edge stays protected. If something ghosts, it should be reading red here.">Motion Map</button>
       <button class="tab"
-        data-img="https://amateurmenace.github.io/OpenNR/assets/scope-eq.jpg"
+        data-img="https://amateurmenace.github.io/Hush/assets/scope-eq.jpg"
         data-chk="Scope: Noise EQ" data-step="Step 3 · Spatial · Noise EQ"
         data-cap="The Noise EQ scope — one lane per band (Fine ~1 px, Clumps 3–8 px, Stains 16 px+, Color). The bar is how much you're cutting; the amber line is how much noise was actually measured at that size. It pops up by itself the first time you touch an EQ slider.">Noise EQ</button>
       <button class="tab"
-        data-img="https://amateurmenace.github.io/OpenNR/assets/scope-snr.jpg"
+        data-img="https://amateurmenace.github.io/Hush/assets/scope-snr.jpg"
         data-chk="View: SNR Map" data-step="Step 5 · Inspect"
         data-cap="The SNR Map view — signal-to-noise per pixel: magenta where noise dominates (where NR matters most), green where the image wins. The whole pipeline is inspectable: Input, After Temporal, Noise Removed, Temporal Activity, and a keyable Noisiness matte.">SNR Map</button>
     </div>
@@ -420,7 +420,7 @@
       <div class="rbar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
         <span class="rtitle">viewer — simulated color page</span></div>
       <div class="rmain">
-        <div class="rview"><img id="hush-scopeImg" src="https://amateurmenace.github.io/OpenNR/assets/scope-measure.jpg" alt="Hush scope in the viewer"></div>
+        <div class="rview"><img id="hush-scopeImg" src="https://amateurmenace.github.io/Hush/assets/scope-measure.jpg" alt="Hush scope in the viewer"></div>
         <aside class="rfx">
           <div class="rfxhead">OpenFX · Effects</div>
           <div class="rfxplug">Hush Open NR</div>
@@ -516,7 +516,7 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
     <div class="kicker">Get it</div>
     <h2>Install in a minute.</h2>
     <ol class="install">
-      <li><b>macOS:</b> download the .pkg from the <a href="https://github.com/amateurmenace/OpenNR/releases/latest">latest release</a> and double-click (signed with an Apple developer ID — if Gatekeeper objects, right-click → Open). <b>Windows:</b> download the zip, then double-click <b>Install OpenNR (Windows).bat</b> — or just drag <b>OpenNR.ofx.bundle</b> into <code style="font-family:var(--mono);font-size:.85em">C:\Program Files\Common Files\OFX\Plugins</code>.</li>
+      <li><b>macOS:</b> download the .pkg from the <a href="https://github.com/amateurmenace/Hush/releases/latest">latest release</a> and double-click (signed with an Apple developer ID — if Gatekeeper objects, right-click → Open). <b>Windows:</b> download the zip, then double-click <b>Install OpenNR (Windows).bat</b> — or just drag <b>OpenNR.ofx.bundle</b> into <code style="font-family:var(--mono);font-size:.85em">C:\Program Files\Common Files\OFX\Plugins</code>.</li>
       <li>Restart DaVinci Resolve.</li>
       <li>Find it under <b>Effects → OpenFX → Filters → Hush → Hush Open NR</b>. Drag onto an early node on the Color page (or a clip on the Edit page).</li>
       <li>Click <b>Auto Setup</b>, then tick a <b>Scope</b> checkbox (Step 1 Measurements, Step 2 Motion Map, Step 3 Noise EQ) to watch it work — and for tricky footage, drag the yellow sampling rectangle right in the viewer. Untick scopes before rendering.</li>
@@ -555,9 +555,9 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
     <div class="credit">Produced by <a href="https://weirdmachine.org">Stephen Walter</a> with DaVinci Resolve 21 and Claude Code in 2026.</div>
     <p class="credit2">An open-source tool of the <a href="https://communityai.studio">Community AI Project</a>,
     made in partnership with <a href="https://brooklineinteractive.org">Brookline Interactive Group</a>.</p>
-    <a href="https://weirdmachine.org"><img class="wmlogo" src="https://amateurmenace.github.io/OpenNR/assets/wm-logo.png" alt="Weird Machine"></a>
+    <a href="https://weirdmachine.org"><img class="wmlogo" src="https://amateurmenace.github.io/Hush/assets/wm-logo.png" alt="Weird Machine"></a>
     <p>MIT licensed — free for any use, forever. Source, issues and releases on
-    <a href="https://github.com/amateurmenace/OpenNR">GitHub</a>.</p>
+    <a href="https://github.com/amateurmenace/Hush">GitHub</a>.</p>
   </div>
 </footer>
 

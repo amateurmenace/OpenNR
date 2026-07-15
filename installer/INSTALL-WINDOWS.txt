@@ -29,4 +29,4 @@ Notes
 - If the effect doesn't appear after a restart, delete Resolve's plugin scan
   cache and restart again:
       %APPDATA%\Blackmagic Design\DaVinci Resolve\Support\OFXPluginCacheV2.xml
-- Questions or problems: https://github.com/amateurmenace/OpenNR/issues
+- Questions or problems: https://github.com/amateurmenace/Hush/issues
