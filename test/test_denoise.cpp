@@ -3,6 +3,7 @@
 // Build: c++ -O2 -std=c++14 -I../plugin test_denoise.cpp -o test_denoise
 
 #include "nr_core.h"
+#include "nr_analyze.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -102,6 +103,38 @@ static void addChromaBlotchNoise(std::vector<float>& img, float sigma, uint32_t 
         }
 }
 
+// block-correlated LUMA noise (equal push on R,G,B), block size in px —
+// the v3 Noise EQ band-test generator (4 px = medium band, 16 px = coarse)
+static void addLumaBlockNoise(std::vector<float>& img, float sigma, int blockPx, uint32_t seed)
+{
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> N(0.0f, sigma);
+    const int bw = (W + blockPx - 1) / blockPx, bh = (H + blockPx - 1) / blockPx;
+    std::vector<float> blk(static_cast<size_t>(bw) * bh);
+    for (auto& v : blk) v = N(rng);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            const float n = blk[static_cast<size_t>(y / blockPx) * bw + (x / blockPx)];
+            float* p = &img[(static_cast<size_t>(y) * W + x) * 4];
+            p[0] += n; p[1] += n; p[2] += n;
+        }
+}
+
+// single-frame impulses ("fireflies") at deterministic pseudo-random sites
+static void addImpulses(std::vector<float>& img, int count, uint32_t seed,
+                        std::vector<int>& sites)
+{
+    std::mt19937 rng(seed);
+    std::uniform_int_distribution<int> RX(16, W - 17), RY(16, H - 17);
+    for (int i = 0; i < count; ++i) {
+        const int x = RX(rng), y = RY(rng);
+        sites.push_back(y * W + x);
+        float* p = &img[(static_cast<size_t>(y) * W + x) * 4];
+        const float v = (i & 1) ? 1.0f : 0.0f;   // hot and dead pixels
+        p[0] = v; p[1] = v; p[2] = v;
+    }
+}
+
 // ---------------------------------------------------------------------------
 static double psnr(const std::vector<float>& a, const std::vector<float>& b, int border = 8)
 {
@@ -162,7 +195,21 @@ static void check(bool ok, const char* what)
 
 struct CaseResult { double before, after; nrcore::Stats stats; float trueY; };
 
-enum NoiseKind { NOISE_IID, NOISE_CORR, NOISE_BLOTCH };
+enum NoiseKind { NOISE_IID, NOISE_CORR, NOISE_BLOTCH, NOISE_BLOB4, NOISE_BLOB16 };
+
+static void makeCaseFrames(float sigma, float stepX, float stepY, NoiseKind kind,
+                           std::vector<std::vector<float>>& frames)
+{
+    frames.assign(5, {});
+    for (int k = 0; k < 5; ++k) {
+        renderScene(frames[k], (k - 2) * stepX, (k - 2) * stepY);
+        if (kind == NOISE_CORR) addCorrelatedNoise(frames[k], sigma, 1000 + k);
+        else if (kind == NOISE_BLOTCH) { addNoise(frames[k], sigma * 0.5f, 1000 + k); addChromaBlotchNoise(frames[k], sigma, 2000 + k); }
+        else if (kind == NOISE_BLOB4)  { addNoise(frames[k], sigma * 0.25f, 1000 + k); addLumaBlockNoise(frames[k], sigma, 4, 3000 + k); }
+        else if (kind == NOISE_BLOB16) { addNoise(frames[k], sigma * 0.25f, 1000 + k); addLumaBlockNoise(frames[k], sigma, 16, 4000 + k); }
+        else addNoise(frames[k], sigma, 1000 + k);
+    }
+}
 
 static CaseResult runCase(float sigma, float stepX, float stepY, NoiseKind kind, const nrcore::Params& p,
                           std::vector<float>* outDenoised = nullptr,
@@ -171,13 +218,8 @@ static CaseResult runCase(float sigma, float stepX, float stepY, NoiseKind kind,
     std::vector<float> clean;
     renderScene(clean, 0, 0);
 
-    std::vector<std::vector<float>> frames(5);
-    for (int k = 0; k < 5; ++k) {
-        renderScene(frames[k], (k - 2) * stepX, (k - 2) * stepY);
-        if (kind == NOISE_CORR) addCorrelatedNoise(frames[k], sigma, 1000 + k);
-        else if (kind == NOISE_BLOTCH) { addNoise(frames[k], sigma * 0.5f, 1000 + k); addChromaBlotchNoise(frames[k], sigma, 2000 + k); }
-        else addNoise(frames[k], sigma, 1000 + k);
-    }
+    std::vector<std::vector<float>> frames;
+    makeCaseFrames(sigma, stepX, stepY, kind, frames);
 
     const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
                              frames[3].data(), frames[4].data() };
@@ -194,6 +236,81 @@ static CaseResult runCase(float sigma, float stepX, float stepY, NoiseKind kind,
     if (outDenoised) *outDenoised = out;
     if (outNoisy)    *outNoisy = frames[2];
     return r;
+}
+
+static double meanAbs(const std::vector<float>& a)
+{
+    double s = 0.0;
+    for (float v : a) s += std::fabs(v);
+    return s / a.size();
+}
+
+// banding energy: squared column-mean derivative (dither cancels in the
+// column mean; staircase steps do not)
+static double bandingEnergy(const std::vector<float>& img)
+{
+    std::vector<double> cm(W, 0.0);
+    for (int x = 0; x < W; ++x) {
+        double s = 0.0;
+        for (int y = 8; y < H - 8; ++y) {
+            const float* p = &img[(static_cast<size_t>(y) * W + x) * 4];
+            s += 0.2126 * p[0] + 0.7152 * p[1] + 0.0722 * p[2];
+        }
+        cm[x] = s / (H - 16);
+    }
+    double e = 0.0;
+    for (int x = 16; x < W - 17; ++x) {
+        const double d = cm[x + 1] - cm[x];
+        e += d * d;
+    }
+    return e;
+}
+
+// per-frame clip analysis exactly as the plugin's analyzer does it
+static nranalyze::ClipAggregate analyzeFrames(const std::vector<std::vector<float>>& frames)
+{
+    nrcore::Params ap;   // auto whole-frame, adjust 1 — the analyzer's params
+    std::vector<nrcore::Stats> per;
+    for (int i = 0; i < 5; ++i) {
+        const int partner = (i < 4) ? i + 1 : 3;
+        nrcore::Stats st;
+        nrcore::estimateInput(frames[i].data(), frames[partner].data(), W, H, ap, st);
+        per.push_back(st);
+    }
+    return nranalyze::aggregateClipStats(per);
+}
+
+// convert Auto Setup's UI-unit settings + the locked aggregate to core params
+static nrcore::Params paramsFromAuto(const nranalyze::AutoSettings& as,
+                                     const nranalyze::ClipAggregate& agg)
+{
+    nrcore::Params q;
+    q.enableTemporal = as.enableTemporal;
+    q.temporalFrames = as.temporalFrames;
+    q.temporalLuma   = as.temporalLuma / 100.0f;
+    q.temporalChroma = as.temporalChroma / 100.0f;
+    q.motionThresh   = as.motionThresh / 100.0f;
+    q.motionTracking = as.motionTracking;
+    q.fireflyRemoval = as.fireflyRemoval;
+    q.enableSpatial  = as.enableSpatial;
+    q.spatialMode    = as.spatialMode;
+    q.spatialRadius  = as.spatialRadius;
+    q.spatialLuma    = as.spatialLuma / 100.0f;
+    q.spatialChroma  = as.spatialChroma / 100.0f;
+    q.preserveDetail = as.preserveDetail / 100.0f;
+    q.chromaBlotch   = as.chromaBlotch / 100.0f;
+    q.eqFine         = as.eqFine / 100.0f;
+    q.eqMedium       = as.eqMedium / 100.0f;
+    q.eqCoarse       = as.eqCoarse / 100.0f;
+    q.profileAdjust  = as.profileAdjust;
+    q.profileLocked  = as.lockProfile;
+    q.lockSY = agg.sy; q.lockSC = agg.sc;
+    q.lockTY = agg.ty; q.lockTC = agg.tc;
+    for (int b = 0; b < 16; ++b) {
+        q.lockGainY[b] = agg.gainY[b];
+        q.lockGainC[b] = agg.gainC[b];
+    }
+    return q;
 }
 
 int main()
@@ -416,9 +533,408 @@ int main()
         check(sane, "brightness-dependent gains near 1 on uniform noise");
     }
 
+    // =====================================================================
+    // v3 — golden regression: EQ at defaults reproduces v2.1 output
+    // (goldens captured from the pristine v2.1 build on this scene)
+    // =====================================================================
+    {
+        nrcore::Params ps;                 // v3 defaults, temporal off
+        ps.enableTemporal = 0;
+        std::vector<float> out;
+        CaseResult r = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, ps, &out);
+        printf("v2.1 golden spatial iid: PSNR %.6f (want 34.650967)  meanAbs %.8f (want 0.54357698)\n",
+               r.after, meanAbs(out));
+        check(std::fabs(r.after - 34.650967) < 0.02, "EQ defaults reproduce v2.1 spatial output (PSNR)");
+        check(std::fabs(meanAbs(out) - 0.54357698) < 2e-5, "EQ defaults reproduce v2.1 spatial output (mean)");
+
+        CaseResult rb = runCase(0.04f, 0.0f, 0.0f, NOISE_BLOTCH, ps, &out);
+        printf("v2.1 golden spatial blotch: PSNR %.6f (want 26.791311)  meanAbs %.8f (want 0.54452496)\n",
+               rb.after, meanAbs(out));
+        check(std::fabs(rb.after - 26.791311) < 0.02, "EQ defaults reproduce v2.1 blotch output (PSNR)");
+        check(std::fabs(meanAbs(out) - 0.54452496) < 2e-5, "EQ defaults reproduce v2.1 blotch output (mean)");
+
+        // full pipeline with the v3 temporal features disabled == v2.1
+        nrcore::Params pv21 = p;           // temporalFrames=5 from above
+        pv21.motionTracking = 0;
+        pv21.fireflyRemoval = 0;
+        CaseResult rs = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pv21);
+        printf("v2.1 golden full static: PSNR %.6f (want 40.926957)\n", rs.after);
+        check(std::fabs(rs.after - 40.926957) < 0.02, "tracking+firefly off reproduces v2.1 static");
+    }
+
+    // =====================================================================
+    // v3 feature 1 — shift-search temporal matching (motion tracking)
+    // =====================================================================
+    {
+        nrcore::Params pOff = p; pOff.motionTracking = 0; pOff.fireflyRemoval = 0;
+        nrcore::Params pOn  = p; pOn.motionTracking  = 1; pOn.fireflyRemoval  = 0;
+
+        // slow drift 0.8 px/frame — the case the feature was built for
+        CaseResult drOff = runCase(0.05f, 0.8f, 0.5f, NOISE_IID, pOff);
+        CaseResult drOn  = runCase(0.05f, 0.8f, 0.5f, NOISE_IID, pOn);
+        printf("motion tracking, drift 0.8px: off %5.2f dB -> on %5.2f dB\n", drOff.after, drOn.after);
+        check(drOn.after > drOff.after + 0.3, "tracking gains >= 0.3 dB on slow drift");
+        check(drOn.after > 37.91, "tracking beats the v2.1 drift number (37.908)");
+
+        // 1.5 px/frame pan: temporal must beat spatial-only by >= 1 dB
+        nrcore::Params pSp = p; pSp.enableTemporal = 0;
+        CaseResult panSp  = runCase(0.05f, 1.5f, 0.0f, NOISE_IID, pSp);
+        CaseResult panOff = runCase(0.05f, 1.5f, 0.0f, NOISE_IID, pOff);
+        CaseResult panOn  = runCase(0.05f, 1.5f, 0.0f, NOISE_IID, pOn);
+        printf("pan 1.5px: spatial-only %5.2f, temporal off %5.2f, on %5.2f dB\n",
+               panSp.after, panOff.after, panOn.after);
+        check(panOn.after >= panSp.after + 1.0, "pan: temporal beats spatial-only by >= 1 dB");
+        check(panOn.after > panOff.after + 0.3, "pan: tracking gains >= 0.3 dB over v2.1 temporal");
+
+        // static footage: tracking must not regress
+        CaseResult stOff = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pOff);
+        CaseResult stOn  = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pOn);
+        printf("static: tracking off %5.2f dB, on %5.2f dB\n", stOff.after, stOn.after);
+        check(stOn.after > stOff.after - 0.15, "tracking does not regress static footage");
+    }
+
+    // =====================================================================
+    // v3 feature 2 — firefly / hot-pixel zapper
+    // =====================================================================
+    {
+        std::vector<float> clean;
+        renderScene(clean, 0, 0);
+        std::vector<std::vector<float>> frames;
+        makeCaseFrames(0.02f, 0.0f, 0.0f, NOISE_IID, frames);
+        std::vector<int> sites;
+        addImpulses(frames[2], 400, 99, sites);
+
+        const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                                 frames[3].data(), frames[4].data() };
+        nrcore::Params pf = p;             // 5 frames, defaults otherwise
+        pf.motionTracking = 1;
+        std::vector<float> outOn(static_cast<size_t>(W) * H * 4), outOff(outOn.size()), scratch;
+        pf.fireflyRemoval = 1;
+        nrcore::denoiseFrame(fptr, W, H, pf, outOn.data(), scratch);
+        pf.fireflyRemoval = 0;
+        nrcore::denoiseFrame(fptr, W, H, pf, outOff.data(), scratch);
+
+        int removed = 0, survivedOff = 0;
+        for (int site : sites) {
+            const size_t i = static_cast<size_t>(site) * 4;
+            float yOn, yOff, yClean, cb, cr;
+            nrcore::rgb2ycc(outOn[i], outOn[i+1], outOn[i+2], yOn, cb, cr);
+            nrcore::rgb2ycc(outOff[i], outOff[i+1], outOff[i+2], yOff, cb, cr);
+            nrcore::rgb2ycc(clean[i], clean[i+1], clean[i+2], yClean, cb, cr);
+            if (std::fabs(yOn - yClean) < 0.08f) removed++;
+            if (std::fabs(yOff - yClean) > 0.10f) survivedOff++;
+        }
+        printf("firefly: %d/400 impulses removed (on), %d/400 survive with zapper off\n",
+               removed, survivedOff);
+        check(removed >= 380, "firefly zapper removes >= 95% of impulses");
+        check(survivedOff >= 240, "impulses genuinely survive without the zapper");
+
+        // clean pixels (>= 8 px from any impulse) must be untouched
+        std::vector<uint8_t> nearImpulse(static_cast<size_t>(W) * H, 0);
+        for (int site : sites) {
+            const int sx = site % W, sy2 = site / W;
+            for (int dy = -8; dy <= 8; ++dy)
+                for (int dx = -8; dx <= 8; ++dx) {
+                    const int nx = sx + dx, ny = sy2 + dy;
+                    if (nx >= 0 && nx < W && ny >= 0 && ny < H)
+                        nearImpulse[static_cast<size_t>(ny) * W + nx] = 1;
+                }
+        }
+        // Removing the impulses legitimately shifts the measured residual by
+        // a histogram quantum, which drifts every pixel by ~1e-4 (up to ~1e-2
+        // where the NLM's thresholds respond nonlinearly) — that is the
+        // estimator honestly adapting, not a zap. A false zap replaces the
+        // pre-temporal centre with the temporal median, which survives the
+        // pipeline as a >=0.02 change. Count only those.
+        int falseTrips = 0;
+        float maxCleanDiff = 0.0f;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                if (nearImpulse[static_cast<size_t>(y) * W + x])
+                    continue;
+                const size_t i = (static_cast<size_t>(y) * W + x) * 4;
+                float d = 0.0f;
+                for (int ch = 0; ch < 3; ++ch)
+                    d = std::max(d, std::fabs(outOn[i + ch] - outOff[i + ch]));
+                maxCleanDiff = std::max(maxCleanDiff, d);
+                if (d > 0.015f) falseTrips++;
+            }
+        printf("firefly: clean pixels max on/off diff %.5f, %d above 0.015\n",
+               maxCleanDiff, falseTrips);
+        check(falseTrips <= 5, "clean pixels untouched by the zapper (<= 5 false trips)");
+    }
+
+    // =====================================================================
+    // v3 feature 5 — Noise EQ: each slider dominantly removes its own band
+    // =====================================================================
+    {
+        nrcore::Params base = p;
+        base.enableTemporal = 0;           // isolate the spatial stage
+        base.chromaBlotch = 0.0f;
+        base.eqFine = 0.0f; base.eqMedium = 0.0f; base.eqCoarse = 0.0f;
+
+        nrcore::Params pF = base; pF.eqFine = 1.0f;
+        nrcore::Params pM = base; pM.eqMedium = 1.0f;
+        nrcore::Params pC = base; pC.eqCoarse = 1.0f;
+
+        struct BandCase { const char* name; NoiseKind kind; float sigma; int winner; };
+        const BandCase cases[3] = {
+            { "per-pixel", NOISE_IID,    0.03f,  0 },
+            { "4px blobs", NOISE_BLOB4,  0.035f, 1 },
+            { "16px blobs", NOISE_BLOB16, 0.035f, 2 },
+        };
+        for (int ci = 0; ci < 3; ++ci) {
+            const BandCase& bc = cases[ci];
+            const double dF = runCase(bc.sigma, 0, 0, bc.kind, pF).after;
+            const double dM = runCase(bc.sigma, 0, 0, bc.kind, pM).after;
+            const double dC = runCase(bc.sigma, 0, 0, bc.kind, pC).after;
+            const double best = std::max(dF, std::max(dM, dC));
+            const double own = (bc.winner == 0) ? dF : (bc.winner == 1) ? dM : dC;
+            printf("EQ %-10s fine %5.2f  medium %5.2f  coarse %5.2f dB\n", bc.name, dF, dM, dC);
+            char msg[96];
+            snprintf(msg, sizeof(msg), "EQ: %s noise removed best by its own band", bc.name);
+            check(own >= best, msg);
+        }
+    }
+
+    // =====================================================================
+    // v3 feature 6a — noise matte view
+    // =====================================================================
+    {
+        nrcore::Params pm2 = p;
+        pm2.viewMode = 8;
+        std::vector<float> matte;
+        runCase(0.02f, 0.0f, 0.0f, NOISE_IID, pm2, &matte);
+        bool rgbaEqual = true;
+        double flatSum = 0.0, texSum = 0.0;
+        int flatN = 0, texN = 0;
+        for (int y = 8; y < H - 8; ++y)
+            for (int x = 8; x < W - 8; ++x) {
+                const size_t i = (static_cast<size_t>(y) * W + x) * 4;
+                if (matte[i] != matte[i+3] || matte[i+1] != matte[i+3] || matte[i+2] != matte[i+3])
+                    rgbaEqual = false;
+                if (matte[i+3] < 0.0f || matte[i+3] > 1.0f)
+                    rgbaEqual = false;
+                // flat gradient area (no structure) vs strong sine texture
+                if (x >= 220 && x < 260 && y >= 320 && y < 350) { flatSum += matte[i+3]; flatN++; }
+                if (x >= 460 && x < 600 && y >= 60 && y < 140)  { texSum += matte[i+3]; texN++; }
+            }
+        const double flatAvg = flatSum / std::max(flatN, 1);
+        const double texAvg  = texSum / std::max(texN, 1);
+        printf("matte: alpha==map %s, flat-area %.3f vs textured %.3f\n",
+               rgbaEqual ? "yes" : "NO", flatAvg, texAvg);
+        check(rgbaEqual, "matte view: alpha equals the map, in [0,1]");
+        check(flatAvg > texAvg + 0.25 && texAvg < 0.75,
+              "matte: noise dominates flat areas, image wins on texture");
+    }
+
+    // =====================================================================
+    // v3 feature 6b — deband
+    // =====================================================================
+    {
+        // 8-step quantized ramp at 1.5 8-bit-LSB steps (classic sky banding)
+        const float q = 1.5f / 255.0f;
+        std::vector<float> ramp(static_cast<size_t>(W) * H * 4);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                float* px = &ramp[(static_cast<size_t>(y) * W + x) * 4];
+                const float v = 0.30f + q * static_cast<float>((x * 8) / W);
+                px[0] = px[1] = px[2] = v; px[3] = 1.0f;
+            }
+
+        nrcore::Params pd;
+        pd.enableTemporal = 0; pd.enableSpatial = 0; pd.enableRefine = 1;
+        pd.profileSource = 2; pd.sigmaY = 0.005f; pd.sigmaC = 0.005f;
+        pd.deband = 1.0f;
+        const float* fptr[5] = { ramp.data(), ramp.data(), ramp.data(), ramp.data(), ramp.data() };
+        std::vector<float> out(ramp.size()), scratch;
+        nrcore::denoiseFrame(fptr, W, H, pd, out.data(), scratch);
+        const double eIn = bandingEnergy(ramp), eOut = bandingEnergy(out);
+        printf("deband: banding energy %.3e -> %.3e (%.1f%%)\n", eIn, eOut, 100.0 * eOut / eIn);
+        check(eOut < 0.5 * eIn, "deband halves banding energy on the 8-step ramp");
+
+        nrcore::Params pd0 = pd; pd0.deband = 0.0f;
+        nrcore::denoiseFrame(fptr, W, H, pd0, out.data(), scratch);
+        float maxd0 = 0.0f;
+        for (size_t i = 0; i < out.size(); ++i) maxd0 = std::max(maxd0, std::fabs(out[i] - ramp[i]));
+        check(maxd0 < 2e-5f, "deband at 0 is identity");
+
+        // hard-edge chart: high-contrast stripes + one saturated stripe
+        std::vector<float> chart(static_cast<size_t>(W) * H * 4);
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                float* px = &chart[(static_cast<size_t>(y) * W + x) * 4];
+                const int band = (x / 80) % 4;
+                if (band == 3) { px[0] = 0.7f; px[1] = 0.15f; px[2] = 0.12f; }
+                else { const float v = 0.15f + 0.30f * band; px[0] = px[1] = px[2] = v; }
+                px[3] = 1.0f;
+            }
+        const float* cptr[5] = { chart.data(), chart.data(), chart.data(), chart.data(), chart.data() };
+        std::vector<float> outC(chart.size());
+        nrcore::denoiseFrame(cptr, W, H, pd, outC.data(), scratch);
+        float maxd = 0.0f;
+        double sumd = 0.0;
+        for (size_t i = 0; i < outC.size(); ++i) {
+            const float d = std::fabs(outC[i] - chart[i]);
+            maxd = std::max(maxd, d);
+            sumd += d;
+        }
+        printf("deband: hard-edge chart max diff %.5f, mean %.7f\n", maxd, sumd / outC.size());
+        check(maxd < 0.005f, "deband leaves hard edges effectively identical");
+    }
+
+    // =====================================================================
+    // v3 feature 3 — locked profiles: serialization + effect
+    // =====================================================================
+    {
+        nranalyze::ClipAggregate a;
+        a.sy = 0.03127f; a.sc = 0.01693f; a.ty = 0.02944f; a.tc = 0.01512f;
+        for (int b = 0; b < 16; ++b) {
+            a.gainY[b] = 0.6f + 0.09f * b;
+            a.gainC[b] = 2.2f - 0.08f * b;
+        }
+        const std::string ser = nranalyze::formatLockedProfile(a);
+        nranalyze::ClipAggregate back;
+        const bool ok = nranalyze::parseLockedProfile(ser, back);
+        bool exact = ok &&
+            std::memcmp(&a.sy, &back.sy, 4) == 0 && std::memcmp(&a.sc, &back.sc, 4) == 0 &&
+            std::memcmp(&a.ty, &back.ty, 4) == 0 && std::memcmp(&a.tc, &back.tc, 4) == 0;
+        for (int b = 0; exact && b < 16; ++b)
+            exact = std::memcmp(&a.gainY[b], &back.gainY[b], 4) == 0 &&
+                    std::memcmp(&a.gainC[b], &back.gainC[b], 4) == 0;
+        check(exact, "locked profile serialize -> parse round-trip is bit-exact");
+        nranalyze::ClipAggregate junk;
+        check(!nranalyze::parseLockedProfile("HUSHLOCK1,zz", junk) &&
+              !nranalyze::parseLockedProfile("nonsense", junk),
+              "locked profile parser rejects corrupt data");
+
+        // locked values override the measurement; histogram stays live
+        std::vector<float> clean, noisy;
+        renderScene(clean, 0, 0);
+        noisy = clean;
+        addNoise(noisy, 0.05f, 31);
+        nrcore::Params pl = p;
+        pl.profileLocked = 1;
+        pl.lockSY = 0.0311f; pl.lockSC = 0.0177f; pl.lockTY = 0.0299f; pl.lockTC = 0.0155f;
+        for (int b = 0; b < 16; ++b) { pl.lockGainY[b] = 1.0f + 0.01f * b; pl.lockGainC[b] = 1.3f; }
+        nrcore::Stats st;
+        nrcore::estimateInput(noisy.data(), nullptr, W, H, pl, st);
+        check(st.sy == 0.0311f && st.sc == 0.0177f && st.ty == 0.0299f && st.tc == 0.0155f,
+              "locked sigmas override the measurement");
+        check(st.gainY[5] == 1.05f && st.gainC[9] == 1.3f, "locked gains override the measurement");
+        check(st.histMax > 1, "locked profile keeps the HUD histogram live");
+    }
+
+    // =====================================================================
+    // v3 feature 3 — clip analyzer aggregation
+    // =====================================================================
+    {
+        std::vector<std::vector<float>> framesStatic, framesPan;
+        makeCaseFrames(0.03f, 0.0f, 0.0f, NOISE_IID, framesStatic);
+        makeCaseFrames(0.03f, 3.0f, 1.0f, NOISE_IID, framesPan);
+        const nranalyze::ClipAggregate aggS = analyzeFrames(framesStatic);
+        const nranalyze::ClipAggregate aggP = analyzeFrames(framesPan);
+        std::vector<float> clean;
+        renderScene(clean, 0, 0);
+        const float truth = trueSigmaY(framesStatic[2], clean);
+        printf("analyzer: static sy %.4f (true %.4f) motion %.3f | pan motion %.3f\n",
+               aggS.sy, truth, aggS.motion, aggP.motion);
+        check(std::fabs(aggS.sy - truth) / truth < 0.30f, "aggregate sigma within 30% of truth");
+        check(aggS.motion < 0.15f, "static clip reads as low motion energy");
+        // the synthetic scene is mostly flat, which caps how far motion can
+        // push the median — real textured footage reads much higher
+        check(aggP.motion > aggS.motion + 0.02f, "panning clip reads as higher motion energy");
+    }
+
+    // =====================================================================
+    // v3 feature 4 — Auto Setup mapping: golden cases + monotonicity
+    // =====================================================================
+    {
+        using nranalyze::ClipAggregate;
+        using nranalyze::AutoSettings;
+        auto makeAgg = [](float sy, float motion, float chromaRatio, float coarseRatio) {
+            ClipAggregate a;
+            a.sy = sy; a.sc = sy; a.ty = sy * 0.95f; a.tc = sy * 0.95f * chromaRatio;
+            a.motion = motion;
+            a.chromaRatio = chromaRatio;
+            a.coarseRatioY = coarseRatio;
+            a.frames = 5;
+            return a;
+        };
+
+        const AutoSettings sClean  = nranalyze::mapAnalysisToSettings(makeAgg(0.004f, 0.02f, 1.0f, 1.0f));
+        const AutoSettings sMod    = nranalyze::mapAnalysisToSettings(makeAgg(0.015f, 0.02f, 1.0f, 1.0f));
+        const AutoSettings sNoisy  = nranalyze::mapAnalysisToSettings(makeAgg(0.040f, 0.02f, 1.0f, 1.0f));
+        const AutoSettings sSevere = nranalyze::mapAnalysisToSettings(makeAgg(0.090f, 0.02f, 1.0f, 1.0f));
+
+        check(sClean.noiseClass == 0 && sMod.noiseClass == 1 &&
+              sNoisy.noiseClass == 2 && sSevere.noiseClass == 3, "noise classification thresholds");
+        auto mono = [](float a, float b, float c, float d) { return a <= b && b <= c && c <= d; };
+        check(mono(sClean.temporalLuma, sMod.temporalLuma, sNoisy.temporalLuma, sSevere.temporalLuma) &&
+              mono(sClean.spatialLuma, sMod.spatialLuma, sNoisy.spatialLuma, sSevere.spatialLuma) &&
+              mono(sClean.spatialRadius, sMod.spatialRadius, sNoisy.spatialRadius, sSevere.spatialRadius) &&
+              mono(sClean.chromaBlotch, sMod.chromaBlotch, sNoisy.chromaBlotch, sSevere.chromaBlotch) &&
+              mono(sClean.eqMedium, sMod.eqMedium, sNoisy.eqMedium, sSevere.eqMedium),
+              "settings are monotone in the noise class");
+        check(mono(sSevere.preserveDetail, sNoisy.preserveDetail, sMod.preserveDetail, sClean.preserveDetail),
+              "preserve-detail decreases with noise");
+        check(sClean.temporalFrames == 3 && sSevere.temporalFrames == 5, "frame count grows with noise");
+        check(sClean.lockProfile == 1 && sClean.eqFine == 100.0f, "auto always locks and keeps fine at 100");
+
+        const AutoSettings sMotion = nranalyze::mapAnalysisToSettings(makeAgg(0.040f, 0.60f, 1.0f, 1.0f));
+        check(sMotion.temporalFrames == 3, "heavy motion prefers 3 frames");
+        check(sMotion.motionThresh < sNoisy.motionThresh - 10.0f, "heavy motion lowers the motion threshold");
+        check(sMotion.movingCamera == 1 && sNoisy.movingCamera == 0, "moving-camera flag");
+
+        const AutoSettings sBlotch = nranalyze::mapAnalysisToSettings(makeAgg(0.015f, 0.02f, 2.6f, 1.7f));
+        check(sBlotch.chromaBlotch >= sMod.chromaBlotch + 30.0f, "blotchy chroma raises the blotch pass");
+        check(sBlotch.spatialChroma == 100.0f, "blotchy chroma maxes chroma strength");
+        check(sBlotch.eqMedium >= 25.0f && sBlotch.eqCoarse >= 10.0f, "correlated noise raises medium/coarse bands");
+
+        const std::string rep = nranalyze::formatAutoReport(makeAgg(0.032f, 0.5f, 1.2f, 1.0f), sMotion);
+        check(rep.find("moving camera") != std::string::npos &&
+              rep.find("%Y") != std::string::npos &&
+              rep.find("profile locked") != std::string::npos, "auto report contains the key facts");
+    }
+
+    // =====================================================================
+    // v3 feature 4 — Auto Setup end-to-end: auto >= defaults on every class
+    // =====================================================================
+    {
+        struct E2E { const char* name; float sigma; float sx, sy2; NoiseKind kind; bool clean; };
+        const E2E cases[6] = {
+            { "clean",     0.004f, 0.0f, 0.0f, NOISE_IID,    true  },
+            { "moderate",  0.015f, 0.0f, 0.0f, NOISE_IID,    false },
+            { "noisy",     0.040f, 0.0f, 0.0f, NOISE_IID,    false },
+            { "severe",    0.090f, 0.0f, 0.0f, NOISE_IID,    false },
+            { "blotchy",   0.040f, 0.0f, 0.0f, NOISE_BLOTCH, false },
+            { "motion",    0.050f, 3.0f, 1.5f, NOISE_IID,    false },
+        };
+        for (int ci = 0; ci < 6; ++ci) {
+            const E2E& e = cases[ci];
+            std::vector<std::vector<float>> frames;
+            makeCaseFrames(e.sigma, e.sx, e.sy2, e.kind, frames);
+            const nranalyze::ClipAggregate agg = analyzeFrames(frames);
+            const nranalyze::AutoSettings as = nranalyze::mapAnalysisToSettings(agg);
+            const nrcore::Params pAuto = paramsFromAuto(as, agg);
+            nrcore::Params pDef;       // stock v3 defaults
+            const CaseResult rAuto = runCase(e.sigma, e.sx, e.sy2, e.kind, pAuto);
+            const CaseResult rDef  = runCase(e.sigma, e.sx, e.sy2, e.kind, pDef);
+            printf("auto e2e %-9s defaults %5.2f dB -> auto %5.2f dB\n", e.name, rDef.after, rAuto.after);
+            char msg[96];
+            if (e.clean) {
+                snprintf(msg, sizeof(msg), "auto e2e %s: never worse than defaults - 0.3 dB", e.name);
+                check(rAuto.after >= rDef.after - 0.3, msg);
+            } else {
+                snprintf(msg, sizeof(msg), "auto e2e %s: auto >= defaults", e.name);
+                check(rAuto.after >= rDef.after - 0.05, msg);
+            }
+        }
+    }
+
     // --- render every view mode
     {
-        for (int vm = 1; vm <= 7; ++vm) {
+        for (int vm = 1; vm <= 8; ++vm) {
             nrcore::Params pv = p;
             pv.viewMode = vm;
             if (vm == 5) pv.profileSource = 1;
@@ -429,7 +945,7 @@ int main()
             snprintf(name, sizeof(name), "out_view%d.ppm", vm);
             writePPM(name, denoised);
         }
-        printf("view renders written: out_view1..7.ppm\n");
+        printf("view renders written: out_view1..8.ppm\n");
         check(true, "view modes rendered (visual check)");
     }
 

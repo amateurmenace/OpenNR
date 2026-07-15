@@ -165,7 +165,8 @@
       <h1>Hush<span class="dot">.</span></h1>
       <div class="tag">OPEN NR · FOR DAVINCI RESOLVE</div>
       <p class="lead">Free, open-source noise reduction that works in the <b>free</b> version of
-      Resolve — and shows you every measurement it makes.</p>
+      Resolve — and shows you every measurement it makes. New in v3: it sets
+      itself up.</p>
       <svg class="squiggle" width="180" height="14" viewBox="0 0 180 14" fill="none">
         <path d="M2 8 Q 12 2, 22 8 T 42 8 T 62 8 T 82 8 T 102 8 T 122 8 T 142 8 T 162 8 T 178 8" stroke="#E5A835" stroke-width="3" stroke-linecap="round"/>
       </svg>
@@ -174,7 +175,7 @@
         <a class="btn btn-green" style="background:var(--green-lt)" href="https://github.com/amateurmenace/OpenNR/releases/latest">Download · Windows</a>
         <a class="btn btn-line" href="https://github.com/amateurmenace/OpenNR">GitHub</a>
       </div>
-      <div class="meta">v2.1 · Resolve 17+ free &amp; Studio · macOS 11+ (universal) · Windows 10+ x64 (OpenCL) · MIT · Linux builds from source</div>
+      <div class="meta">v3.0 · Resolve 17+ free &amp; Studio · macOS 11+ (universal) · Windows 10+ x64 (OpenCL) · MIT · Linux builds from source</div>
     </div>
 
     <div class="demo reg">
@@ -220,6 +221,36 @@
 
 <section class="alt">
   <div class="wrap">
+    <div class="kicker">New in v3 · The intelligence release</div>
+    <h2>One click. Every slider, set.</h2>
+    <p class="lede"><b>Auto Setup</b> analyzes your clip and dials in the whole
+    plugin — then hands you the sliders.</p>
+    <p>Click <b>Auto Setup (Analyze Footage)</b> and Hush measures frames from
+    across the clip: how noisy it is, how much of the noise is color, whether
+    it's blocky compressed grunge or clean sensor grain, how much the camera
+    moves. Then it decides — strengths, frame counts, search radius, motion
+    threshold, the Noise EQ bands — and <b>writes the answers into the visible
+    controls</b>, so you see exactly what it chose and can dial anything in or
+    back from there. It is not a mode, and there is nothing to trust blindly:
+    afterwards it's all ordinary manual state, plus a read-only report of what
+    it found:</p>
+    <p style="font: 500 14px var(--mono); color: var(--green-br); background: var(--ink, #21301f); border-radius: 8px; padding: 12px 16px; max-width: 60ch">
+    Analyzed 5 frames · noise 3.2%Y / 4.1%C (noisy) · steady camera · profile locked</p>
+    <p>One <b>Cmd+Z undoes the entire setup</b> (it applies as a single edit
+    block), and a <b>Revert Auto Setup</b> button does the same job later. It
+    never touches your Step 4 look choices — grain, texture, shadow
+    desaturation and debanding stay yours. Under the hood it also
+    <b>locks the measured noise profile</b>, so every frame of the clip
+    filters against the same numbers and renders stay repeatable.</p>
+    <p>v3 also adds <b>Motion Tracking</b> (slow pans keep their across-frames
+    averaging — the ghost-proof hard gate is untouched), a <b>firefly
+    zapper</b> for hot pixels, a three-band <b>Noise EQ</b>, gradient-aware
+    <b>debanding</b>, and a <b>noisiness matte</b> you can key downstream.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
     <div class="kicker">Before / After</div>
     <h2>Drag the line.</h2>
     <div class="wipe" id="hush-wipe">
@@ -233,22 +264,22 @@
   </div>
 </section>
 
-<section>
+<section class="alt">
   <div class="wrap">
     <div class="kicker">How it works</div>
     <h2>Five steps. Click each one.</h2>
     <div class="pipe" id="hush-pipe">
       <div class="step on" data-d="Three estimators measure the noise of every frame: median frame-to-frame difference (immune to the correlated, blotchy noise compression creates), plus fine and coarse Laplacian statistics — with a separate estimate for every brightness band, because shadows are noisier than highlights. Robust medians keep edges, texture and motion out of the measurement."><span class="n">1</span><b>Measure</b><small>3 estimators × 16 brightness bands</small></div>
-      <div class="step" data-d="Each pixel is compared patch-wise against up to two frames either side. Below the expected pure-noise difference, frames average freely; past the motion threshold the gate closes to exactly zero — mismatched pixels can't bleed in, so motion can't ghost, by construction. Chroma is slaved to the luma gate."><span class="n">2</span><b>Temporal</b><small>hard-knee gate, zero ghosting</small></div>
-      <div class="step" data-d="The noise that actually survived temporal merging is measured again from the merged image — no assumptions — and non-local means filters against that residual: patches only average with patches that genuinely match. A second large-radius pass reaches the big soft chroma stains 4:2:0 leaves behind."><span class="n">3</span><b>Spatial</b><small>self-truing NLM + blotch pass</small></div>
-      <div class="step" data-d="Finishing moves: desaturate the deepest shadows (where color noise hides), re-inject a little of the original brightness texture, or lay down synthesized film grain — midtone-weighted like real stock, animated, with size and color controls."><span class="n">4</span><b>Refine</b><small>sat curve · texture · film grain</small></div>
-      <div class="step" data-d="Follow the image through the pipeline: Input, After Temporal, Noise Removed, a live Noise Analysis HUD (input and residual measurements, SNR gain, noise-vs-brightness curve), a Temporal Activity map, and a per-pixel SNR heat map. The scope is rendered by the same kernels that filter — it can't disagree with what's happening."><span class="n">5</span><b>Inspect</b><small>the viewer becomes the scope</small></div>
+      <div class="step" data-d="Each pixel is compared patch-wise against up to two frames either side — and in v3, at nine candidate alignments, so slow pans and handheld drift keep their averaging (Motion Tracking). Below the expected pure-noise difference, frames average freely; past the motion threshold the gate closes to exactly zero — mismatched pixels can't bleed in, so motion can't ghost, by construction. A firefly zapper clips hot pixels to the temporal median first."><span class="n">2</span><b>Temporal</b><small>motion-tracked, hard-knee gate, zero ghosting</small></div>
+      <div class="step" data-d="The noise that actually survived temporal merging is measured again from the merged image — no assumptions — and a three-band Noise EQ filters against that residual: a fine non-local-means band for pixel-scale grain, a medium band for the 3–8 px clumps compression leaves, and a coarse band for large soft stains (the classic chroma blotch pass, now with an optional luma side). Each band removes only its own scale."><span class="n">3</span><b>Spatial</b><small>self-truing, three-band Noise EQ</small></div>
+      <div class="step" data-d="Finishing moves: desaturate the deepest shadows (where color noise hides), re-inject a little of the original brightness texture, smooth banding with a gradient-aware debander that never touches real edges, or lay down synthesized film grain — midtone-weighted like real stock, animated, with size and color controls."><span class="n">4</span><b>Refine</b><small>sat curve · texture · deband · grain</small></div>
+      <div class="step" data-d="Follow the image through the pipeline: Input, After Temporal, Noise Removed, a live Noise Analysis HUD (input and residual measurements, SNR gain, noise-vs-brightness curve — and a LOCKED tag when the profile is frozen), a Temporal Activity map, a per-pixel SNR heat map, and a Noisiness matte written to RGB + alpha for keying downstream. The scope is rendered by the same kernels that filter — it can't disagree with what's happening."><span class="n">5</span><b>Inspect</b><small>the viewer becomes the scope</small></div>
     </div>
     <div class="pipedetail"><p id="hush-pipeText">Three estimators measure the noise of every frame: median frame-to-frame difference (immune to the correlated, blotchy noise compression creates), plus fine and coarse Laplacian statistics — with a separate estimate for every brightness band, because shadows are noisier than highlights. Robust medians keep edges, texture and motion out of the measurement.</p></div>
   </div>
 </section>
 
-<section class="alt">
+<section>
   <div class="wrap">
     <div class="kicker">Measured, not promised</div>
     <h2>The numbers.</h2>
@@ -256,17 +287,17 @@
     precisely known injected noise, so improvement is measured, not eyeballed.</p>
     <div class="chart" id="hush-chart">
       <h3>PSNR before → after (dB, higher is better)</h3>
-      <div class="sub">640×360 validation scenes · σ = 5% · defaults · v2</div>
+      <div class="sub">640×360 validation scenes · σ = 5% · defaults · v3</div>
       <div class="cbar"><div class="lab"><span>Static shot</span><b>26.0 → 40.9 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="82%"></div></div></div>
       <div class="cbar"><div class="lab"><span>Correlated (compressed) noise</span><b>26.0 → 35.4 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="71%"></div></div></div>
-      <div class="cbar"><div class="lab"><span>Slow drift (the ghosting regime)</span><b>26.0 → 37.9 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="76%"></div></div></div>
-      <div class="cbar"><div class="lab"><span>Fast motion</span><b>26.0 → 36.3 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="73%"></div></div></div>
+      <div class="cbar"><div class="lab"><span>Slow drift — motion-tracked in v3</span><b>26.0 → 38.3 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="77%"></div></div></div>
+      <div class="cbar"><div class="lab"><span>Fast motion</span><b>26.0 → 36.0 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="72%"></div></div></div>
     </div>
-    <p class="cap" style="margin-top:10px">Plus: GPU output verified against the CPU reference across 16 configurations to ~10⁻⁶ · 114 fps HD / 29 fps UHD max quality on an M1 Max.</p>
+    <p class="cap" style="margin-top:10px">Plus: 76 synthetic-truth checks per build, GPU output verified against the CPU reference across 25 configurations to ~10⁻⁶ · 118 fps HD / 30 fps UHD max quality on an M1 Max.</p>
   </div>
 </section>
 
-<section>
+<section class="alt">
   <div class="wrap">
     <div class="kicker">Transparency is the feature</div>
     <h2>See what it sees.</h2>

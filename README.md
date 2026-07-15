@@ -26,11 +26,36 @@ edges, fine checker texture and 2-px lines survive.*
 
 ## Features
 
+- **Auto Setup — one button sets up the whole plugin (v3).** It analyzes
+  several frames spread across your clip (noise level, chroma character,
+  spatial correlation, camera motion) and writes the best settings **into the
+  visible sliders** — you immediately see what it chose and dial anything in
+  or back from there. Not a mode: afterwards everything is ordinary manual
+  state. One Cmd+Z (or the Revert button) restores everything, a read-only
+  Analysis line reports what it measured, and your Step 4 look choices are
+  never touched.
 - **Automatic noise profiling, done right for video** — three estimators run per
   frame: frame-to-frame differences (immune to the spatially-correlated noise
   that compression and debayering create), plus fine- and coarse-scale spatial
   estimators. Robust medians/quantiles keep motion, edges and texture out of
-  the measurement.
+  the measurement. **v3 adds Lock Profile**: freeze the measured profile
+  (aggregated across the clip) so every frame filters against the same
+  numbers — the HUD shows LOCKED, and it survives save/reload.
+- **Motion-tracked temporal NR (v3)** — before gating each neighbour frame the
+  temporal stage tries shifting its patch up to ±2 px and matches on the best
+  alignment, so slow pans and handheld drift keep their across-frames
+  averaging. The hard-knee gate is unchanged — still exactly zero past the
+  knee, still ghost-proof — and shifted matches face a steeper gate.
+- **Firefly removal (v3)** — single-frame impulses (hot pixels, sensor
+  fireflies) are clipped to the 3-frame temporal median. Three independent
+  tests must agree before a pixel is touched, so thin fast-moving detail
+  survives.
+- **Noise EQ (v3)** — the spatial stage split into three bands with their own
+  strengths: Fine (pixel-scale NLM), Medium (3–8 px compression clumps) and
+  Coarse Luma (16–32 px stains), each removing its own scale only.
+- **Deband + noise matte (v3)** — gradient-aware debanding that never touches
+  real edges, and a **Matte: Noisiness** view that writes the noise-dominance
+  map to RGB + alpha for keying downstream.
 - **See everything** — the **Noise Analysis** view renders live measurements
   into the viewer (spatial + temporal noise levels for luma and chroma, meter
   bars, the noise histogram with its median marked); **Noise Only** shows
@@ -53,12 +78,15 @@ edges, fine checker texture and 2-px lines survive.*
 
 ## Performance
 
-Measured on an Apple M1 Max (`test/bench_metal.mm`), v1.1:
+Measured on an Apple M1 Max (`test/bench_metal.mm`), v3.0. The v3 bench feeds
+realistic frames (scene + per-frame noise) rather than v2.1's identical
+buffers, so numbers are not comparable to older tables. Motion Tracking (on
+by default) costs ~13% at defaults and can be toggled off.
 
-| Resolution | Better (NLM, radius 3, 5 frames) | Faster (bilateral, radius 2, 3 frames) |
-|---|---|---|
-| HD 1920×1080 | 6.9 ms/frame (145 fps) | 3.0 ms/frame (336 fps) |
-| UHD 3840×2160 | 27 ms/frame (37 fps) | 12.2 ms/frame (82 fps) |
+| Resolution | Better (NLM, R3, 5 frames) | Better, panning footage | Faster (bilateral, R2, 3 frames) |
+|---|---|---|---|
+| HD 1920×1080 | 8.5 ms/frame (118 fps) | 8.3 ms/frame (121 fps) | 4.7 ms/frame (214 fps) |
+| UHD 3840×2160 | 33.3 ms/frame (30 fps) | 32.7 ms/frame (31 fps) | 18.0 ms/frame (55 fps) |
 
 Real-time UHD at maximum quality on Apple Silicon.
 
@@ -67,14 +95,14 @@ Real-time UHD at maximum quality on Apple Silicon.
 ## Install
 
 ### macOS
-1. Download `OpenNR-1.1.0-macOS.pkg` and double-click it.
+1. Download `OpenNR-3.0.0-macOS.pkg` and double-click it.
    *(The package is not yet notarized: if macOS blocks it, right-click → Open,
    or approve it under System Settings → Privacy & Security → "Open Anyway".)*
 2. Restart DaVinci Resolve. If you had a previous OpenNR version, also delete
    Resolve's plugin scan cache so it rescans:
    `rm ~/Library/Application\ Support/Blackmagic\ Design/DaVinci\ Resolve/OFXPluginCacheV2.xml`
 
-Alternative (no installer): unzip `OpenNR-1.1.0-macOS.zip` and double-click
+Alternative (no installer): unzip `OpenNR-3.0.0-macOS.zip` and double-click
 `Install OpenNR (macOS).command`, or copy `OpenNR.ofx.bundle` into
 `/Library/OFX/Plugins/` yourself. If you copy a bundle that was downloaded or
 AirDropped, clear the quarantine flag or macOS will silently refuse to load it:
@@ -124,20 +152,32 @@ Temporal Activity view) to understand what each is contributing.
 | Step | Control | What it does |
 |---|---|---|
 | — | **Strength** | Overall amount; scales every strength at once. 0 = off, 1 = normal, 2 = double. |
+| — | **Auto Setup (Analyze Footage)** | Analyzes the clip and writes the best settings into the sliders below, then locks the profile. Everything stays manually adjustable; one undo reverts. |
+| — | Analysis | Read-only report of what the last Auto Setup measured and decided. |
+| — | Revert Auto Setup | Restores every denoise control to its pre-Auto-Setup value. |
 | 1 | **Noise Profile** | Automatic (whole frame) / Automatic (from region) / Manual. |
 | 1 | Region Center X/Y, Size | The measurement rectangle (visible in Noise Analysis view). Put it on a flat area. |
 | 1 | **Auto Profile Adjust** | Scales the automatic measurement (×0.25–×4). The escape hatch when the estimate reads low/high. |
 | 1 | Manual Luma / Chroma Noise (%) | Direct noise levels, used only in Manual mode. Clean ≈ 0.5–1, noisy ≈ 2–5, low-light ≈ 5–10. |
+| 1 | **Lock Profile** | Measures across the clip and freezes the profile so every frame filters against the same numbers. HUD shows LOCKED; saved with the project. |
 | 2 | **Enable Temporal NR** | Toggle the across-frames stage. |
 | 2 | Number of Frames | 3 or 5 frames averaged. |
+| 2 | **Motion Tracking** | Shift-search patch matching (±2 px) so slow pans keep their temporal averaging. On by default; off = v2.1 behavior and a small speed gain. |
 | 2 | Luma / Chroma Strength | Per-channel-type temporal blending. |
 | 2 | Motion Threshold | How much change counts as motion. Lower if you see ghosting. |
+| 2 | **Firefly Removal** | Clips single-frame impulses (hot pixels) to the temporal median. Turn off only if real one-frame flashes lose their sparkle. |
 | 3 | **Enable Spatial NR** | Toggle the within-frame stage. |
 | 3 | Method | Better (NLM, patch-based) or Faster (bilateral). |
-| 3 | Search Radius | How far to look for similar patches (1–5 px). |
+| 3 | Search Radius | How far to look for similar patches (1–8 px). |
 | 3 | Luma / Chroma Strength | Per-channel-type spatial filtering. Chroma tolerates high values. |
 | 3 | Preserve Detail | Edge-aware protection of real structure. |
-| 4 | **View** | Result / Split / Noise Only / Noise Analysis / Temporal Activity. |
+| 3 | Chroma Blotch Reduction | Large-radius chroma pass for the big soft 4:2:0 color stains. |
+| 3 | **Noise EQ · Fine / Medium / Coarse** | Per-band strengths: pixel-scale grain / 3–8 px clumps / 16–32 px luma stains. Fine 100 = classic behavior; Medium and Coarse are off until you (or Auto Setup) need them. |
+| 4 | Shadow Desaturate, Desat Range | Saturation-vs-luma curve to hide chroma noise in shadows. |
+| 4 | Luma Texture | Re-injects original brightness texture after denoising. |
+| 4 | **Deband** | Gradient-aware banding smoother + micro-dither. Edges are never touched. |
+| 4 | Film Grain, Grain Size, Grain Color | Clean synthesized grain to finish. |
+| 5 | **View** | Result / Split / Input / After Temporal / Noise Removed / Noise Analysis / Temporal Activity / SNR Map / **Matte: Noisiness** (map in RGB + alpha, for keying downstream). |
 
 ### Coming from Resolve Studio's NR palette?
 

@@ -56,6 +56,20 @@ typedef struct NRParams
 
     float master;
     int   viewMode;
+
+    int   motionTracking;
+    int   fireflyRemoval;
+    float eqFine;
+    float eqMedium;
+    float eqCoarse;
+    float deband;
+    int   profileLocked;
+    float lockSY;
+    float lockSC;
+    float lockTY;
+    float lockTC;
+    float lockGainY[16];
+    float lockGainC[16];
 } NRParams;
 
 #define kMedianCal   0.247100f
@@ -139,6 +153,77 @@ inline float4 sampleTmp(__global const float4* tmp, int W, int H, int x, int y)
     x = clamp(x, 0, W - 1);
     y = clamp(y, 0, H - 1);
     return tmp[y * W + x];
+}
+
+inline float med3(float a, float b, float c)
+{
+    return fmax(fmin(a, b), fmin(fmax(a, b), c));
+}
+
+inline void sort2(float* a, float* b)
+{
+    const float t = fmin(*a, *b);
+    *b = fmax(*a, *b);
+    *a = t;
+}
+
+// median of 9 via the standard 19-exchange network (Smith 1996)
+inline float med9(const float* v)
+{
+    float p0 = v[0], p1 = v[1], p2 = v[2], p3 = v[3], p4 = v[4],
+          p5 = v[5], p6 = v[6], p7 = v[7], p8 = v[8];
+    sort2(&p1, &p2); sort2(&p4, &p5); sort2(&p7, &p8);
+    sort2(&p0, &p1); sort2(&p3, &p4); sort2(&p6, &p7);
+    sort2(&p1, &p2); sort2(&p4, &p5); sort2(&p7, &p8);
+    sort2(&p0, &p3); sort2(&p5, &p8); sort2(&p4, &p7);
+    sort2(&p3, &p6); sort2(&p1, &p4); sort2(&p2, &p5);
+    sort2(&p4, &p7); sort2(&p4, &p2); sort2(&p6, &p4);
+    sort2(&p4, &p2);
+    return p4;
+}
+
+// 2x2 block mean of the tmp buffer (already YCC)
+inline float3 blockMeanTmp(__global const float4* tmp, int W, int H, int x, int y)
+{
+    float3 acc = (float3)(0.0f);
+    for (int dy = 0; dy < 2; ++dy)
+        for (int dx = 0; dx < 2; ++dx)
+            acc += sampleTmp(tmp, W, H, x + dx, y + dy).xyz;
+    return acc * 0.25f;
+}
+
+// 4x4 block mean of tmp, centred-ish on (x,y)
+inline float3 blockMean4Tmp(__global const float4* tmp, int W, int H, int x, int y)
+{
+    float3 acc = (float3)(0.0f);
+    for (int dy = -1; dy < 3; ++dy)
+        for (int dx = -1; dx < 3; ++dx)
+            acc += sampleTmp(tmp, W, H, x + dx, y + dy).xyz;
+    return acc * 0.0625f;
+}
+
+// v3 shift-search candidate offsets: centre first, then +/-1 and +/-2
+__constant int kOffX[9] = { 0, 1, -1, 0, 0, 2, -2, 0, 0 };
+__constant int kOffY[9] = { 0, 0, 0, 1, -1, 0, 0, 2, -2 };
+
+// Mean |3x3 patch difference| of neighbour frame f shifted by (ox,oy) against
+// the current frame's patch; also returns the shifted centre sample.
+inline void patchDiff(__global const float4* f, int W, int H, int x, int y,
+                      int ox, int oy, const float3* c9,
+                      float* dY, float* dC, float3* fc)
+{
+    *dY = 0.0f; *dC = 0.0f; *fc = (float3)(0.0f);
+    int i = 0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx, ++i) {
+            const float3 v = sampleYCC(f, W, H, x + ox + dx, y + oy + dy);
+            if (i == 4) *fc = v;
+            *dY += fabs(v.x - c9[i].x);
+            *dC += 0.5f * (fabs(v.y - c9[i].y) + fabs(v.z - c9[i].z));
+        }
+    }
+    *dY *= (1.0f / 9.0f);
+    *dC *= (1.0f / 9.0f);
 }
 
 inline float hashNoise(uint ix, uint iy, uint f, uint ch)
@@ -317,6 +402,15 @@ __kernel void FinalizeStatsKernel(NRParams p, __global uint* stats)
         }
     }
 
+    // v3: a locked profile overrides the measured sigmas and gains; the
+    // histogram/medbin stay live so the HUD keeps showing the measurement.
+    if (p.profileLocked != 0) {
+        sy = clamp(p.lockSY, kSigmaMin, kSigmaMax);
+        sc = clamp(p.lockSC, kSigmaMin, kSigmaMax);
+        ty = clamp(p.lockTY, kSigmaMin, kSigmaMax);
+        tc = clamp(p.lockTC, kSigmaMin, kSigmaMax);
+    }
+
     stats[S_SY] = as_uint(sy);
     stats[S_SC] = as_uint(sc);
     stats[S_TY] = as_uint(ty);
@@ -326,14 +420,16 @@ __kernel void FinalizeStatsKernel(NRParams p, __global uint* stats)
     for (int b = 0; b < kLumaBins; ++b) {
         const int b0 = clamp(b - 1, 0, kLumaBins - 1);
         const int b1 = clamp(b + 1, 0, kLumaBins - 1);
-        stats[S_GY + b] = as_uint(0.25f * gy[b0] + 0.5f * gy[b] + 0.25f * gy[b1]);
-        stats[S_GC + b] = as_uint(0.25f * gc[b0] + 0.5f * gc[b] + 0.25f * gc[b1]);
+        stats[S_GY + b] = as_uint(p.profileLocked != 0 ? clamp(p.lockGainY[b], 0.6f, 2.2f)
+                                  : 0.25f * gy[b0] + 0.5f * gy[b] + 0.25f * gy[b1]);
+        stats[S_GC + b] = as_uint(p.profileLocked != 0 ? clamp(p.lockGainC[b], 0.6f, 2.2f)
+                                  : 0.25f * gc[b0] + 0.5f * gc[b] + 0.25f * gc[b1]);
     }
 }
 
 inline float4 loadSigmasIn(NRParams p, __global const uint* stats)
 {
-    if (p.profileSource != 2)
+    if (p.profileSource != 2 || p.profileLocked != 0)
         return (float4)(as_float(stats[S_SY]), as_float(stats[S_SC]),
                         as_float(stats[S_TY]), as_float(stats[S_TC]));
     const float sy = clamp(p.sigmaY, kSigmaMin, kSigmaMax);
@@ -364,12 +460,40 @@ __kernel void TemporalKernel(NRParams p, int W, int H,
     const float loC = kAbsDiffBias * sig.w, hiC = loC + thrMul * sig.w;
     const float invSpanY = 1.0f / (hiY - loY);
     const float invSpanC = 1.0f / (hiC - loC);
+    // v3 shift search engages only once the unshifted match is well into the
+    // gate — high enough that pure noise almost never reaches it, which
+    // also keeps GPU warps convergent on static footage (see nr_core.h).
+    const int   track = (p.motionTracking != 0);
+    const float searchThresh = loY + 0.75f * (hiY - loY);
+    const int   zap = (reach >= 1) && (p.fireflyRemoval != 0) &&
+                      (p.master > 0.0f) && (tL > 0.0f || tC > 0.0f);
+    const float zapY = 6.0f * sig.z;
+    const float zapC = 6.0f * sig.w;
 
     float3 c9[9];
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx, ++i)
             c9[i] = sampleYCC(f2, W, H, x + dx, y + dy);
+
+    // v3 firefly zapper — see nr_core.h for the three-test rationale
+    if (zap) {
+        const float3 pv = sampleYCC(f1, W, H, x, y);
+        const float3 nv = sampleYCC(f3, W, H, x, y);
+        float lum9[9];
+        for (int j = 0; j < 9; ++j) lum9[j] = c9[j].x;
+        if (fabs(pv.x - nv.x) < 0.5f * zapY &&
+            0.5f * (fabs(pv.y - nv.y) + fabs(pv.z - nv.z)) < 0.5f * zapC &&
+            fabs(c9[4].x - med9(lum9)) > 0.5f * zapY) {
+            const float mY  = med3(pv.x, c9[4].x, nv.x);
+            const float mCb = med3(pv.y, c9[4].y, nv.y);
+            const float mCr = med3(pv.z, c9[4].z, nv.z);
+            if (fabs(c9[4].x - mY) > zapY ||
+                0.5f * (fabs(c9[4].y - mCb) + fabs(c9[4].z - mCr)) > zapC) {
+                c9[4] = (float3)(mY, mCb, mCr);
+            }
+        }
+    }
 
     float accY = c9[4].x, accCb = c9[4].y, accCr = c9[4].z;
     float sumWY = 1.0f, sumWY2 = 1.0f, sumWC = 1.0f;
@@ -379,22 +503,27 @@ __kernel void TemporalKernel(NRParams p, int W, int H,
             continue;
         __global const float4* f = (k == 0) ? f0 : ((k == 1) ? f1 : ((k == 3) ? f3 : f4));
 
-        float dY = 0.0f, dC = 0.0f;
-        float3 fc = (float3)(0.0f);
-        i = 0;
-        for (int dy = -1; dy <= 1; ++dy) {
-            for (int dx = -1; dx <= 1; ++dx, ++i) {
-                const float3 v = sampleYCC(f, W, H, x + dx, y + dy);
-                if (i == 4) fc = v;
-                dY += fabs(v.x - c9[i].x);
-                dC += 0.5f * (fabs(v.y - c9[i].y) + fabs(v.z - c9[i].z));
+        float dY, dC;
+        float3 fc;
+        patchDiff(f, W, H, x, y, 0, 0, c9, &dY, &dC, &fc);
+
+        // v3 shift search — see nr_core.h for the acceptance margin and the
+        // tightened roll-off for shifted winners
+        float shiftTight = 1.0f;
+        if (track && dY > searchThresh) {
+            for (int c = 1; c < 9; ++c) {
+                float dY2, dC2;
+                float3 fc2;
+                patchDiff(f, W, H, x, y, kOffX[c], kOffY[c], c9, &dY2, &dC2, &fc2);
+                if (dY2 < dY * 0.99f) {
+                    dY = dY2; dC = dC2; fc = fc2;
+                    shiftTight = 1.0f / 0.6f;
+                }
             }
         }
-        dY *= (1.0f / 9.0f);
-        dC *= (1.0f / 9.0f);
 
-        const float gY = 1.0f - smooth01f((dY - loY) * invSpanY);
-        const float gC = 1.0f - smooth01f((dC - loC) * invSpanC);
+        const float gY = 1.0f - smooth01f((dY - loY) * invSpanY * shiftTight);
+        const float gC = 1.0f - smooth01f((dC - loC) * invSpanC * shiftTight);
         const float wY = tL * gY;
         const float wC = tC * gC * gY;
 
@@ -465,14 +594,14 @@ __kernel void FinalizeResidualKernel(NRParams p, __global uint* stats)
     stats[S_ENMED] = as_uint(enmed);
 }
 
-// glyph order: 0-9 . % A C E F I L M O P R S T U Y B D G N + space
-__constant ulong kFont[32] = {
+// glyph order: 0-9 . % A C E F I L M O P R S T U Y B D G N + space K
+__constant ulong kFont[33] = {
     0x3a33ae62eUL, 0x11842108eUL, 0x3a213221fUL, 0x3a213062eUL, 0x08ca97c42UL, 0x7e1e0862eUL,
     0x3a10f462eUL, 0x7c2222108UL, 0x3a317462eUL, 0x3a317842eUL, 0x00000018cUL, 0x632222263UL,
     0x3a31fc631UL, 0x3a308422eUL, 0x7e10f421fUL, 0x7e10f4210UL, 0x38842108eUL, 0x42108421fUL,
     0x4775ac631UL, 0x3a318c62eUL, 0x7a31f4210UL, 0x7a31f5251UL, 0x3e107043eUL, 0x7c8421084UL,
     0x46318c62eUL, 0x462a21084UL, 0x7a31f463eUL, 0x7a318c63eUL, 0x3a30bc62fUL, 0x47359c631UL,
-    0x0084f9080UL, 0x000000000UL,
+    0x0084f9080UL, 0x000000000UL, 0x4654c5251UL,
 };
 #define G_DOT 10
 #define G_PCT 11
@@ -496,6 +625,7 @@ __constant ulong kFont[32] = {
 #define G_N 29
 #define G_PLUS 30
 #define G_SP 31
+#define G_K 32
 
 __constant int kLabIY[4]  = { G_I, G_N, G_SP, G_Y };
 __constant int kLabIC[4]  = { G_I, G_N, G_SP, G_C };
@@ -505,12 +635,13 @@ __constant int kLabOFF[3] = { G_O, G_F, G_F };
 __constant int kLabEFFN[5] = { G_E, G_F, G_F, G_SP, G_N };
 __constant int kLabGAIN[4] = { G_G, G_A, G_I, G_N };
 __constant int kLabDB[2]   = { G_D, G_B };
+__constant int kLabLOCKED[6] = { G_L, G_O, G_C, G_K, G_E, G_D };
 __constant float kDirX[8] = { 1, 0, -1, 0, 0.7071f, -0.7071f, -0.7071f, 0.7071f };
 __constant float kDirY[8] = { 0, 1, 0, -1, 0.7071f, 0.7071f, -0.7071f, -0.7071f };
 
 inline bool glyphPixel(int glyph, int gx, int gy)
 {
-    if (glyph < 0 || glyph > 31 || gx < 0 || gx >= 5 || gy < 0 || gy >= 7)
+    if (glyph < 0 || glyph > 32 || gx < 0 || gx >= 5 || gy < 0 || gy >= 7)
         return false;
     return (kFont[glyph] >> (34 - (gy * 5 + gx))) & 1UL;
 }
@@ -554,7 +685,7 @@ inline void dec1Glyphs(float v, int* outg)
 inline bool hudPixel(int x, int y, int W, int H,
                      float sy, float sc, float ry, float rc, float enmed,
                      uint medBin, uint hmax, __global const uint* stats,
-                     int enableTemporal, float3* rgb)
+                     int enableTemporal, int locked, float3* rgb)
 {
     const int yd = H - 1 - y;   // OFX buffers are bottom-up; panel anchors top-left on screen
     const int s = max(1, H / 540);
@@ -619,6 +750,7 @@ inline bool hudPixel(int x, int y, int W, int H,
         }
         if (lit) { *rgb = (float3)(1.0f); return true; }
         if (enableTemporal == 0 && textPixelC(kLabOFF, 3, 220, ty0, lx, ly)) { *rgb = (float3)(0.7f); return true; }
+        if (locked && textPixelC(kLabLOCKED, 6, 246, ty0, lx, ly)) { *rgb = (float3)(0.95f, 0.65f, 0.20f); return true; }
     }
 
     if (lx >= 8 && lx < 264 && ly >= 108 && ly < 148) {
@@ -655,9 +787,11 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
     if (x >= W || y >= H)
         return;
 
-    const int manual = (p.profileSource == 2);
+    const int manual = (p.profileSource == 2) && (p.profileLocked == 0);
     const float sy = manual ? clamp(p.sigmaY, kSigmaMin, kSigmaMax) : as_float(stats[S_SY]);
     const float sc = manual ? clamp(p.sigmaC, kSigmaMin, kSigmaMax) : as_float(stats[S_SC]);
+    const float tyG = manual ? sy : as_float(stats[S_TY]);
+    const float tcG = manual ? sc : as_float(stats[S_TC]);
     const float ryG = manual ? sy : as_float(stats[S_RY]);
     const float rcG = manual ? sc : as_float(stats[S_RC]);
     const float enmed = manual ? 1.0f : as_float(stats[S_ENMED]);
@@ -668,8 +802,10 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
 
     const float sL = clamp(p.spatialLuma, 0.0f, 1.0f);
     const float sC = clamp(p.spatialChroma, 0.0f, 1.0f);
-    const float aY = (p.enableSpatial == 0) ? 0.0f : clamp(sL * mLow, 0.0f, 1.0f);
-    const float aC = (p.enableSpatial == 0) ? 0.0f : clamp(sC * mLow, 0.0f, 1.0f);
+    // v3 Noise EQ: the fine slider scales the NLM band's blend (1 = v2.1)
+    const float eqF = clamp(p.eqFine, 0.0f, 2.0f);
+    const float aY = (p.enableSpatial == 0) ? 0.0f : clamp(sL * mLow * eqF, 0.0f, 1.0f);
+    const float aC = (p.enableSpatial == 0) ? 0.0f : clamp(sC * mLow * eqF, 0.0f, 1.0f);
     const float hMulY = (0.6f + 1.4f * pow(sL, 1.5f)) * hBoost;
     const float hMulC = (0.6f + 1.4f * pow(sC, 1.5f)) * hBoost;
     const float pd = clamp(p.preserveDetail, 0.0f, 1.0f);
@@ -680,12 +816,24 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
     const float invSpatial2 = 1.0f / (2.0f * spatialSigma * spatialSigma);
 
     const float blotch = (p.enableSpatial != 0) ? clamp(p.chromaBlotch, 0.0f, 1.0f) * mLow : 0.0f;
-    const int   Rb = 2 + (int)(14.0f * clamp(p.chromaBlotch, 0.0f, 1.0f));
+    // v3 Noise EQ: medium band amount and coarse-band luma amount
+    const float eqMed  = (p.enableSpatial != 0) ? clamp(p.eqMedium, 0.0f, 1.0f) * mLow : 0.0f;
+    const float coarseL = (p.enableSpatial != 0) ? clamp(p.eqCoarse, 0.0f, 1.0f) * mLow : 0.0f;
+    const int   Rb = 2 + (int)(14.0f * fmax(clamp(p.chromaBlotch, 0.0f, 1.0f),
+                                            clamp(p.eqCoarse, 0.0f, 1.0f)));
+    const int   Rm = 3 + (int)(5.0f * clamp(p.eqMedium, 0.0f, 1.0f));
+    // Band tolerance: see nr_core.h
+    const float bandRatioY = clamp(tyG / fmax(sy, 1e-6f), 1.0f, 3.0f);
+    const float bandRatioC = clamp(tcG / fmax(sc, 1e-6f), 1.0f, 3.0f);
 
     const int refine = (p.enableRefine != 0) && (p.master > 0.0f);
     const float desat = refine ? clamp(p.shadowDesat, 0.0f, 1.0f) : 0.0f;
     const float desatRange = fmax(0.02f, p.desatRange);
     const float tex = refine ? clamp(p.lumaTexture, 0.0f, 1.0f) * mLow : 0.0f;
+    // v3 deband thresholds — see nr_core.h
+    const float debandAmt = refine ? clamp(p.deband, 0.0f, 1.0f) * mLow : 0.0f;
+    const float dbThrY = fmax(0.010f, 1.5f * ryG);
+    const float dbThrC = fmax(0.010f, 1.5f * rcG);
     const float grainAmt = refine ? clamp(p.grainAmount, 0.0f, 1.0f) * 0.06f : 0.0f;
     const float grainSize = clamp(p.grainSize, 0.5f, 6.0f);
     const float grainCh = clamp(p.grainChroma, 0.0f, 1.0f);
@@ -783,26 +931,80 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
         Cro = tc.z + aC * (Crf - tc.z);
     }
 
-    if (blotch > 0.0f) {
+    // v3 medium band — see nr_core.h for the block-mean-domain rationale
+    if (eqMed > 0.0f) {
+        const float mScale = 2.6f * sigY * bandRatioY * hBoost;
+        const float myDen = 1.0f / fmax(mScale, 1e-6f);
+        const float mcDen = 1.0f / fmax(3.0f * sigC * bandRatioC * hBoost, 1e-6f);
+        const float3 b0 = blockMeanTmp(tmp, W, H, x, y);
+        float accMY = b0.x, accMB = b0.y, accMR = b0.z, sumWm = 1.0f;
+        for (int d = 0; d < 8; ++d) {
+            for (int ri = 1; ri <= 2; ++ri) {
+                const float rr = Rm * ((float)ri / 2.0f);
+                const float3 bm = blockMeanTmp(tmp, W, H,
+                                               x + (int)(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
+                                               y + (int)(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f)));
+                const float eY = (bm.x - b0.x) * myDen;
+                const float eC = (0.5f * (fabs(bm.y - b0.y) + fabs(bm.z - b0.z))) * mcDen;
+                const float w = exp(-(eY * eY + eC * eC));
+                accMY += w * bm.x;
+                accMB += w * bm.y;
+                accMR += w * bm.z;
+                sumWm += w;
+            }
+        }
+        const float lim = 2.5f * mScale;
+        Yo  += eqMed * clamp(accMY / sumWm - b0.x, -lim, lim);
+        Cbo += eqMed * (accMB / sumWm - b0.y);
+        Cro += eqMed * (accMR / sumWm - b0.z);
+    }
+
+    // coarse band — chroma path is the v2.1 blotch pass unchanged; the v3
+    // luma component works on 4x4 block means (see nr_core.h)
+    if (blotch > 0.0f || coarseL > 0.0f) {
         const float gyDen = 1.0f / fmax(2.0f * sigY * hBoost, 1e-6f);
         const float gcDen = 1.0f / fmax(3.0f * sigC * hBoost, 1e-6f);
+        const float cScale = 2.2f * sigY * bandRatioY * hBoost;
+        const float glDen = 1.0f / fmax(cScale, 1e-6f);
+        const int RbL = 2 + (int)(30.0f * clamp(p.eqCoarse, 0.0f, 1.0f));
+        float3 c0 = (float3)(0.0f);
+        if (coarseL > 0.0f)
+            c0 = blockMean4Tmp(tmp, W, H, x, y);
         float accB = tc.y, accR = tc.z, sumW = 1.0f;
+        float accL = c0.x, sumWL = 1.0f;
         for (int d = 0; d < 8; ++d) {
             for (int ri = 1; ri <= 3; ++ri) {
                 const float rr = Rb * ((float)ri / 3.0f);
-                const float3 ts = sampleTmp(tmp, W, H,
-                                            x + (int)(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
-                                            y + (int)(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f))).xyz;
+                const int sx = x + (int)(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f));
+                const int sy2 = y + (int)(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f));
+                const float3 ts = sampleTmp(tmp, W, H, sx, sy2).xyz;
                 const float eY = (ts.x - tc.x) * gyDen;
                 const float eC = (0.5f * (fabs(ts.y - tc.y) + fabs(ts.z - tc.z))) * gcDen;
                 const float w = exp(-(eY * eY + eC * eC));
                 accB += w * ts.y;
                 accR += w * ts.z;
                 sumW += w;
+                if (coarseL > 0.0f) {
+                    const float rrL = RbL * ((float)ri / 3.0f);
+                    const int lx2 = x + (int)(kDirX[d] * rrL + (kDirX[d] > 0 ? 0.5f : -0.5f));
+                    const int ly2 = y + (int)(kDirY[d] * rrL + (kDirY[d] > 0 ? 0.5f : -0.5f));
+                    const float3 b4 = blockMean4Tmp(tmp, W, H, lx2, ly2);
+                    const float eL = (b4.x - c0.x) * glDen;
+                    const float eLC = (0.5f * (fabs(b4.y - c0.y) + fabs(b4.z - c0.z))) * gcDen;
+                    const float wL = exp(-(eL * eL + eLC * eLC));
+                    accL += wL * b4.x;
+                    sumWL += wL;
+                }
             }
         }
-        Cbo += blotch * (accB / sumW - Cbo);
-        Cro += blotch * (accR / sumW - Cro);
+        if (blotch > 0.0f) {
+            Cbo += blotch * (accB / sumW - Cbo);
+            Cro += blotch * (accR / sumW - Cro);
+        }
+        if (coarseL > 0.0f) {
+            const float lim = 2.5f * cScale;
+            Yo += coarseL * clamp(accL / sumWL - c0.x, -lim, lim);
+        }
     }
 
     const float4 c = curr[y * W + x];
@@ -814,6 +1016,36 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
         Cbr *= sat;
         Crr *= sat;
         Yr += tex * (cin.x - Yr);
+        // v3 deband — see nr_core.h for the agreement-confidence rationale
+        if (debandAmt > 0.0f) {
+            const float dyDen = 1.0f / dbThrY;
+            const float dcDen = 1.0f / dbThrC;
+            const float3 b0 = blockMeanTmp(tmp, W, H, x, y);
+            float accDY = b0.x, accDB = b0.y, accDR = b0.z, sumWd = 1.0f;
+            for (int d = 0; d < 8; ++d) {
+                for (int ri = 1; ri <= 3; ++ri) {
+                    const float rr = 16.0f * ((float)ri / 3.0f);
+                    const float3 bm = blockMeanTmp(tmp, W, H,
+                                                   x + (int)(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
+                                                   y + (int)(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f)));
+                    const float eY = (bm.x - b0.x) * dyDen;
+                    const float eC = (0.5f * (fabs(bm.y - b0.y) + fabs(bm.z - b0.z))) * dcDen;
+                    const float w = exp(-(eY * eY + eC * eC));
+                    accDY += w * bm.x;
+                    accDB += w * bm.y;
+                    accDR += w * bm.z;
+                    sumWd += w;
+                }
+            }
+            const float agree = (sumWd - 1.0f) * (1.0f / 24.0f);
+            const float conf = agree * agree;
+            Yr  += debandAmt * conf * clamp(accDY / sumWd - Yr,  -dbThrY, dbThrY);
+            Cbr += debandAmt * conf * clamp(accDB / sumWd - Cbr, -dbThrC, dbThrC);
+            Crr += debandAmt * conf * clamp(accDR / sumWd - Crr, -dbThrC, dbThrC);
+            const float dith = 0.7f * debandAmt / 255.0f;
+            Yr += dith * 0.5f * (hashNoise((uint)x, (uint)y, frame, 3u) +
+                                 hashNoise((uint)x, (uint)y, frame + 977u, 3u));
+        }
         if (grainAmt > 0.0f) {
             const float yc = clamp(Yr, 0.0f, 1.0f);
             const float resp = 0.25f + 0.75f * (4.0f * yc * (1.0f - yc));
@@ -842,7 +1074,8 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
     } else if (p.viewMode == 5) {
         float3 hud = rgb;
         if (!hudPixel(x, y, W, H, sy, sc, ryG, rcG, enmed,
-                      stats[S_MED], stats[S_HMAX], stats, p.enableTemporal, &hud)) {
+                      stats[S_MED], stats[S_HMAX], stats, p.enableTemporal,
+                      p.profileLocked, &hud)) {
             if (p.profileSource == 1) {
                 const float rHalf = 0.5f * p.regionSize * (float)min(W, H);
                 const float cx = p.regionCX * W, cyy = p.regionCY * H;
@@ -886,6 +1119,21 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
                             0.15f + (0.20f - 0.15f) * u);
         }
         o.xyz = cin.x * 0.35f + heat * 0.65f;
+    } else if (p.viewMode == 8) {
+        // noise matte: normalized noise dominance in RGB+alpha
+        float mean = 0.0f, m2 = 0.0f;
+        for (int dy = -2; dy <= 2; ++dy)
+            for (int dx = -2; dx <= 2; ++dx) {
+                const float v = sampleTmp(tmp, W, H, x + dx, y + dy).x;
+                mean += v; m2 += v * v;
+            }
+        mean *= (1.0f / 25.0f);
+        const float var = fmax(0.0f, m2 * (1.0f / 25.0f) - mean * mean);
+        const float sigNoise = fmax(sy * gainYv, 1e-5f);
+        const float sigSignal = sqrt(fmax(var - sigNoise * sigNoise, 0.0f));
+        const float snrDb = 20.0f * log10(fmax(sigSignal, 1e-6f) / sigNoise);
+        const float m = 1.0f - clamp((snrDb + 6.0f) / 36.0f, 0.0f, 1.0f);
+        o = (float4)(m, m, m, m);
     }
 
     dst[y * W + x] = o;
@@ -1008,7 +1256,9 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
     params.hasTemporalDiff = (partner != p_Srcs[2]) ? 1 : 0;
 
     int W = p_Width, H = p_Height;
-    const bool autoProfile = (params.profileSource != 2);
+    // a locked profile still runs estimation (live HUD) — FinalizeStats
+    // overrides the sigma/gain slots with the locked values
+    const bool autoProfile = (params.profileSource != 2) || (params.profileLocked != 0);
     size_t global[2]  = { static_cast<size_t>(W), static_cast<size_t>(H) };
     size_t globalH[2] = { static_cast<size_t>((W + 1) / 2), static_cast<size_t>((H + 1) / 2) };
     size_t one[2] = { 1, 1 };

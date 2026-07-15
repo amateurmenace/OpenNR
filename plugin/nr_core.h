@@ -1,5 +1,5 @@
 // OpenNR — free spatio-temporal noise reduction for DaVinci Resolve (OpenFX)
-// nr_core.h — reference CPU implementation of the full algorithm (v2).
+// nr_core.h — reference CPU implementation of the full algorithm (v3).
 //
 // This header is the single source of truth for the math. The Metal / CUDA /
 // OpenCL kernels are line-by-line ports of these functions; the test harness
@@ -13,19 +13,31 @@
 //      highlights; each bin gets its own gain on the base sigma).
 //   2. temporalMerge()   — motion-adaptive averaging, hard-knee gate (weight
 //      is exactly zero past the motion threshold; no ghosting by design).
+//      v3: a firefly zapper clips single-frame impulses to the 3-frame
+//      temporal median first, and shift-search matching ("Motion Tracking")
+//      re-aims each neighbour patch at the best of 9 candidate offsets before
+//      gating, so slow pans keep their temporal averaging.
 //   3. estimateResidual()— the noise that is ACTUALLY left after temporal
 //      merging is measured again from the merged image. The spatial stage
 //      filters against this measured residual, not a theoretical prediction —
 //      compression correlates noise across frames, so temporal averaging
 //      removes less than sqrt(N) and predictions undershoot.
-//   4. spatialNLM()      — sigma-adaptive NLM/bilateral + a sparse LARGE
-//      radius luma-guided chroma pass ("blotch") that reaches the big soft
-//      chroma stains 4:2:0 subsampling produces.
+//   4. spatialNLM()      — the v3 Noise EQ: a fine band (sigma-adaptive
+//      NLM/bilateral), a medium band (sparse ring average of 2x2 block means,
+//      2-6 px reach), and a coarse band — the blotch pass, which keeps its
+//      v2.1 luma-guided chroma path exactly and gains an optional luma
+//      component with band-scaled tolerance.
 //   5. refine()          — finishing: shadow desaturation (sat-vs-lum curve),
-//      luma texture re-injection, and synthesized film grain (soft value
-//      noise, brightness-response weighted, animated per frame).
+//      luma texture re-injection, gradient-aware debanding (threshold-gated
+//      ring smoothing + triangular micro-dither), and synthesized film grain.
 //   6. Output assembly   — result / split / input / after-temporal / noise
-//      removed / analysis HUD / temporal activity / SNR heat map.
+//      removed / analysis HUD / temporal activity / SNR heat map / noise
+//      matte (noise-dominance map in RGB and alpha, for keying downstream).
+//
+// v3 also adds profile locking: a snapshot of the measured input profile
+// (both sigma pairs + 32 brightness gains) can be passed back in through the
+// lock* params; estimation still runs (the HUD stays live) but the locked
+// values are what the filters use.
 //
 // Strength (master) semantics: below 1 it scales the blend amounts; above 1
 // the blends stay at their slider values and the filter strengths and the
@@ -83,6 +95,23 @@ struct Params {
 
     float master         = 1.0f;   // 0..2
     int   viewMode       = 0;      // see view list above
+
+    // ---- v3 ----
+    int   motionTracking = 1;      // temporal shift-search matching
+    int   fireflyRemoval = 1;      // 3-frame temporal median impulse clip
+    float eqFine         = 1.0f;   // Noise EQ: fine band gain 0..2 (1 = v2.1)
+    float eqMedium       = 0.0f;   // Noise EQ: medium band amount 0..1
+    float eqCoarse       = 0.0f;   // Noise EQ: coarse band LUMA amount 0..1
+    float deband         = 0.0f;   // gradient-aware debanding 0..1
+    int   profileLocked  = 0;      // 1 = use lock* values instead of measuring
+    float lockSY         = 0.02f;  // locked input profile (spatial pair)
+    float lockSC         = 0.02f;
+    float lockTY         = 0.02f;  // locked temporal pair
+    float lockTC         = 0.02f;
+    float lockGainY[16]  = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                             1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
+    float lockGainC[16]  = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
+                             1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f };
 };
 
 // Sigmas and everything the analysis HUD displays.
@@ -97,6 +126,12 @@ struct Stats {
     uint32_t medBinY = 0;
     uint32_t histMax = 1;
     int hadTemporal = 0;
+    // v3: raw estimator components for the clip analyzer (CPU-side only —
+    // no GPU consumer, so these have no kernel mirror).
+    float fineY = 0.02f, fineC = 0.02f;      // fine |Laplacian| estimates
+    float coarseY = 0.02f, coarseC = 0.02f;  // coarse (2x2 block) estimates
+    float motionRatio = 1.0f;                // calibrated tdiff median/Q20
+                                             // ratio: ~1 static, >1 motion
     Stats() { for (int i = 0; i < 16; ++i) { gainY[i] = 1.0f; gainC[i] = 1.0f; } }
 };
 
@@ -172,6 +207,95 @@ static inline const float* tmpAt(const float* tmp, int W, int H, int x, int y)
     return tmp + (static_cast<size_t>(y) * W + x) * 4;
 }
 
+static inline float med3(float a, float b, float c)
+{
+    return std::max(std::min(a, b), std::min(std::max(a, b), c));
+}
+
+static inline void sort2(float& a, float& b)
+{
+    const float t = std::min(a, b);
+    b = std::max(a, b);
+    a = t;
+}
+
+// median of 9 via the standard 19-exchange network (Smith 1996)
+static inline float med9(const float* v)
+{
+    float p0 = v[0], p1 = v[1], p2 = v[2], p3 = v[3], p4 = v[4],
+          p5 = v[5], p6 = v[6], p7 = v[7], p8 = v[8];
+    sort2(p1, p2); sort2(p4, p5); sort2(p7, p8);
+    sort2(p0, p1); sort2(p3, p4); sort2(p6, p7);
+    sort2(p1, p2); sort2(p4, p5); sort2(p7, p8);
+    sort2(p0, p3); sort2(p5, p8); sort2(p4, p7);
+    sort2(p3, p6); sort2(p1, p4); sort2(p2, p5);
+    sort2(p4, p7); sort2(p4, p2); sort2(p6, p4);
+    sort2(p4, p2);
+    return p4;
+}
+
+// 2x2 block mean of the tmp buffer (already YCC) — the sampling primitive of
+// the medium band and the debander; block means suppress the fine band so
+// similarity tests respond to structure at the band's own scale.
+static inline void blockMeanTmp(const float* tmp, int W, int H, int x, int y,
+                                float& Y, float& Cb, float& Cr)
+{
+    Y = Cb = Cr = 0.0f;
+    for (int dy = 0; dy < 2; ++dy)
+        for (int dx = 0; dx < 2; ++dx) {
+            const float* t = tmpAt(tmp, W, H, x + dx, y + dy);
+            Y += t[0]; Cb += t[1]; Cr += t[2];
+        }
+    Y *= 0.25f; Cb *= 0.25f; Cr *= 0.25f;
+}
+
+// 4x4 block mean of tmp, centred-ish on (x,y) — the coarse band's domain.
+static inline void blockMean4Tmp(const float* tmp, int W, int H, int x, int y,
+                                 float& Y, float& Cb, float& Cr)
+{
+    Y = Cb = Cr = 0.0f;
+    for (int dy = -1; dy < 3; ++dy)
+        for (int dx = -1; dx < 3; ++dx) {
+            const float* t = tmpAt(tmp, W, H, x + dx, y + dy);
+            Y += t[0]; Cb += t[1]; Cr += t[2];
+        }
+    Y *= 0.0625f; Cb *= 0.0625f; Cr *= 0.0625f;
+}
+
+// Sparse ring directions shared by the medium band, the coarse (blotch) band
+// and the debander.
+static const float kDirX[8] = { 1, 0, -1, 0, 0.7071f, -0.7071f, -0.7071f, 0.7071f };
+static const float kDirY[8] = { 0, 1, 0, -1, 0.7071f, 0.7071f, -0.7071f, -0.7071f };
+
+// v3 shift-search candidate offsets: centre first, then +/-1 and +/-2 on each
+// axis. Centre-first order + the 1% acceptance margin in temporalMerge keep
+// the selection stable (a shift must be clearly better to win).
+static const int kOffX[9] = { 0, 1, -1, 0, 0, 2, -2, 0, 0 };
+static const int kOffY[9] = { 0, 0, 0, 1, -1, 0, 0, 2, -2 };
+
+// Mean |3x3 patch difference| of neighbour frame f shifted by (ox,oy) against
+// the current frame's patch (cy9/ccb9/ccr9); also returns the shifted centre
+// sample for blending. At (0,0) this is exactly the v2.1 matching term.
+static inline void patchDiff(const float* f, int W, int H, int x, int y,
+                             int ox, int oy,
+                             const float* cy9, const float* ccb9, const float* ccr9,
+                             float& dY, float& dC, float& fy, float& fcb, float& fcr)
+{
+    dY = 0.0f; dC = 0.0f; fy = 0.0f; fcb = 0.0f; fcr = 0.0f;
+    int i = 0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx, ++i) {
+            float vy, vcb, vcr;
+            sampleYCC(f, W, H, x + ox + dx, y + oy + dy, vy, vcb, vcr);
+            if (i == 4) { fy = vy; fcb = vcb; fcr = vcr; }
+            dY += std::fabs(vy - cy9[i]);
+            dC += 0.5f * (std::fabs(vcb - ccb9[i]) + std::fabs(vcr - ccr9[i]));
+        }
+    }
+    dY *= (1.0f / 9.0f);
+    dC *= (1.0f / 9.0f);
+}
+
 // Integer hash noise (identical across CPU/Metal/CUDA/OpenCL: pure uint32 math)
 static inline float hashNoise(uint32_t ix, uint32_t iy, uint32_t f, uint32_t ch)
 {
@@ -199,13 +323,30 @@ static inline float valueNoise(float x, float y, float size, uint32_t f, uint32_
 // ---------------------------------------------------------------------------
 // Stage 1 — input noise profiling
 // ---------------------------------------------------------------------------
+// v3: a locked profile overrides the measured sigmas and gains, but the
+// measurement still runs so the HUD histogram stays live.
+static inline void applyLockedProfile(const Params& p, Stats& out)
+{
+    if (p.profileLocked == 0)
+        return;
+    out.sy = clampf(p.lockSY, kSigmaMin, kSigmaMax);
+    out.sc = clampf(p.lockSC, kSigmaMin, kSigmaMax);
+    out.ty = clampf(p.lockTY, kSigmaMin, kSigmaMax);
+    out.tc = clampf(p.lockTC, kSigmaMin, kSigmaMax);
+    for (int b = 0; b < kLumaBins; ++b) {
+        out.gainY[b] = clampf(p.lockGainY[b], 0.6f, 2.2f);
+        out.gainC[b] = clampf(p.lockGainC[b], 0.6f, 2.2f);
+    }
+}
+
 inline void estimateInput(const float* rgba, const float* diffPartner,
                           int W, int H, const Params& p, Stats& out)
 {
     out.sy = out.ty = out.ry = clampf(p.sigmaY, kSigmaMin, kSigmaMax);
     out.sc = out.tc = out.rc = clampf(p.sigmaC, kSigmaMin, kSigmaMax);
-    if (p.profileSource == 2)   // manual: sigmas literal, gains flat
+    if (p.profileSource == 2 && p.profileLocked == 0) {  // manual: sigmas literal, gains flat
         return;
+    }
 
     std::vector<uint32_t> hYf(kHistBins, 0), hCf(kHistBins, 0);
     std::vector<uint32_t> hY2(kHistBins, 0), hC2(kHistBins, 0);
@@ -274,8 +415,10 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
         }
     }
 
-    if (totalF < 64)
+    if (totalF < 64) {
+        applyLockedProfile(p, out);
         return;
+    }
 
     struct QR { float value; uint32_t bin; };
     auto histQuantile = [](const uint32_t* h, int n, uint64_t total, float scale,
@@ -299,6 +442,10 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
     const float lapSY = std::max(syFine, 0.9f * syCoarse);
     const float lapSC = std::max(scFine, 0.9f * scCoarse);
 
+    // v3: raw components for the clip analyzer
+    out.fineY = syFine;   out.fineC = scFine;
+    out.coarseY = syCoarse; out.coarseC = scCoarse;
+
     float ty = lapSY, tc = lapSC;
     if (diffPartner && totalT >= 64) {
         const float medTY = histQuantile(hYt.data(), kHistBins, totalT, kHistScaleY, 1, 2).value * kMedianCalT;
@@ -310,6 +457,10 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
         if (candY > 0.0015f && candY <= 3.5f * lapSY) ty = candY;
         if (candC > 0.0015f && candC <= 3.5f * lapSC) tc = candC;
         out.hadTemporal = 1;
+        // v3: both are calibrated sigma estimates, so the ratio is ~1 on
+        // static noise and rises with motion (motion inflates the median
+        // faster than the 20th percentile).
+        out.motionRatio = medTY / std::max(q20TY, 1e-6f);
     }
 
     const float adj = clampf(p.profileAdjust, 0.25f, 4.0f);
@@ -355,6 +506,8 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
         out.histMax = std::max(out.histMax, hYf[b]);
     }
     out.medBinY = mYf.bin;
+
+    applyLockedProfile(p, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -375,6 +528,19 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
     const float loC = kAbsDiffBias * s.tc, hiC = loC + thrMul * s.tc;
     const float invSpanY = 1.0f / (hiY - loY);
     const float invSpanC = 1.0f / (hiC - loC);
+    // v3 shift search engages only once the unshifted match is well into the
+    // gate. Below this the gate keeps most of its weight anyway, and pure
+    // noise reaches here so rarely that the selection bias of picking the
+    // minimum of nine noisy scores (which correlates the chosen sample with
+    // the centre and inflates its gate) stays negligible on static footage.
+    const bool  track = (p.motionTracking != 0);
+    const float searchThresh = loY + 0.75f * (hiY - loY);
+    // v3 firefly zapper: active only when the temporal stage itself is
+    // (identity when master is 0 or the stage contributes nothing).
+    const bool  zap = (reach >= 1) && (p.fireflyRemoval != 0) &&
+                      (p.master > 0.0f) && (tL > 0.0f || tC > 0.0f);
+    const float zapY = 6.0f * s.ty;
+    const float zapC = 6.0f * s.tc;
 
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
@@ -384,6 +550,32 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
                 for (int dx = -1; dx <= 1; ++dx, ++i)
                     sampleYCC(frames[2], W, H, x + dx, y + dy, cy9[i], ccb9[i], ccr9[i]);
 
+            // Firefly zapper: a centre pixel is clipped to the 3-frame
+            // temporal median only when three tests all agree it is a
+            // single-frame impulse (hot pixel / sensor firefly):
+            //   1. it deviates from the temporal median by >6 sigma_T;
+            //   2. the two neighbour frames agree with each other
+            //      (<=3 sigma_T apart) — under motion they disagree too;
+            //   3. it is a spatial outlier within its own 3x3 patch — a
+            //      fast-moving thin structure is temporally impulsive at a
+            //      pixel, but spatially coherent, and must not be erased.
+            if (zap) {
+                float pY, pCb, pCr, nY, nCb, nCr;
+                sampleYCC(frames[1], W, H, x, y, pY, pCb, pCr);
+                sampleYCC(frames[3], W, H, x, y, nY, nCb, nCr);
+                if (std::fabs(pY - nY) < 0.5f * zapY &&
+                    0.5f * (std::fabs(pCb - nCb) + std::fabs(pCr - nCr)) < 0.5f * zapC &&
+                    std::fabs(cy9[4] - med9(cy9)) > 0.5f * zapY) {
+                    const float mY  = med3(pY, cy9[4], nY);
+                    const float mCb = med3(pCb, ccb9[4], nCb);
+                    const float mCr = med3(pCr, ccr9[4], nCr);
+                    if (std::fabs(cy9[4] - mY) > zapY ||
+                        0.5f * (std::fabs(ccb9[4] - mCb) + std::fabs(ccr9[4] - mCr)) > zapC) {
+                        cy9[4] = mY; ccb9[4] = mCb; ccr9[4] = mCr;
+                    }
+                }
+            }
+
             float accY = cy9[4], accCb = ccb9[4], accCr = ccr9[4];
             float sumWY = 1.0f, sumWY2 = 1.0f, sumWC = 1.0f;
 
@@ -392,23 +584,35 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
                     continue;
                 const float* f = frames[k];
 
-                float dY = 0.0f, dC = 0.0f;
-                float fy9c = 0.0f, fcb9c = 0.0f, fcr9c = 0.0f;
-                i = 0;
-                for (int dy = -1; dy <= 1; ++dy) {
-                    for (int dx = -1; dx <= 1; ++dx, ++i) {
-                        float fy, fcb, fcr;
-                        sampleYCC(f, W, H, x + dx, y + dy, fy, fcb, fcr);
-                        if (i == 4) { fy9c = fy; fcb9c = fcb; fcr9c = fcr; }
-                        dY += std::fabs(fy - cy9[i]);
-                        dC += 0.5f * (std::fabs(fcb - ccb9[i]) + std::fabs(fcr - ccr9[i]));
+                float dY, dC, fy9c, fcb9c, fcr9c;
+                patchDiff(f, W, H, x, y, 0, 0, cy9, ccb9, ccr9,
+                          dY, dC, fy9c, fcb9c, fcr9c);
+
+                // Shift search: try the 8 shifted candidates and keep the
+                // best luma match. A candidate must beat the running best by
+                // 1% so the unshifted patch wins ties and near-ties.
+                float shiftTight = 1.0f;
+                if (track && dY > searchThresh) {
+                    for (int c = 1; c < 9; ++c) {
+                        float dY2, dC2, fy2, fcb2, fcr2;
+                        patchDiff(f, W, H, x, y, kOffX[c], kOffY[c],
+                                  cy9, ccb9, ccr9, dY2, dC2, fy2, fcb2, fcr2);
+                        if (dY2 < dY * 0.99f) {
+                            dY = dY2; dC = dC2;
+                            fy9c = fy2; fcb9c = fcb2; fcr9c = fcr2;
+                            // a shifted patch must match like a static one to
+                            // be trusted: the knee START stays (true rematches
+                            // sit at pure-noise diff levels and keep weight 1)
+                            // but the roll-off is ~1.7x steeper, so partial
+                            // matches on periodic texture — motion beyond the
+                            // search reach — cannot blend misaligned detail.
+                            shiftTight = 1.0f / 0.6f;
+                        }
                     }
                 }
-                dY *= (1.0f / 9.0f);
-                dC *= (1.0f / 9.0f);
 
-                const float gY = 1.0f - smooth01((dY - loY) * invSpanY);
-                const float gC = 1.0f - smooth01((dC - loC) * invSpanC);
+                const float gY = 1.0f - smooth01((dY - loY) * invSpanY * shiftTight);
+                const float gC = 1.0f - smooth01((dC - loC) * invSpanC * shiftTight);
                 const float wY = tL * gY;
                 const float wC = tC * gC * gY;   // chroma slaved to the luma gate
 
@@ -434,7 +638,10 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
 // ---------------------------------------------------------------------------
 inline void estimateResidual(const float* tmp, int W, int H, const Params& p, Stats& s)
 {
-    if (p.profileSource == 2) {   // manual: residual = the entered sigmas
+    // manual: residual = the entered sigmas. A locked profile still measures
+    // the residual live — it depends on how much the temporal stage actually
+    // removed from THIS frame, which is not part of the locked snapshot.
+    if (p.profileSource == 2 && p.profileLocked == 0) {
         s.ry = clampf(p.sigmaY, kSigmaMin, kSigmaMax);
         s.rc = clampf(p.sigmaC, kSigmaMin, kSigmaMax);
         s.effNMed = 1.0f;
@@ -495,14 +702,14 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
 // ---------------------------------------------------------------------------
 // HUD v2 (Noise Analysis view)
 // ---------------------------------------------------------------------------
-// glyph order: 0-9 . % A C E F I L M O P R S T U Y B D G N + space
-static const uint64_t kFont[32] = {
+// glyph order: 0-9 . % A C E F I L M O P R S T U Y B D G N + space K
+static const uint64_t kFont[33] = {
     0x3a33ae62eULL, 0x11842108eULL, 0x3a213221fULL, 0x3a213062eULL, 0x08ca97c42ULL, 0x7e1e0862eULL,
     0x3a10f462eULL, 0x7c2222108ULL, 0x3a317462eULL, 0x3a317842eULL, 0x00000018cULL, 0x632222263ULL,
     0x3a31fc631ULL, 0x3a308422eULL, 0x7e10f421fULL, 0x7e10f4210ULL, 0x38842108eULL, 0x42108421fULL,
     0x4775ac631ULL, 0x3a318c62eULL, 0x7a31f4210ULL, 0x7a31f5251ULL, 0x3e107043eULL, 0x7c8421084ULL,
     0x46318c62eULL, 0x462a21084ULL, 0x7a31f463eULL, 0x7a318c63eULL, 0x3a30bc62fULL, 0x47359c631ULL,
-    0x0084f9080ULL, 0x000000000ULL,
+    0x0084f9080ULL, 0x000000000ULL, 0x4654c5251ULL,
 };
 #define NR_G_DOT 10
 #define NR_G_PCT 11
@@ -526,10 +733,11 @@ static const uint64_t kFont[32] = {
 #define NR_G_N 29
 #define NR_G_PLUS 30
 #define NR_G_SP 31
+#define NR_G_K 32
 
 static inline bool glyphPixel(int glyph, int gx, int gy)
 {
-    if (glyph < 0 || glyph > 31 || gx < 0 || gx >= 5 || gy < 0 || gy >= 7)
+    if (glyph < 0 || glyph > 32 || gx < 0 || gx >= 5 || gy < 0 || gy >= 7)
         return false;
     return (kFont[glyph] >> (34 - (gy * 5 + gx))) & 1ULL;
 }
@@ -565,7 +773,8 @@ static inline void dec1Glyphs(float v, int out[3])
 
 // Renders the analysis panel over (r,g,b) for absolute pixel (x,y).
 static inline bool hudPixel(int x, int y, int W, int H, const Stats& st,
-                            int enableTemporal, float& r, float& g, float& b)
+                            int enableTemporal, int locked,
+                            float& r, float& g, float& b)
 {
     // OFX buffers are bottom-up: anchor the panel in DISPLAY space (top-left)
     const int yd = H - 1 - y;
@@ -591,6 +800,7 @@ static inline bool hudPixel(int x, int y, int W, int H, const Stats& st,
     static const int kLabEFFN[5] = { NR_G_E, NR_G_F, NR_G_F, NR_G_SP, NR_G_N };
     static const int kLabGAIN[4] = { NR_G_G, NR_G_A, NR_G_I, NR_G_N };
     static const int kLabDB[2]   = { NR_G_D, NR_G_B };
+    static const int kLabLOCKED[6] = { NR_G_L, NR_G_O, NR_G_C, NR_G_K, NR_G_E, NR_G_D };
 
     const float sig[4] = { st.sy, st.sc, st.ry, st.rc };
     const int rowY[4] = { 6, 28, 50, 72 };
@@ -645,6 +855,7 @@ static inline bool hudPixel(int x, int y, int W, int H, const Stats& st,
         }
         if (lit) { r = g = b = 1.0f; return true; }
         if (enableTemporal == 0 && textPixel(kLabOFF, 3, 220, ty0, lx, ly)) { r = g = b = 0.7f; return true; }
+        if (locked && textPixel(kLabLOCKED, 6, 246, ty0, lx, ly)) { r = 0.95f; g = 0.65f; b = 0.20f; return true; }
     }
 
     // noise vs brightness curve: 16 bars, box x [8,264), y [108,148);
@@ -686,8 +897,10 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
 
     const float sL = clampf(p.spatialLuma, 0.0f, 1.0f);
     const float sC = clampf(p.spatialChroma, 0.0f, 1.0f);
-    const float aY = (p.enableSpatial == 0) ? 0.0f : clampf(sL * mLow, 0.0f, 1.0f);
-    const float aC = (p.enableSpatial == 0) ? 0.0f : clampf(sC * mLow, 0.0f, 1.0f);
+    // v3 Noise EQ: the fine slider scales the NLM band's blend (1 = v2.1)
+    const float eqF = clampf(p.eqFine, 0.0f, 2.0f);
+    const float aY = (p.enableSpatial == 0) ? 0.0f : clampf(sL * mLow * eqF, 0.0f, 1.0f);
+    const float aC = (p.enableSpatial == 0) ? 0.0f : clampf(sC * mLow * eqF, 0.0f, 1.0f);
     const float hMulY = (0.6f + 1.4f * std::pow(sL, 1.5f)) * hBoost;
     const float hMulC = (0.6f + 1.4f * std::pow(sC, 1.5f)) * hBoost;
     const float pd = clampf(p.preserveDetail, 0.0f, 1.0f);
@@ -698,12 +911,30 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
     const float invSpatial2 = 1.0f / (2.0f * spatialSigma * spatialSigma);
 
     const float blotch = (p.enableSpatial != 0) ? clampf(p.chromaBlotch, 0.0f, 1.0f) * mLow : 0.0f;
-    const int   Rb = 2 + static_cast<int>(14.0f * clampf(p.chromaBlotch, 0.0f, 1.0f));
+    // v3 Noise EQ: medium band amount and coarse-band luma amount; the coarse
+    // radius follows whichever of the two coarse controls is larger.
+    const float eqMed  = (p.enableSpatial != 0) ? clampf(p.eqMedium, 0.0f, 1.0f) * mLow : 0.0f;
+    const float coarseL = (p.enableSpatial != 0) ? clampf(p.eqCoarse, 0.0f, 1.0f) * mLow : 0.0f;
+    const int   Rb = 2 + static_cast<int>(14.0f * std::max(clampf(p.chromaBlotch, 0.0f, 1.0f),
+                                                           clampf(p.eqCoarse, 0.0f, 1.0f)));
+    const int   Rm = 3 + static_cast<int>(5.0f * clampf(p.eqMedium, 0.0f, 1.0f));
+    // Band tolerance: when the temporal estimator (immune to spatial
+    // correlation) reads higher than the Laplacian family, the noise has
+    // energy at scales the fine estimators under-measure — widen the medium
+    // and coarse-luma similarity tolerances by that ratio.
+    const float bandRatioY = clampf(s.ty / std::max(s.sy, 1e-6f), 1.0f, 3.0f);
+    const float bandRatioC = clampf(s.tc / std::max(s.sc, 1e-6f), 1.0f, 3.0f);
 
     const bool refine = (p.enableRefine != 0) && (p.master > 0.0f);
     const float desat = refine ? clampf(p.shadowDesat, 0.0f, 1.0f) : 0.0f;
     const float desatRange = std::max(0.02f, p.desatRange);
     const float tex = refine ? clampf(p.lumaTexture, 0.0f, 1.0f) * mLow : 0.0f;
+    // v3 deband: acceptance thresholds sit at banding scale (~2.5 8-bit LSB)
+    // or at the residual noise level, whichever is higher, so real edges are
+    // rejected while quantization steps are averaged through.
+    const float debandAmt = refine ? clampf(p.deband, 0.0f, 1.0f) * mLow : 0.0f;
+    const float dbThrY = std::max(0.010f, 1.5f * s.ry);
+    const float dbThrC = std::max(0.010f, 1.5f * s.rc);
     const float grainAmt = refine ? clampf(p.grainAmount, 0.0f, 1.0f) * 0.06f : 0.0f;
     const float grainSize = clampf(p.grainSize, 0.5f, 6.0f);
     const float grainCh = clampf(p.grainChroma, 0.0f, 1.0f);
@@ -803,29 +1034,97 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
                 Cro = tc[2] + aC * (Crf - tc[2]);
             }
 
-            // large-radius sparse chroma pass: reaches blotches NLM can't
-            if (blotch > 0.0f) {
-                static const float kDirX[8] = { 1, 0, -1, 0, 0.7071f, -0.7071f, -0.7071f, 0.7071f };
-                static const float kDirY[8] = { 0, 1, 0, -1, 0.7071f, 0.7071f, -0.7071f, -0.7071f };
+            // v3 medium band: the correction is computed entirely in the 2x2
+            // block-mean domain — ring average minus the centre's own block
+            // mean — so only components that survive block-meaning (the 2-8px
+            // band) are touched; fine noise at the centre passes through to
+            // the fine band untouched. The correction is clipped to the
+            // band's noise scale so structure the weights let through cannot
+            // be smeared by more than a noise-sized amount.
+            if (eqMed > 0.0f) {
+                const float mScale = 2.6f * sigY * bandRatioY * hBoost;
+                const float myDen = 1.0f / std::max(mScale, 1e-6f);
+                const float mcDen = 1.0f / std::max(3.0f * sigC * bandRatioC * hBoost, 1e-6f);
+                float b0Y, b0Cb, b0Cr;
+                blockMeanTmp(tmp, W, H, x, y, b0Y, b0Cb, b0Cr);
+                float accMY = b0Y, accMB = b0Cb, accMR = b0Cr, sumWm = 1.0f;
+                for (int d = 0; d < 8; ++d) {
+                    for (int ri = 1; ri <= 2; ++ri) {
+                        const float rr = Rm * (static_cast<float>(ri) / 2.0f);
+                        float bY, bCb, bCr;
+                        blockMeanTmp(tmp, W, H,
+                                     x + static_cast<int>(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
+                                     y + static_cast<int>(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f)),
+                                     bY, bCb, bCr);
+                        const float eY = (bY - b0Y) * myDen;
+                        const float eC = (0.5f * (std::fabs(bCb - b0Cb) + std::fabs(bCr - b0Cr))) * mcDen;
+                        const float w = std::exp(-(eY * eY + eC * eC));
+                        accMY += w * bY;
+                        accMB += w * bCb;
+                        accMR += w * bCr;
+                        sumWm += w;
+                    }
+                }
+                const float lim = 2.5f * mScale;
+                Yo  += eqMed * clampf(accMY / sumWm - b0Y, -lim, lim);
+                Cbo += eqMed * (accMB / sumWm - b0Cb);
+                Cro += eqMed * (accMR / sumWm - b0Cr);
+            }
+
+            // coarse band: large-radius sparse pass. The chroma path is the
+            // v2.1 blotch pass unchanged; v3 adds an optional luma component
+            // that works in the 4x4 block-mean domain (blind to the fine and
+            // medium bands by construction), with band-scaled tolerance and
+            // a clipped correction — still chroma-guarded so colour edges
+            // aren't crossed.
+            if (blotch > 0.0f || coarseL > 0.0f) {
                 const float gyDen = 1.0f / std::max(2.0f * sigY * hBoost, 1e-6f);
                 const float gcDen = 1.0f / std::max(3.0f * sigC * hBoost, 1e-6f);
+                const float cScale = 2.2f * sigY * bandRatioY * hBoost;
+                const float glDen = 1.0f / std::max(cScale, 1e-6f);
+                // the luma band reaches to 32 px: its targets (16px+ stains)
+                // are wider than the chroma blotches, and rings must clear
+                // the stain to see clean context
+                const int RbL = 2 + static_cast<int>(30.0f * clampf(p.eqCoarse, 0.0f, 1.0f));
+                float c0Y = 0.0f, c0Cb = 0.0f, c0Cr = 0.0f;
+                if (coarseL > 0.0f)
+                    blockMean4Tmp(tmp, W, H, x, y, c0Y, c0Cb, c0Cr);
                 float accB = tc[1], accR = tc[2], sumW = 1.0f;
+                float accL = c0Y, sumWL = 1.0f;
                 for (int d = 0; d < 8; ++d) {
                     for (int ri = 1; ri <= 3; ++ri) {
                         const float rr = Rb * (static_cast<float>(ri) / 3.0f);
-                        const float* ts = tmpAt(tmp, W, H,
-                                                x + static_cast<int>(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
-                                                y + static_cast<int>(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f)));
+                        const int sx = x + static_cast<int>(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f));
+                        const int sy2 = y + static_cast<int>(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f));
+                        const float* ts = tmpAt(tmp, W, H, sx, sy2);
                         const float eY = (ts[0] - tc[0]) * gyDen;
                         const float eC = (0.5f * (std::fabs(ts[1] - tc[1]) + std::fabs(ts[2] - tc[2]))) * gcDen;
                         const float w = std::exp(-(eY * eY + eC * eC));
                         accB += w * ts[1];
                         accR += w * ts[2];
                         sumW += w;
+                        if (coarseL > 0.0f) {
+                            const float rrL = RbL * (static_cast<float>(ri) / 3.0f);
+                            const int lx2 = x + static_cast<int>(kDirX[d] * rrL + (kDirX[d] > 0 ? 0.5f : -0.5f));
+                            const int ly2 = y + static_cast<int>(kDirY[d] * rrL + (kDirY[d] > 0 ? 0.5f : -0.5f));
+                            float b4Y, b4Cb, b4Cr;
+                            blockMean4Tmp(tmp, W, H, lx2, ly2, b4Y, b4Cb, b4Cr);
+                            const float eL = (b4Y - c0Y) * glDen;
+                            const float eLC = (0.5f * (std::fabs(b4Cb - c0Cb) + std::fabs(b4Cr - c0Cr))) * gcDen;
+                            const float wL = std::exp(-(eL * eL + eLC * eLC));
+                            accL += wL * b4Y;
+                            sumWL += wL;
+                        }
                     }
                 }
-                Cbo += blotch * (accB / sumW - Cbo);
-                Cro += blotch * (accR / sumW - Cro);
+                if (blotch > 0.0f) {
+                    Cbo += blotch * (accB / sumW - Cbo);
+                    Cro += blotch * (accR / sumW - Cro);
+                }
+                if (coarseL > 0.0f) {
+                    const float lim = 2.5f * cScale;
+                    Yo += coarseL * clampf(accL / sumWL - c0Y, -lim, lim);
+                }
             }
 
             const float* c = curr + idx;
@@ -839,6 +1138,50 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
                 Cbr *= sat;
                 Crr *= sat;
                 Yr += tex * (cyIn - Yr);
+                // v3 deband: ring average of 2x2 block means accepted only
+                // within the banding-scale threshold (edges are rejected by
+                // the threshold itself), then a triangular micro-dither so
+                // any remaining step decorrelates instead of reading as a
+                // contour. Runs before grain so grain sits on top.
+                if (debandAmt > 0.0f) {
+                    const float dyDen = 1.0f / dbThrY;
+                    const float dcDen = 1.0f / dbThrC;
+                    float b0Y, b0Cb, b0Cr;
+                    blockMeanTmp(tmp, W, H, x, y, b0Y, b0Cb, b0Cr);
+                    float accDY = b0Y, accDB = b0Cb, accDR = b0Cr, sumWd = 1.0f;
+                    for (int d = 0; d < 8; ++d) {
+                        for (int ri = 1; ri <= 3; ++ri) {
+                            const float rr = 16.0f * (static_cast<float>(ri) / 3.0f);
+                            float bY, bCb, bCr;
+                            blockMeanTmp(tmp, W, H,
+                                         x + static_cast<int>(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
+                                         y + static_cast<int>(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f)),
+                                         bY, bCb, bCr);
+                            const float eY = (bY - b0Y) * dyDen;
+                            const float eC = (0.5f * (std::fabs(bCb - b0Cb) + std::fabs(bCr - b0Cr))) * dcDen;
+                            const float w = std::exp(-(eY * eY + eC * eC));
+                            accDY += w * bY;
+                            accDB += w * bCb;
+                            accDR += w * bCr;
+                            sumWd += w;
+                        }
+                    }
+                    // The ring mean is the smooth-field estimate and the
+                    // correction pulls the PIXEL toward it, weighted by the
+                    // SQUARED fraction of accepted samples: on banded
+                    // gradients the ring is near-unanimous (full effect),
+                    // while at a real edge only same-mixture samples survive
+                    // the threshold — a small fraction, squared to nothing.
+                    // Clipped to banding scale as a hard safety.
+                    const float agree = (sumWd - 1.0f) * (1.0f / 24.0f);
+                    const float conf = agree * agree;
+                    Yr  += debandAmt * conf * clampf(accDY / sumWd - Yr,  -dbThrY, dbThrY);
+                    Cbr += debandAmt * conf * clampf(accDB / sumWd - Cbr, -dbThrC, dbThrC);
+                    Crr += debandAmt * conf * clampf(accDR / sumWd - Crr, -dbThrC, dbThrC);
+                    const float dith = 0.7f * debandAmt / 255.0f;
+                    Yr += dith * 0.5f * (hashNoise(static_cast<uint32_t>(x), static_cast<uint32_t>(y), frame, 3u) +
+                                         hashNoise(static_cast<uint32_t>(x), static_cast<uint32_t>(y), frame + 977u, 3u));
+                }
                 if (grainAmt > 0.0f) {
                     const float resp = 0.25f + 0.75f * (4.0f * clampf(Yr, 0.0f, 1.0f) * (1.0f - clampf(Yr, 0.0f, 1.0f)));
                     const float gn = valueNoise(static_cast<float>(x), static_cast<float>(y), grainSize, frame, 0u);
@@ -856,6 +1199,7 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
             ycc2rgb(Yo, Cbo, Cro, dnR, dnG, dnB);
 
             float* o = out + idx;
+            o[3] = c[3];   // alpha passthrough (the matte view overrides)
 
             switch (p.viewMode) {
             case 1: { // split: input | result
@@ -882,7 +1226,7 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
             }
             case 5: { // noise analysis HUD + region rect
                 float rr = r, gg = g, bb = b;
-                if (!hudPixel(x, y, W, H, s, p.enableTemporal, rr, gg, bb) &&
+                if (!hudPixel(x, y, W, H, s, p.enableTemporal, p.profileLocked, rr, gg, bb) &&
                     p.profileSource == 1) {
                     const float rHalf = 0.5f * p.regionSize * static_cast<float>(std::min(W, H));
                     const float cx = p.regionCX * W, cyy = p.regionCY * H;
@@ -936,11 +1280,27 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
                 o[2] = cyIn * 0.35f + mb * 0.65f;
                 break;
             }
+            case 8: { // noise matte: normalized noise dominance in RGB+alpha,
+                      // for keying downstream (1 = noise wins, 0 = image wins)
+                float mean = 0.0f, m2 = 0.0f;
+                for (int dy = -2; dy <= 2; ++dy)
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        const float v = tmpAt(tmp, W, H, x + dx, y + dy)[0];
+                        mean += v; m2 += v * v;
+                    }
+                mean *= (1.0f / 25.0f);
+                const float var = std::max(0.0f, m2 * (1.0f / 25.0f) - mean * mean);
+                const float sigNoise = std::max(s.sy * s.gainY[lb], 1e-5f);
+                const float sigSignal = std::sqrt(std::max(var - sigNoise * sigNoise, 0.0f));
+                const float snrDb = 20.0f * std::log10(std::max(sigSignal, 1e-6f) / sigNoise);
+                const float m = 1.0f - clampf((snrDb + 6.0f) / 36.0f, 0.0f, 1.0f);
+                o[0] = m; o[1] = m; o[2] = m; o[3] = m;
+                break;
+            }
             default:
                 o[0] = r; o[1] = g; o[2] = b;
                 break;
             }
-            o[3] = c[3];
         }
     }
 }

@@ -11,6 +11,8 @@
 
 #include "OpenNRPlugin.h"
 
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -26,21 +28,27 @@
 
 #include "NRParams.h"
 #include "nr_core.h"
+#include "nr_analyze.h"
 
 #define kPluginName "Hush Open NR"
 #define kPluginGrouping "Hush"
 #define kPluginDescription \
-    "Hush Open NR v2.1 — the free noise reduction suite.\n\n" \
+    "Hush Open NR v3.0 — the free noise reduction suite.\n\n" \
+    "New: click AUTO SETUP and the plugin analyzes your clip (noise level, " \
+    "chroma character, motion) and dials in every slider for you — then you " \
+    "adjust from there. One Cmd+Z (or the Revert button) undoes it.\n\n" \
     "Work top to bottom: 1) measure the noise (automatic, from a region, or " \
-    "manual), 2) temporal NR averages matching pixels across frames, 3) spatial " \
-    "NR cleans what remains, 4) refine the finish (shadow desaturation, texture, " \
-    "film grain), 5) inspect with the analysis views.\n\n" \
+    "manual — and lock the measured profile so it stops re-measuring), " \
+    "2) temporal NR averages matching pixels across frames, with motion " \
+    "tracking and a firefly zapper, 3) spatial NR cleans what remains with a " \
+    "three-band Noise EQ, 4) refine the finish (shadow desaturation, texture, " \
+    "debanding, film grain), 5) inspect with the analysis views.\n\n" \
     "Open Step 5 and choose 'Noise Analysis' to SEE the measured noise levels " \
     "on screen, or 'Noise Only' to see exactly what is being removed.\n\n" \
     "MIT-licensed and free forever."
 #define kPluginIdentifier "org.opennr.Denoise"
-#define kPluginVersionMajor 2
-#define kPluginVersionMinor 1
+#define kPluginVersionMajor 3
+#define kPluginVersionMinor 0
 
 #define kSupportsTiles false
 #define kSupportsMultiResolution false
@@ -140,6 +148,10 @@ public:
         m_SrcClip = fetchClip(kOfxImageEffectSimpleSourceClipName);
 
         m_Master         = fetchDoubleParam("master");
+        m_AutoSetup      = fetchPushButtonParam("autoSetup");
+        m_AutoReport     = fetchStringParam("autoReport");
+        m_RevertAuto     = fetchPushButtonParam("revertAutoSetup");
+        m_AutoUndo       = fetchStringParam("autoSetupUndo");
         m_ProfileSource  = fetchChoiceParam("profileSource");
         m_ProfileAdjust  = fetchDoubleParam("profileAdjust");
         m_SigmaY         = fetchDoubleParam("sigmaLuma");
@@ -147,11 +159,15 @@ public:
         m_RegionCX       = fetchDoubleParam("regionCenterX");
         m_RegionCY       = fetchDoubleParam("regionCenterY");
         m_RegionSize     = fetchDoubleParam("regionSize");
+        m_LockProfile    = fetchBooleanParam("lockProfile");
+        m_LockData       = fetchStringParam("lockedProfileData");
         m_EnableTemporal = fetchBooleanParam("enableTemporal");
         m_TemporalFrames = fetchChoiceParam("temporalFrames");
+        m_MotionTracking = fetchBooleanParam("motionTracking");
         m_TemporalLuma   = fetchDoubleParam("temporalLuma");
         m_TemporalChroma = fetchDoubleParam("temporalChroma");
         m_MotionThresh   = fetchDoubleParam("motionThreshold");
+        m_FireflyRemoval = fetchBooleanParam("fireflyRemoval");
         m_EnableSpatial  = fetchBooleanParam("enableSpatial");
         m_SpatialMode    = fetchChoiceParam("spatialMethod");
         m_SpatialRadius  = fetchIntParam("spatialRadius");
@@ -159,14 +175,23 @@ public:
         m_SpatialChroma  = fetchDoubleParam("spatialChroma");
         m_PreserveDetail = fetchDoubleParam("preserveDetail");
         m_ChromaBlotch   = fetchDoubleParam("chromaBlotch");
+        m_EqFine         = fetchDoubleParam("eqFine");
+        m_EqMedium       = fetchDoubleParam("eqMedium");
+        m_EqCoarse       = fetchDoubleParam("eqCoarse");
         m_EnableRefine   = fetchBooleanParam("enableRefine");
         m_ShadowDesat    = fetchDoubleParam("shadowDesat");
         m_DesatRange     = fetchDoubleParam("desatRange");
         m_LumaTexture    = fetchDoubleParam("lumaTexture");
+        m_Deband         = fetchDoubleParam("deband");
         m_GrainAmount    = fetchDoubleParam("grainAmount");
         m_GrainSize      = fetchDoubleParam("grainSize");
         m_GrainChroma    = fetchDoubleParam("grainChroma");
         m_ViewMode       = fetchChoiceParam("viewMode");
+
+        // restore a locked profile saved with the project
+        std::string lockStr;
+        m_LockData->getValue(lockStr);
+        m_LockValid = nranalyze::parseLockedProfile(lockStr, m_LockAgg);
 
         updateEnabledness();
     }
@@ -197,8 +222,15 @@ public:
                          (m_TemporalLuma->getValueAtTime(t) > 0.0 || m_TemporalChroma->getValueAtTime(t) > 0.0);
         const bool sOn = m_EnableSpatial->getValueAtTime(t) &&
                          (m_SpatialLuma->getValueAtTime(t) > 0.0 || m_SpatialChroma->getValueAtTime(t) > 0.0);
+        // v3: refine-only configurations (grain / texture / desat / deband
+        // with both NR stages off) must render — v2.1 wrongly skipped them
+        const bool rOn = m_EnableRefine->getValueAtTime(t) &&
+                         (m_ShadowDesat->getValueAtTime(t) > 0.0 ||
+                          m_LumaTexture->getValueAtTime(t) > 0.0 ||
+                          m_GrainAmount->getValueAtTime(t) > 0.0 ||
+                          m_Deband->getValueAtTime(t) > 0.0);
 
-        if (master <= 0.0 || (!tOn && !sOn))
+        if (master <= 0.0 || (!tOn && !sOn && !rOn))
         {
             p_IdentityClip = m_SrcClip;
             p_IdentityTime = t;
@@ -217,14 +249,277 @@ public:
         p_FramesNeededSetter.setFramesNeeded(*m_SrcClip, range);
     }
 
-    virtual void changedParam(const OFX::InstanceChangedArgs& /*p_Args*/, const std::string& p_ParamName)
+    virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName)
     {
+        // m_InAutoApply guards recursion: Auto Setup / Revert set many params
+        // (including lockProfile) from inside this action.
+        if (!m_InAutoApply)
+        {
+            if (p_ParamName == "autoSetup")
+                runAutoSetup(p_Args.time);
+            else if (p_ParamName == "revertAutoSetup")
+                revertAutoSetup();
+            else if (p_ParamName == "lockProfile")
+                lockProfileToggled(p_Args.time);
+        }
+
         if (p_ParamName == "profileSource" || p_ParamName == "enableTemporal" ||
-            p_ParamName == "enableSpatial" || p_ParamName == "enableRefine")
+            p_ParamName == "enableSpatial" || p_ParamName == "enableRefine" ||
+            p_ParamName == "lockProfile")
             updateEnabledness();
     }
 
 private:
+    // ------------------------------------------------------------------
+    // v3 clip analysis (Auto Setup + Lock Profile)
+    // ------------------------------------------------------------------
+
+    static void packImage(OFX::Image* p_Img, int& p_W, int& p_H, std::vector<float>& p_Out)
+    {
+        const OfxRectI& b = p_Img->getBounds();
+        p_W = b.x2 - b.x1;
+        p_H = b.y2 - b.y1;
+        if (p_W <= 0 || p_H <= 0) { p_W = p_H = 0; return; }
+        p_Out.resize(static_cast<size_t>(p_W) * p_H * 4);
+        for (int y = 0; y < p_H; ++y)
+        {
+            const float* row = static_cast<float*>(p_Img->getPixelAddress(b.x1, b.y1 + y));
+            if (row)
+                std::memcpy(&p_Out[static_cast<size_t>(y) * p_W * 4], row,
+                            static_cast<size_t>(p_W) * 4 * sizeof(float));
+            else
+                std::memset(&p_Out[static_cast<size_t>(y) * p_W * 4], 0,
+                            static_cast<size_t>(p_W) * 4 * sizeof(float));
+        }
+    }
+
+    // Fetches the current frame plus up to 4 frames spread across the clip
+    // and runs the nrcore estimators on each. fetchImage inside
+    // kOfxActionInstanceChanged is not guaranteed by the OFX spec (Resolve
+    // honors it, but a busy host may return nothing) — every failure path
+    // returns what was gathered so the caller can message the user; this
+    // never throws out of the action and never crashes.
+    int analyzeClipFrames(double p_Time, std::vector<nrcore::Stats>& p_Out)
+    {
+        try
+        {
+            if (!m_SrcClip || !m_SrcClip->isConnected())
+                return 0;
+            const OfxRangeD range = m_SrcClip->getFrameRange();
+            std::vector<double> times;
+            times.push_back(p_Time);
+            const double len = range.max - range.min;
+            for (int k = 0; k < 4 && len >= 1.0; ++k)
+            {
+                double t = std::floor(range.min + (0.5 + k) * len / 4.0 + 0.5);
+                if (t < range.min) t = range.min;
+                if (t > range.max) t = range.max;
+                bool dup = false;
+                for (size_t i = 0; i < times.size(); ++i)
+                    if (std::fabs(times[i] - t) < 1.0) { dup = true; break; }
+                if (!dup)
+                    times.push_back(t);
+            }
+            for (size_t ti = 0; ti < times.size(); ++ti)
+            {
+                const double t = times[ti];
+                std::unique_ptr<OFX::Image> img(m_SrcClip->fetchImage(t));
+                if (!img || img->getPixelDepth() != OFX::eBitDepthFloat ||
+                    img->getPixelComponents() != OFX::ePixelComponentRGBA)
+                    continue;
+                int W = 0, H = 0;
+                std::vector<float> buf;
+                packImage(img.get(), W, H, buf);
+                if (W < 16 || H < 16)
+                    continue;
+                // temporal-diff partner: the next frame (previous at clip end)
+                double tp = (t + 1.0 <= range.max) ? t + 1.0 : t - 1.0;
+                if (tp < range.min) tp = t;
+                std::vector<float> pbuf;
+                const float* partner = nullptr;
+                if (tp != t)
+                {
+                    std::unique_ptr<OFX::Image> pimg(m_SrcClip->fetchImage(tp));
+                    if (pimg && pimg->getPixelDepth() == OFX::eBitDepthFloat &&
+                        pimg->getPixelComponents() == OFX::ePixelComponentRGBA)
+                    {
+                        int PW = 0, PH = 0;
+                        packImage(pimg.get(), PW, PH, pbuf);
+                        if (PW == W && PH == H)
+                            partner = pbuf.data();
+                    }
+                }
+                nrcore::Params ap;   // stock automatic whole-frame profiling
+                nrcore::Stats st;
+                nrcore::estimateInput(buf.data(), partner, W, H, ap, st);
+                p_Out.push_back(st);
+            }
+            return static_cast<int>(p_Out.size());
+        }
+        catch (...)
+        {
+            return static_cast<int>(p_Out.size());
+        }
+    }
+
+    void analysisFailedMessage()
+    {
+        sendMessage(OFX::Message::eMessageMessage, "",
+                    "Hush could not read the clip to analyze it. This can happen while "
+                    "the host is busy rendering — pause playback, park the playhead on "
+                    "this clip and try again.");
+    }
+
+    // one k=v per param, '|'-separated; the lock data string is comma/hex so
+    // the separators never collide
+    std::string snapshotDenoiseParams()
+    {
+        char buf[1024];
+        int tf = 0, sm = 0;
+        m_TemporalFrames->getValue(tf);
+        m_SpatialMode->getValue(sm);
+        std::string lockStr;
+        m_LockData->getValue(lockStr);
+        snprintf(buf, sizeof(buf),
+                 "v1|et=%d|tf=%d|tl=%.17g|tc=%.17g|mt=%.17g|mtr=%d|ff=%d|es=%d|sm=%d|sr=%d|"
+                 "sl=%.17g|sc=%.17g|pd=%.17g|cb=%.17g|eqf=%.17g|eqm=%.17g|eqc=%.17g|pa=%.17g|lp=%d|ld=%s",
+                 m_EnableTemporal->getValue() ? 1 : 0, tf,
+                 m_TemporalLuma->getValue(), m_TemporalChroma->getValue(), m_MotionThresh->getValue(),
+                 m_MotionTracking->getValue() ? 1 : 0, m_FireflyRemoval->getValue() ? 1 : 0,
+                 m_EnableSpatial->getValue() ? 1 : 0, sm, m_SpatialRadius->getValue(),
+                 m_SpatialLuma->getValue(), m_SpatialChroma->getValue(),
+                 m_PreserveDetail->getValue(), m_ChromaBlotch->getValue(),
+                 m_EqFine->getValue(), m_EqMedium->getValue(), m_EqCoarse->getValue(),
+                 m_ProfileAdjust->getValue(), m_LockProfile->getValue() ? 1 : 0,
+                 lockStr.c_str());
+        return std::string(buf);
+    }
+
+    static bool snapField(const std::string& s, const char* key, std::string& out)
+    {
+        const std::string k = std::string("|") + key + "=";
+        const size_t pos = s.find(k);
+        if (pos == std::string::npos)
+            return false;
+        const size_t v0 = pos + k.size();
+        size_t v1 = s.find('|', v0);
+        if (v1 == std::string::npos)
+            v1 = s.size();
+        out = s.substr(v0, v1 - v0);
+        return true;
+    }
+
+    void runAutoSetup(double p_Time)
+    {
+        std::vector<nrcore::Stats> per;
+        if (analyzeClipFrames(p_Time, per) <= 0)
+        {
+            analysisFailedMessage();
+            return;
+        }
+        const nranalyze::ClipAggregate agg = nranalyze::aggregateClipStats(per);
+        const nranalyze::AutoSettings as = nranalyze::mapAnalysisToSettings(agg);
+
+        // belt and braces: the whole apply is one edit block (single Cmd+Z),
+        // AND the prior values are snapshotted for the Revert button
+        m_AutoUndo->setValue(snapshotDenoiseParams());
+
+        m_InAutoApply = true;
+        beginEditBlock("Hush Auto Setup");
+        m_EnableTemporal->setValue(as.enableTemporal != 0);
+        m_TemporalFrames->setValue(as.temporalFrames >= 5 ? 1 : 0);
+        m_TemporalLuma->setValue(as.temporalLuma);
+        m_TemporalChroma->setValue(as.temporalChroma);
+        m_MotionThresh->setValue(as.motionThresh);
+        m_MotionTracking->setValue(as.motionTracking != 0);
+        m_FireflyRemoval->setValue(as.fireflyRemoval != 0);
+        m_EnableSpatial->setValue(as.enableSpatial != 0);
+        m_SpatialMode->setValue(as.spatialMode);
+        m_SpatialRadius->setValue(as.spatialRadius);
+        m_SpatialLuma->setValue(as.spatialLuma);
+        m_SpatialChroma->setValue(as.spatialChroma);
+        m_PreserveDetail->setValue(as.preserveDetail);
+        m_ChromaBlotch->setValue(as.chromaBlotch);
+        m_EqFine->setValue(as.eqFine);
+        m_EqMedium->setValue(as.eqMedium);
+        m_EqCoarse->setValue(as.eqCoarse);
+        m_ProfileAdjust->setValue(as.profileAdjust);
+        m_LockData->setValue(nranalyze::formatLockedProfile(agg));
+        m_LockProfile->setValue(as.lockProfile != 0);
+        m_AutoReport->setValue(nranalyze::formatAutoReport(agg, as));
+        endEditBlock();
+        m_InAutoApply = false;
+
+        m_LockAgg = agg;
+        m_LockValid = true;
+        updateEnabledness();
+    }
+
+    void revertAutoSetup()
+    {
+        std::string s;
+        m_AutoUndo->getValue(s);
+        if (s.compare(0, 3, "v1|") != 0)
+        {
+            sendMessage(OFX::Message::eMessageMessage, "",
+                        "Nothing to revert — Auto Setup has not been run on this node.");
+            return;
+        }
+        std::string v;
+        m_InAutoApply = true;
+        beginEditBlock("Revert Hush Auto Setup");
+        if (snapField(s, "et", v))  m_EnableTemporal->setValue(atoi(v.c_str()) != 0);
+        if (snapField(s, "tf", v))  m_TemporalFrames->setValue(atoi(v.c_str()));
+        if (snapField(s, "tl", v))  m_TemporalLuma->setValue(atof(v.c_str()));
+        if (snapField(s, "tc", v))  m_TemporalChroma->setValue(atof(v.c_str()));
+        if (snapField(s, "mt", v))  m_MotionThresh->setValue(atof(v.c_str()));
+        if (snapField(s, "mtr", v)) m_MotionTracking->setValue(atoi(v.c_str()) != 0);
+        if (snapField(s, "ff", v))  m_FireflyRemoval->setValue(atoi(v.c_str()) != 0);
+        if (snapField(s, "es", v))  m_EnableSpatial->setValue(atoi(v.c_str()) != 0);
+        if (snapField(s, "sm", v))  m_SpatialMode->setValue(atoi(v.c_str()));
+        if (snapField(s, "sr", v))  m_SpatialRadius->setValue(atoi(v.c_str()));
+        if (snapField(s, "sl", v))  m_SpatialLuma->setValue(atof(v.c_str()));
+        if (snapField(s, "sc", v))  m_SpatialChroma->setValue(atof(v.c_str()));
+        if (snapField(s, "pd", v))  m_PreserveDetail->setValue(atof(v.c_str()));
+        if (snapField(s, "cb", v))  m_ChromaBlotch->setValue(atof(v.c_str()));
+        if (snapField(s, "eqf", v)) m_EqFine->setValue(atof(v.c_str()));
+        if (snapField(s, "eqm", v)) m_EqMedium->setValue(atof(v.c_str()));
+        if (snapField(s, "eqc", v)) m_EqCoarse->setValue(atof(v.c_str()));
+        if (snapField(s, "pa", v))  m_ProfileAdjust->setValue(atof(v.c_str()));
+        if (snapField(s, "ld", v))  m_LockData->setValue(v);
+        if (snapField(s, "lp", v))  m_LockProfile->setValue(atoi(v.c_str()) != 0);
+        m_AutoReport->setValue("Reverted. Click Auto Setup to analyze again.");
+        m_AutoUndo->setValue("");
+        endEditBlock();
+        m_InAutoApply = false;
+
+        std::string lockStr;
+        m_LockData->getValue(lockStr);
+        m_LockValid = nranalyze::parseLockedProfile(lockStr, m_LockAgg);
+        updateEnabledness();
+    }
+
+    void lockProfileToggled(double p_Time)
+    {
+        bool on = false;
+        m_LockProfile->getValue(on);
+        if (!on)
+            return;   // unlock: back to live measurement, keep the stored data
+        std::vector<nrcore::Stats> per;
+        if (analyzeClipFrames(p_Time, per) <= 0)
+        {
+            m_InAutoApply = true;
+            m_LockProfile->setValue(false);
+            m_InAutoApply = false;
+            analysisFailedMessage();
+            return;
+        }
+        const nranalyze::ClipAggregate agg = nranalyze::aggregateClipStats(per);
+        m_LockData->setValue(nranalyze::formatLockedProfile(agg));
+        m_LockAgg = agg;
+        m_LockValid = true;
+    }
+
     // reach: frames needed after t for temporal NR; prevReach: frames needed
     // before t (temporal NR, plus one frame for the noise estimator when
     // auto profiling is on).
@@ -257,9 +552,11 @@ private:
 
         const bool tOn = m_EnableTemporal->getValue();
         m_TemporalFrames->setEnabled(tOn);
+        m_MotionTracking->setEnabled(tOn);
         m_TemporalLuma->setEnabled(tOn);
         m_TemporalChroma->setEnabled(tOn);
         m_MotionThresh->setEnabled(tOn);
+        m_FireflyRemoval->setEnabled(tOn);
 
         const bool sOn = m_EnableSpatial->getValue();
         m_SpatialMode->setEnabled(sOn);
@@ -268,11 +565,15 @@ private:
         m_SpatialChroma->setEnabled(sOn);
         m_PreserveDetail->setEnabled(sOn);
         m_ChromaBlotch->setEnabled(sOn);
+        m_EqFine->setEnabled(sOn);
+        m_EqMedium->setEnabled(sOn);
+        m_EqCoarse->setEnabled(sOn);
 
         const bool rOn = m_EnableRefine->getValue();
         m_ShadowDesat->setEnabled(rOn);
         m_DesatRange->setEnabled(rOn);
         m_LumaTexture->setEnabled(rOn);
+        m_Deband->setEnabled(rOn);
         m_GrainAmount->setEnabled(rOn);
         m_GrainSize->setEnabled(rOn);
         m_GrainChroma->setEnabled(rOn);
@@ -323,6 +624,25 @@ private:
         int view = 0;
         m_ViewMode->getValueAtTime(t, view);
         p.viewMode        = view;
+
+        // ---- v3 ----
+        p.motionTracking  = m_MotionTracking->getValueAtTime(t) ? 1 : 0;
+        p.fireflyRemoval  = m_FireflyRemoval->getValueAtTime(t) ? 1 : 0;
+        p.eqFine          = static_cast<float>(m_EqFine->getValueAtTime(t) / 100.0);
+        p.eqMedium        = static_cast<float>(m_EqMedium->getValueAtTime(t) / 100.0);
+        p.eqCoarse        = static_cast<float>(m_EqCoarse->getValueAtTime(t) / 100.0);
+        p.deband          = static_cast<float>(m_Deband->getValueAtTime(t) / 100.0);
+        const bool locked = m_LockProfile->getValueAtTime(t) && m_LockValid;
+        p.profileLocked   = locked ? 1 : 0;
+        p.lockSY = locked ? m_LockAgg.sy : 0.02f;
+        p.lockSC = locked ? m_LockAgg.sc : 0.02f;
+        p.lockTY = locked ? m_LockAgg.ty : 0.02f;
+        p.lockTC = locked ? m_LockAgg.tc : 0.02f;
+        for (int b = 0; b < 16; ++b)
+        {
+            p.lockGainY[b] = locked ? m_LockAgg.gainY[b] : 1.0f;
+            p.lockGainC[b] = locked ? m_LockAgg.gainC[b] : 1.0f;
+        }
         return p;
     }
 
@@ -422,6 +742,22 @@ private:
         p.frameIndex     = params.frameIndex;
         p.master         = params.master;
         p.viewMode       = params.viewMode;
+        p.motionTracking = params.motionTracking;
+        p.fireflyRemoval = params.fireflyRemoval;
+        p.eqFine         = params.eqFine;
+        p.eqMedium       = params.eqMedium;
+        p.eqCoarse       = params.eqCoarse;
+        p.deband         = params.deband;
+        p.profileLocked  = params.profileLocked;
+        p.lockSY         = params.lockSY;
+        p.lockSC         = params.lockSC;
+        p.lockTY         = params.lockTY;
+        p.lockTC         = params.lockTC;
+        for (int b2 = 0; b2 < 16; ++b2)
+        {
+            p.lockGainY[b2] = params.lockGainY[b2];
+            p.lockGainC[b2] = params.lockGainC[b2];
+        }
 
         const size_t n = static_cast<size_t>(W) * H * 4;
         std::vector<std::vector<float>> packed;
@@ -464,6 +800,21 @@ private:
     OFX::Clip* m_SrcClip = nullptr;
 
     OFX::DoubleParam*  m_Master = nullptr;
+    OFX::PushButtonParam* m_AutoSetup = nullptr;
+    OFX::StringParam*  m_AutoReport = nullptr;
+    OFX::PushButtonParam* m_RevertAuto = nullptr;
+    OFX::StringParam*  m_AutoUndo = nullptr;
+    OFX::BooleanParam* m_LockProfile = nullptr;
+    OFX::StringParam*  m_LockData = nullptr;
+    OFX::BooleanParam* m_MotionTracking = nullptr;
+    OFX::BooleanParam* m_FireflyRemoval = nullptr;
+    OFX::DoubleParam*  m_EqFine = nullptr;
+    OFX::DoubleParam*  m_EqMedium = nullptr;
+    OFX::DoubleParam*  m_EqCoarse = nullptr;
+    OFX::DoubleParam*  m_Deband = nullptr;
+    nranalyze::ClipAggregate m_LockAgg;
+    bool m_LockValid = false;
+    bool m_InAutoApply = false;
     OFX::ChoiceParam*  m_ProfileSource = nullptr;
     OFX::DoubleParam*  m_ProfileAdjust = nullptr;
     OFX::DoubleParam*  m_SigmaY = nullptr;
@@ -735,6 +1086,45 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "0 = off. Start here.",
                  1.0, 0.0, 2.0, nullptr);
 
+    // ------------------------------------------------------------- auto setup
+    {
+        OFX::PushButtonParamDescriptor* b = p_Desc.definePushButtonParam("autoSetup");
+        b->setLabels("Auto Setup (Analyze Footage)", "Auto Setup (Analyze Footage)", "Auto Setup");
+        b->setHint("Analyzes this clip — noise level, chroma character, spatial correlation "
+                   "and camera motion, measured on several frames spread across the clip — "
+                   "then writes the best settings into the sliders below and locks the "
+                   "measured noise profile.\n\n"
+                   "This is not a mode: afterwards everything is ordinary manual state, so "
+                   "dial any slider in or back from what it chose. One undo (or the Revert "
+                   "button) restores everything. Your Step 4 look choices (grain, texture, "
+                   "desaturation, debanding) and the View are never touched.");
+        page->addChild(*b);
+    }
+    {
+        OFX::StringParamDescriptor* s = p_Desc.defineStringParam("autoReport");
+        s->setLabels("Analysis", "Analysis", "Analysis");
+        s->setHint("What the last Auto Setup measured and decided.");
+        s->setDefault("Click Auto Setup to analyze this clip.");
+        s->setEnabled(false);
+        s->setEvaluateOnChange(false);
+        page->addChild(*s);
+    }
+    {
+        OFX::PushButtonParamDescriptor* b = p_Desc.definePushButtonParam("revertAutoSetup");
+        b->setLabels("Revert Auto Setup", "Revert Auto Setup", "Revert Auto");
+        b->setHint("Puts every denoise control back to its value from just before the last "
+                   "Auto Setup (a plain undo right after Auto Setup does the same thing).");
+        page->addChild(*b);
+    }
+    {
+        OFX::StringParamDescriptor* s = p_Desc.defineStringParam("autoSetupUndo");
+        s->setLabels("autoSetupUndo", "autoSetupUndo", "autoSetupUndo");
+        s->setDefault("");
+        s->setIsSecret(true);
+        s->setEvaluateOnChange(false);
+        page->addChild(*s);
+    }
+
     // ---------------------------------------------------------- step 1: profile
     OFX::GroupParamDescriptor* grpProfile = p_Desc.defineGroupParam("grpProfile");
     grpProfile->setLabels("Step 1 · Measure The Noise", "Step 1 · Measure The Noise", "1 · Measure");
@@ -779,6 +1169,22 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
     defineDouble(p_Desc, page, "sigmaChroma", "Manual Chroma Noise (%)",
                  "Noise level of the color channels (the colored speckle). Only used when Noise "
                  "Profile is set to Manual.", 2.0, 0.05, 25.0, grpProfile);
+    defineBool(p_Desc, page, "lockProfile", "Lock Profile",
+               "Measures the noise on several frames spread across the clip, then freezes that "
+               "profile (both sigma pairs and the brightness curve) so every frame filters "
+               "against the same numbers instead of re-measuring per frame.\n\n"
+               "Lock when a clip flickers between shots of different content (per-frame "
+               "measurement can breathe) or when you want renders to be repeatable. The "
+               "analysis HUD shows LOCKED while active; its histogram stays live so you can "
+               "compare. Un-tick to go back to per-frame measurement. Saved with the project.",
+               false, grpProfile);
+    {
+        OFX::StringParamDescriptor* s = p_Desc.defineStringParam("lockedProfileData");
+        s->setLabels("lockedProfileData", "lockedProfileData", "lockedProfileData");
+        s->setDefault("");
+        s->setIsSecret(true);
+        page->addChild(*s);
+    }
 
     // --------------------------------------------------------- step 2: temporal
     OFX::GroupParamDescriptor* grpTemporal = p_Desc.defineGroupParam("grpTemporal");
@@ -804,6 +1210,14 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
         c->setParent(*grpTemporal);
         page->addChild(*c);
     }
+    defineBool(p_Desc, page, "motionTracking", "Motion Tracking",
+               "Before deciding whether a neighboring frame matches, tries shifting its patch "
+               "by up to 2 pixels and uses the best alignment. Slow pans and handheld drift "
+               "keep their across-frames averaging instead of falling back to spatial-only.\n\n"
+               "Leave on for almost everything; turn off for a small speed gain on locked-off "
+               "tripod footage (where it has nothing to find). Motion faster than ~2 px/frame "
+               "is still protected by the gate exactly as before.",
+               true, grpTemporal);
     defineDouble(p_Desc, page, "temporalLuma", "Luma Strength",
                  "How strongly brightness noise is averaged across frames (0–100).", 60.0, 0.0, 100.0, grpTemporal);
     defineDouble(p_Desc, page, "temporalChroma", "Chroma Strength",
@@ -815,6 +1229,15 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "blended. Low = cautious (less reduction near movement), high = stronger reduction "
                  "on near-static areas. If you see any trailing on motion, lower this first.",
                  30.0, 0.0, 100.0, grpTemporal);
+    defineBool(p_Desc, page, "fireflyRemoval", "Firefly Removal",
+               "Zaps single-frame impulses — hot pixels, sensor 'fireflies', stray sparkles — "
+               "by clipping them to the 3-frame temporal median. A pixel is only zapped when "
+               "it spikes hard against BOTH neighboring frames while those frames agree with "
+               "each other, and it is also an outlier within its own frame, so moving detail "
+               "is left alone.\n\n"
+               "Leave on; turn off only if legitimate one-frame flashes (strobes, muzzle "
+               "flashes, glints) lose their sparkle.",
+               true, grpTemporal);
 
     // ---------------------------------------------------------- step 3: spatial
     OFX::GroupParamDescriptor* grpSpatial = p_Desc.defineGroupParam("grpSpatial");
@@ -865,6 +1288,23 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "stains that 4:2:0 compression leaves behind — the ones the normal search radius "
                  "physically can't span. Guided by brightness so color never bleeds across edges. "
                  "Raise for blotchy phone/low-light footage.", 25.0, 0.0, 100.0, grpSpatial);
+    defineDouble(p_Desc, page, "eqFine", "Noise EQ · Fine",
+                 "Band strength for pixel-scale noise — scales the main NLM/bilateral pass. "
+                 "100 = normal. Lower if fine texture is going waxy while you want the other "
+                 "bands to keep working; raise above 100 to lean harder on fine grain when "
+                 "the sliders above are already maxed.", 100.0, 0.0, 200.0, grpSpatial);
+    defineDouble(p_Desc, page, "eqMedium", "Noise EQ · Medium",
+                 "Band strength for mid-size noise clumps (roughly 3–8 px) — the chunky blotch "
+                 "left by heavy compression or in-camera NR, which the fine pass can't tell "
+                 "from detail. Off by default. Raise when noise looks like moving 'clumps' "
+                 "rather than fine grain; Auto Setup raises it when it measures spatially "
+                 "correlated noise.", 0.0, 0.0, 100.0, grpSpatial);
+    defineDouble(p_Desc, page, "eqCoarse", "Noise EQ · Coarse (Luma)",
+                 "Band strength for LARGE soft brightness stains (16 px and up, reaching to "
+                 "32 px) — the slow luma mottling severe compression leaves in skies and "
+                 "walls. Works on 4x4 block averages with a clipped correction, so real "
+                 "structure is untouched by more than a noise-sized amount. Off by default; "
+                 "raise on very compressed low-light footage.", 0.0, 0.0, 100.0, grpSpatial);
 
     // ----------------------------------------------------------- step 4: refine
     OFX::GroupParamDescriptor* grpRefine = p_Desc.defineGroupParam("grpRefine");
@@ -890,6 +1330,14 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "Re-injects a percentage of the ORIGINAL brightness texture (grain) into the "
                  "denoised image — the color noise stays gone, but the image keeps its natural "
                  "film-like energy. Try 15–30 instead of cranking strengths down.",
+                 0.0, 0.0, 100.0, grpRefine);
+    defineDouble(p_Desc, page, "deband", "Deband",
+                 "Smooths banding — the visible stair-steps in skies and gradients that 8-bit "
+                 "sources (and denoising itself) can reveal — by averaging along the gradient "
+                 "within a banding-sized tolerance, plus an invisible micro-dither so any "
+                 "remaining step decorrelates. Real edges are rejected by the tolerance and "
+                 "never touched. 0 = off. Raise until the contours in flat gradients dissolve; "
+                 "it will not soften detail.",
                  0.0, 0.0, 100.0, grpRefine);
     defineDouble(p_Desc, page, "grainAmount", "Film Grain",
                  "Adds clean, synthesized grain — soft, organic, animated per frame, strongest in "
@@ -930,7 +1378,11 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                    "measurement region rectangle.\n\n"
                    "Temporal Activity: green = frame-averaging active, red = motion-protected.\n\n"
                    "SNR Map: signal-to-noise per pixel — magenta where noise dominates (NR matters "
-                   "most), green where the image wins.");
+                   "most), green where the image wins.\n\n"
+                   "Matte - Noisiness: the noise-dominance map written to BOTH the RGB and the "
+                   "alpha channel (white/opaque = noise dominates, black/transparent = the image "
+                   "wins) — feed it downstream as a key so later nodes treat noisy areas "
+                   "differently.");
         c->appendOption("Result");
         c->appendOption("Split (Input | Result)");
         c->appendOption("Input (Original)");
@@ -939,6 +1391,7 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
         c->appendOption("Noise Analysis (Measurements)");
         c->appendOption("Temporal Activity (Green = Averaging)");
         c->appendOption("SNR Map (Magenta = Noisy)");
+        c->appendOption("Matte: Noisiness (RGB + Alpha)");
         c->setDefault(0);
         c->setParent(*grpOutput);
         page->addChild(*c);

@@ -1,5 +1,64 @@
 # OpenNR changelog
 
+## 3.0.0 — 2026-07-15
+
+The intelligence release: the plugin now measures your footage and sets
+itself up.
+
+### Auto Setup — the headline
+- **One button dials in the whole plugin.** *Auto Setup (Analyze Footage)*
+  (right under Strength) measures several frames spread across the clip —
+  noise level, chroma character, spatial correlation, camera motion — then
+  writes the best settings **into the visible sliders**, so you can see what
+  it chose and dial anything in or back from there. It is not a mode: after
+  Auto Setup everything is ordinary manual state.
+- A read-only **Analysis** line reports what it did, e.g. *"Analyzed 5 frames
+  · noise 3.2%Y / 4.1%C (noisy) · steady camera · profile locked"*.
+- One **Cmd+Z** undoes the entire setup (it is applied as a single edit
+  block), and a **Revert Auto Setup** button restores the prior values as
+  belt-and-braces.
+- Auto Setup touches denoise parameters only — it never changes your Step 4
+  look choices (grain, texture, desaturation, debanding) or the View.
+
+### New in the pipeline
+- **Motion Tracking (Step 2, on by default).** Before gating each neighbour
+  frame, the temporal stage now tries shifting its patch by up to ±2 px and
+  matches on the best alignment — slow pans and handheld drift keep their
+  across-frames averaging instead of degrading to spatial-only. The hard-knee
+  gate is unchanged (still zero past the knee — still ghost-proof), and a
+  shifted match must pass a *steeper* gate, so motion beyond the search reach
+  is protected exactly as before. Costs ~13% at defaults; free on locked-off
+  footage; toggle off to reclaim it.
+- **Firefly Removal (Step 2, on by default).** Single-frame impulses — hot
+  pixels, sensor fireflies — are clipped to the 3-frame temporal median
+  before the merge. Three tests must all agree before a pixel is touched
+  (temporal spike, neighbour-frame agreement, spatial outlier), so moving
+  detail and thin fast-moving structures are left alone.
+- **Noise EQ (Step 3).** The spatial stage is now three bands with their own
+  strengths: **Fine** (the pixel-scale NLM pass, 100 = exactly v2.1),
+  **Medium** (3–8 px noise clumps from heavy compression, off by default) and
+  **Coarse Luma** (16–32 px brightness stains, off by default). Band
+  corrections are computed on block means with clipped magnitudes, so each
+  band removes its own scale and structure is never smeared by more than a
+  noise-sized amount. Chroma Blotch Reduction is unchanged and remains the
+  coarse band's chroma path.
+- **Lock Profile (Step 1).** Snapshots the measured noise profile (both
+  sigma pairs + the 32-bin brightness curve, aggregated robustly across
+  frames of the clip) so every frame filters against the same numbers.
+  Survives save/reload; the analysis HUD shows **LOCKED** while active (its
+  histogram stays live for comparison).
+- **Deband (Step 4).** Gradient-aware debanding: banding-tolerance ring
+  smoothing plus a triangular micro-dither. Real edges are rejected by the
+  tolerance itself and stay untouched.
+- **Matte: Noisiness (Step 5 view).** Writes the normalized noise-dominance
+  map into RGB *and alpha* so you can key it downstream and treat noisy
+  areas differently in later nodes.
+
+### Fixed
+- Refine-only configurations (grain / texture / desaturation / debanding with
+  both NR stages at zero) now render — v2.1 wrongly short-circuited them as
+  identity.
+
 ## 2.1.0 — 2026-07-14
 
 - **New name: Hush Open NR.** The effect now appears in Resolve under

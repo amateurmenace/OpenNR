@@ -44,6 +44,22 @@ typedef struct NRParams
     float master;          // 0..2
     int   viewMode;        // 0 result 1 split 2 input 3 after-temporal
                            // 4 noise-removed 5 analysis 6 activity 7 snr
+                           // 8 noise matte (map in RGB + alpha)
+
+    // ---- v3 ----
+    int   motionTracking;  // temporal shift-search matching (0/1)
+    int   fireflyRemoval;  // 3-frame temporal median impulse clip (0/1)
+    float eqFine;          // Noise EQ: fine band gain, 0..2 (1 = v2.1)
+    float eqMedium;        // Noise EQ: medium band amount, 0..1
+    float eqCoarse;        // Noise EQ: coarse band LUMA amount, 0..1
+    float deband;          // gradient-aware debanding, 0..1
+    int   profileLocked;   // 1 = use lock* values instead of measuring
+    float lockSY;          // locked input profile (spatial pair)
+    float lockSC;
+    float lockTY;          // locked temporal pair
+    float lockTC;
+    float lockGainY[16];   // locked brightness-dependent gains
+    float lockGainC[16];
 } NRParams;
 
 // stats buffer layout (uint32 slots)

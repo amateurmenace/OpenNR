@@ -74,13 +74,45 @@ static void toCpuParams(const NRParams& gp, nrcore::Params& cp)
     cp.frameIndex     = gp.frameIndex;
     cp.master         = gp.master;
     cp.viewMode       = gp.viewMode;
+    cp.motionTracking = gp.motionTracking;
+    cp.fireflyRemoval = gp.fireflyRemoval;
+    cp.eqFine         = gp.eqFine;
+    cp.eqMedium       = gp.eqMedium;
+    cp.eqCoarse       = gp.eqCoarse;
+    cp.deband         = gp.deband;
+    cp.profileLocked  = gp.profileLocked;
+    cp.lockSY         = gp.lockSY;
+    cp.lockSC         = gp.lockSC;
+    cp.lockTY         = gp.lockTY;
+    cp.lockTC         = gp.lockTC;
+    for (int b = 0; b < 16; ++b) {
+        cp.lockGainY[b] = gp.lockGainY[b];
+        cp.lockGainC[b] = gp.lockGainC[b];
+    }
 }
 
-static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char* label)
+// sparseOK: cases that exercise the v3 shift-search selection. Picking the
+// minimum of nine near-equal patch scores has measure-zero decision
+// boundaries, so a 1-ulp fast-math difference can legitimately choose a
+// different (equally good) candidate at a handful of pixels. Those pixels
+// blend a different noise sample — individually visible to the diff, but
+// bounded in count. Assert tight mean agreement plus a bounded outlier
+// fraction instead of a strict max.
+static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char* label,
+                      bool sparseOK = false, bool injectImpulses = false)
 {
     std::vector<std::vector<float>> frames(5);
     for (int k = 0; k < 5; ++k)
         makeFrame(frames[k], k - 2, 100 + k);
+    if (injectImpulses) {
+        std::mt19937 rng(7);
+        std::uniform_int_distribution<int> RX(8, W - 9), RY(8, H - 9);
+        for (int i = 0; i < 200; ++i) {
+            float* p = &frames[2][(static_cast<size_t>(RY(rng)) * W + RX(rng)) * 4];
+            const float v = (i & 1) ? 1.0f : 0.0f;
+            p[0] = v; p[1] = v; p[2] = v;
+        }
+    }
 
     nrcore::Params cp;
     toCpuParams(gp, cp);
@@ -111,15 +143,21 @@ static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char*
     const float* gpuOut = static_cast<const float*>(dstBuf.contents);
 
     double maxd = 0.0, sumd = 0.0;
+    size_t nOver = 0;
     size_t n = static_cast<size_t>(W) * H * 4;
     for (size_t i = 0; i < n; ++i) {
         const double d = std::fabs(gpuOut[i] - cpuOut[i]);
         maxd = std::max(maxd, d);
         sumd += d;
+        if (d > 5e-3) ++nOver;
     }
     const double meand = sumd / n;
-    const bool pass = (maxd < 5e-3) && (meand < 1e-4);
-    printf("  [%s] %-36s max %.2e  mean %.2e\n", pass ? "PASS" : "FAIL", label, maxd, meand);
+    const double overFrac = static_cast<double>(nOver) / n;
+    bool pass = (maxd < 5e-3) && (meand < 1e-4);
+    if (!pass && sparseOK)
+        pass = (meand < 1.5e-4) && (overFrac < 5e-3) && (maxd < 0.25);
+    printf("  [%s] %-36s max %.2e  mean %.2e  over %zu\n",
+           pass ? "PASS" : "FAIL", label, maxd, meand, nOver);
     return pass ? 0 : 1;
 }
 
@@ -150,6 +188,13 @@ int main()
     p.lumaTexture = 0.0f; p.grainAmount = 0.0f; p.grainSize = 1.6f; p.grainChroma = 0.25f;
     p.frameIndex = 0;
     p.master = 1.0f; p.viewMode = 0;
+    // v3 fields: base cases run tracking OFF (deterministic selection-free
+    // math, strict tolerance); dedicated cases below cover tracking.
+    p.motionTracking = 0; p.fireflyRemoval = 1;
+    p.eqFine = 1.0f; p.eqMedium = 0.0f; p.eqCoarse = 0.0f; p.deband = 0.0f;
+    p.profileLocked = 0;
+    p.lockSY = 0.02f; p.lockSC = 0.02f; p.lockTY = 0.02f; p.lockTC = 0.02f;
+    for (int b = 0; b < 16; ++b) { p.lockGainY[b] = 1.0f; p.lockGainC[b] = 1.0f; }
 
     failures += compareRun(queue, p, "defaults (auto, 5f, NLM, blotch)");
 
@@ -198,6 +243,36 @@ int main()
 
     NRParams p16 = p; p16.viewMode = 4;
     failures += compareRun(queue, p16, "noise removed view");
+
+    // ---- v3 cases ----
+    NRParams v1 = p; v1.motionTracking = 1;
+    failures += compareRun(queue, v1, "v3 motion tracking (2px pan)", true);
+
+    NRParams v2 = p; v2.motionTracking = 1; v2.temporalFrames = 3;
+    failures += compareRun(queue, v2, "v3 tracking, 3 frames", true);
+
+    NRParams v3 = p;
+    failures += compareRun(queue, v3, "v3 firefly + injected impulses", false, true);
+
+    NRParams v4 = p; v4.eqMedium = 0.8f; v4.eqCoarse = 0.6f; v4.chromaBlotch = 0.5f;
+    failures += compareRun(queue, v4, "v3 noise EQ (medium+coarse)");
+
+    NRParams v5 = p; v5.eqFine = 1.6f; v5.deband = 1.0f;
+    failures += compareRun(queue, v5, "v3 fine boost + deband");
+
+    NRParams v6 = p; v6.profileLocked = 1;
+    v6.lockSY = 0.031f; v6.lockSC = 0.017f; v6.lockTY = 0.029f; v6.lockTC = 0.015f;
+    for (int b = 0; b < 16; ++b) { v6.lockGainY[b] = 0.8f + 0.05f * b; v6.lockGainC[b] = 1.4f; }
+    failures += compareRun(queue, v6, "v3 locked profile");
+
+    NRParams v7 = v6; v7.profileSource = 2; v7.sigmaY = 0.04f; v7.sigmaC = 0.04f;
+    failures += compareRun(queue, v7, "v3 locked overrides manual");
+
+    NRParams v8 = v6; v8.viewMode = 5;
+    failures += compareRun(queue, v8, "v3 HUD with LOCKED tag");
+
+    NRParams v9 = p; v9.viewMode = 8;
+    failures += compareRun(queue, v9, "v3 noise matte view");
 
     printf(failures == 0 ? "ALL GPU PARITY CHECKS PASSED\n" : "%d GPU PARITY CHECK(S) FAILED\n", failures);
     return failures == 0 ? 0 : 1;

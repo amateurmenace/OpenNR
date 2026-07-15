@@ -13,3 +13,6 @@ test/*.png
 test/*.air
 
 .DS_Store
+
+# opencl compile-check harness binary
+test/compile_opencl
