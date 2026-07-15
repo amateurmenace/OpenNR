@@ -1,5 +1,18 @@
 # OpenNR changelog
 
+## 2.1.0 — 2026-07-14
+
+- **New name: Hush Open NR.** The effect now appears in Resolve under
+  Effects → OpenFX → Filters → **Hush → Hush Open NR**. (The internal plugin
+  identifier is unchanged, so existing projects keep working; the bundle
+  filename also stays `OpenNR.ofx.bundle`.)
+- **Drag the noise-sample region in the viewer.** With Noise Profile set to
+  Automatic (From Region), the yellow rectangle is now a live on-screen
+  control: drag inside to move it, drag a corner handle to resize. Enable the
+  OpenFX overlay in the viewer's on-screen-controls menu. Built on the OFX
+  Draw Suite.
+
+
 ## 2.0.0 — 2026-07-14
 
 The full-suite release, built from field feedback ("spatial NR doesn't seem to

@@ -17,17 +17,20 @@
 #include <vector>
 
 #include "ofxsImageEffect.h"
+#include "ofxsInteract.h"
 #include "ofxsMultiThread.h"
 #include "ofxsProcessing.h"
 #include "ofxsLog.h"
+#include "ofxsSupportPrivate.h"
+#include "ofxDrawSuite.h"
 
 #include "NRParams.h"
 #include "nr_core.h"
 
-#define kPluginName "OpenNR Denoise"
-#define kPluginGrouping "OpenNR"
+#define kPluginName "Hush Open NR"
+#define kPluginGrouping "Hush"
 #define kPluginDescription \
-    "OpenNR v2.0 — the free noise reduction suite.\n\n" \
+    "Hush Open NR v2.1 — the free noise reduction suite.\n\n" \
     "Work top to bottom: 1) measure the noise (automatic, from a region, or " \
     "manual), 2) temporal NR averages matching pixels across frames, 3) spatial " \
     "NR cleans what remains, 4) refine the finish (shadow desaturation, texture, " \
@@ -37,7 +40,7 @@
     "MIT-licensed and free forever."
 #define kPluginIdentifier "org.opennr.Denoise"
 #define kPluginVersionMajor 2
-#define kPluginVersionMinor 0
+#define kPluginVersionMinor 1
 
 #define kSupportsTiles false
 #define kSupportsMultiResolution false
@@ -489,6 +492,151 @@ private:
     OFX::ChoiceParam*  m_ViewMode = nullptr;
 };
 
+
+////////////////////////////////////////////////////////////////////////////////
+// On-viewer noise-sample region: draggable / resizable overlay
+// (visible when Noise Profile = Automatic (From Region); enable the OpenFX
+// overlay in the viewer's on-screen-controls dropdown)
+////////////////////////////////////////////////////////////////////////////////
+
+class HushRegionInteract : public OFX::OverlayInteract
+{
+public:
+    HushRegionInteract(OfxInteractHandle p_Handle, OFX::ImageEffect* p_Effect)
+        : OFX::OverlayInteract(p_Handle)
+        , m_Drag(0)
+    {
+        _effect  = p_Effect;
+        m_Source = p_Effect->fetchChoiceParam("profileSource");
+        m_CX     = p_Effect->fetchDoubleParam("regionCenterX");
+        m_CY     = p_Effect->fetchDoubleParam("regionCenterY");
+        m_Size   = p_Effect->fetchDoubleParam("regionSize");
+        addParamToSlaveTo(m_Source);
+        addParamToSlaveTo(m_CX);
+        addParamToSlaveTo(m_CY);
+        addParamToSlaveTo(m_Size);
+    }
+
+    virtual bool draw(const OFX::DrawArgs& p_Args)
+    {
+        if (!regionActive() || !p_Args.context || !OFX::Private::gDrawSuite)
+            return false;
+        OfxDrawSuiteV1* ds = OFX::Private::gDrawSuite;
+
+        double cx, cy, half;
+        geometry(cx, cy, half);
+        const double hs = 5.0 * std::max(p_Args.pixelScale.x, 1e-6);
+
+        const OfxRGBAColourF yellow = { 1.0f, 0.9f, 0.1f, 1.0f };
+        ds->setColour(p_Args.context, &yellow);
+        ds->setLineWidth(p_Args.context, 2.0f);
+        ds->setLineStipple(p_Args.context, kOfxDrawLineStipplePatternSolid);
+
+        const OfxPointD rect[4] = { { cx - half, cy - half }, { cx + half, cy - half },
+                                    { cx + half, cy + half }, { cx - half, cy + half } };
+        ds->draw(p_Args.context, kOfxDrawPrimitiveLineLoop, rect, 4);
+
+        // corner handles (filled)
+        for (int i = 0; i < 4; ++i) {
+            const OfxPointD h[2] = { { rect[i].x - hs, rect[i].y - hs },
+                                     { rect[i].x + hs, rect[i].y + hs } };
+            ds->draw(p_Args.context, kOfxDrawPrimitiveRectangle, h, 2);
+        }
+
+        // center cross
+        const OfxPointD crossH[2] = { { cx - hs * 1.5, cy }, { cx + hs * 1.5, cy } };
+        const OfxPointD crossV[2] = { { cx, cy - hs * 1.5 }, { cx, cy + hs * 1.5 } };
+        ds->draw(p_Args.context, kOfxDrawPrimitiveLines, crossH, 2);
+        ds->draw(p_Args.context, kOfxDrawPrimitiveLines, crossV, 2);
+        return true;
+    }
+
+    virtual bool penDown(const OFX::PenArgs& p_Args)
+    {
+        if (!regionActive())
+            return false;
+        double cx, cy, half;
+        geometry(cx, cy, half);
+        const double px = p_Args.penPosition.x, py = p_Args.penPosition.y;
+        const double tol = 14.0 * std::max(p_Args.pixelScale.x, 1e-6);
+
+        // corners first (resize)
+        const double corners[4][2] = { { cx - half, cy - half }, { cx + half, cy - half },
+                                       { cx + half, cy + half }, { cx - half, cy + half } };
+        for (int i = 0; i < 4; ++i)
+            if (std::fabs(px - corners[i][0]) < tol && std::fabs(py - corners[i][1]) < tol) {
+                m_Drag = 2;
+                return true;
+            }
+        // inside (move)
+        if (std::fabs(px - cx) <= half && std::fabs(py - cy) <= half) {
+            m_Drag = 1;
+            m_GrabX = px - cx;
+            m_GrabY = py - cy;
+            return true;
+        }
+        return false;
+    }
+
+    virtual bool penMotion(const OFX::PenArgs& p_Args)
+    {
+        if (m_Drag == 0 || !regionActive())
+            return false;
+        const OfxPointD ext = _effect->getProjectExtent();
+        const double minDim = std::min(ext.x, ext.y);
+        const double px = p_Args.penPosition.x, py = p_Args.penPosition.y;
+
+        if (m_Drag == 1) {
+            m_CX->setValue(std::min(1.0, std::max(0.0, (px - m_GrabX) / ext.x)));
+            m_CY->setValue(std::min(1.0, std::max(0.0, (py - m_GrabY) / ext.y)));
+        } else {
+            double cx, cy, half;
+            geometry(cx, cy, half);
+            const double newHalf = std::max(std::fabs(px - cx), std::fabs(py - cy));
+            m_Size->setValue(std::min(1.0, std::max(0.05, 2.0 * newHalf / minDim)));
+        }
+        requestRedraw();
+        return true;
+    }
+
+    virtual bool penUp(const OFX::PenArgs&)
+    {
+        const bool was = (m_Drag != 0);
+        m_Drag = 0;
+        return was;
+    }
+
+private:
+    bool regionActive()
+    {
+        int s = 0;
+        m_Source->getValue(s);
+        return s == 1;
+    }
+
+    // canonical-coordinate geometry (OFX images are bottom-up, so the kernel's
+    // normalized y maps directly onto the interact's y-up canonical space)
+    void geometry(double& cx, double& cy, double& half)
+    {
+        const OfxPointD ext = _effect->getProjectExtent();
+        cx = m_CX->getValue() * ext.x;
+        cy = m_CY->getValue() * ext.y;
+        half = 0.5 * m_Size->getValue() * std::min(ext.x, ext.y);
+    }
+
+    OFX::ChoiceParam* m_Source;
+    OFX::DoubleParam* m_CX;
+    OFX::DoubleParam* m_CY;
+    OFX::DoubleParam* m_Size;
+    int m_Drag;
+    double m_GrabX = 0.0, m_GrabY = 0.0;
+};
+
+class HushRegionInteractDescriptor
+    : public OFX::DefaultEffectOverlayDescriptor<HushRegionInteractDescriptor, HushRegionInteract>
+{
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 // Factory
 ////////////////////////////////////////////////////////////////////////////////
@@ -524,6 +672,8 @@ void OpenNRPluginFactory::describe(OFX::ImageEffectDescriptor& p_Desc)
 #ifdef __APPLE__
     p_Desc.setSupportsMetalRender(true);
 #endif
+
+    p_Desc.setOverlayInteractDescriptor(new HushRegionInteractDescriptor);
 }
 
 static OFX::DoubleParamDescriptor* defineDouble(OFX::ImageEffectDescriptor& p_Desc, OFX::PageParamDescriptor* p_Page,
@@ -598,8 +748,9 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                    "Automatic: measures every frame using frame-to-frame differences plus two "
                    "spatial estimators — works for most footage.\n\n"
                    "Automatic (From Region): same, but measured only inside a rectangle you place "
-                   "over a flat area (wall, sky, gray card). Use when the frame is full of fine "
-                   "texture that could be mistaken for noise. Position it in the Noise Analysis view.\n\n"
+                   "over a flat area (wall, sky, gray card). Drag the rectangle right in the viewer "
+                   "(enable the OpenFX overlay in the viewer's on-screen-controls menu), drag a "
+                   "corner to resize — or use the sliders below and the Noise Analysis view.\n\n"
                    "Manual: type the noise levels yourself using the two sliders below.");
         c->appendOption("Automatic (Whole Frame)");
         c->appendOption("Automatic (From Region)");
@@ -612,7 +763,7 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "Horizontal center of the measurement region (0 = left edge, 1 = right edge). "
                  "See the yellow rectangle in the Noise Analysis view.", 0.5, 0.0, 1.0, grpProfile);
     defineDouble(p_Desc, page, "regionCenterY", "Region Center Y",
-                 "Vertical center of the measurement region (0 = top, 1 = bottom).", 0.5, 0.0, 1.0, grpProfile);
+                 "Vertical center of the measurement region (0 = bottom, 1 = top). Easier: drag the rectangle in the viewer.", 0.5, 0.0, 1.0, grpProfile);
     defineDouble(p_Desc, page, "regionSize", "Region Size",
                  "Size of the measurement region relative to the frame.", 0.25, 0.05, 1.0, grpProfile);
     defineDouble(p_Desc, page, "profileAdjust", "Auto Profile Adjust",
