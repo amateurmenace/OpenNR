@@ -6,6 +6,9 @@
   Effects → OpenFX → Filters → **Hush → Hush Open NR**. (The internal plugin
   identifier is unchanged, so existing projects keep working; the bundle
   filename also stays `OpenNR.ofx.bundle`.)
+- **Windows binaries.** Each release now ships `OpenNR-x.y.z-Windows.zip`,
+  built by CI (MSVC, OpenCL render path — NVIDIA/AMD/Intel). Drag the bundle
+  into `C:\Program Files\Common Files\OFX\Plugins` or use the included .bat.
 - **Drag the noise-sample region in the viewer.** With Noise Profile set to
   Automatic (From Region), the yellow rectangle is now a live on-screen
   control: drag inside to move it, drag a corner handle to resize. Enable the

@@ -78,6 +78,16 @@ GitHub: repo `amateurmenace/OpenNR`; releases hold the pkg/zip artifacts
 (`gh release create vX.Y.Z release/*.pkg release/*.zip`). The portfolio page
 in `site/index.html` links to `releases/latest`.
 
+**Windows binaries** are built by the `windows` CI job (CMakeLists.txt, MSVC,
+OpenCL via vcpkg; version string parsed from build_release.sh). After a
+release-worthy push goes green: `gh run download <id> --name OpenNR-Windows`
+then `gh release upload vX.Y.Z OpenNR-X.Y.Z-Windows.zip`. The zip contains the
+bundle (Contents/Win64/OpenNR.ofx), the .bat installer and INSTALL-WINDOWS.txt
+drag instructions. CUDA stays OFF (`HUSH_ENABLE_CUDA`) until someone verifies
+the port on NVIDIA hardware — the Windows build renders via OpenCL, which
+Resolve uses on NVIDIA/AMD/Intel when CUDA isn't advertised. Do NOT add
+`ofxsHWNDInteract.cpp` to any build — it needs a header that doesn't ship.
+
 ## Screenshot / orientation gotcha
 
 OFX buffers are **bottom-up**; the test harness writes PPMs top-down (buffer

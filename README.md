@@ -81,8 +81,11 @@ AirDropped, clear the quarantine flag or macOS will silently refuse to load it:
 `sudo xattr -dr com.apple.quarantine /Library/OFX/Plugins/OpenNR.ofx.bundle`
 
 ### Windows
-Unzip the Windows release and double-click `Install OpenNR (Windows).bat`
-(it copies the bundle into `C:\Program Files\Common Files\OFX\Plugins`).
+Download `OpenNR-x.y.z-Windows.zip` from the latest release, unzip, and either
+double-click `Install OpenNR (Windows).bat` or drag `OpenNR.ofx.bundle` into
+`C:\Program Files\Common Files\OFX\Plugins` yourself. Restart Resolve.
+(The Windows build renders through OpenCL — works on NVIDIA, AMD and Intel
+GPUs. A CUDA-native path exists in the tree, gated until verified on hardware.)
 
 ### Linux
 Copy `OpenNR.ofx.bundle` into `/usr/OFX/Plugins/`.
