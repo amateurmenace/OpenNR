@@ -15,4 +15,10 @@ for tok, name in imgs.items():
         sys.exit(f"missing {p} — see comments for how to regenerate")
     html = html.replace(f"%%{tok}%%", "data:image/jpeg;base64," + base64.b64encode(open(p, "rb").read()).decode())
 open(os.path.join(here, "index.html"), "w").write(html)
-print("site/index.html rebuilt")
+docs = os.path.join(here, "..", "docs")
+os.makedirs(os.path.join(docs, "assets"), exist_ok=True)
+open(os.path.join(docs, "index.html"), "w").write(html)
+import shutil
+for f in os.listdir(os.path.join(here, "assets")):
+    shutil.copy(os.path.join(here, "assets", f), os.path.join(docs, "assets", f))
+print("site/index.html + docs/ (GitHub Pages) rebuilt — also run build_embed.py")
