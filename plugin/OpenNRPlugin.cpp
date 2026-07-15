@@ -60,14 +60,14 @@
 
 #ifdef __APPLE__
 extern void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Params,
-                       const float* const p_Srcs[5], float* p_Dst);
+                       const float* const p_Srcs[7], float* p_Dst);
 #endif
 #ifdef HUSH_ENABLE_CUDA
 extern void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Params,
-                      const float* const p_Srcs[5], float* p_Dst);
+                      const float* const p_Srcs[7], float* p_Dst);
 #endif
 extern void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Params,
-                        const float* const p_Srcs[5], float* p_Dst);
+                        const float* const p_Srcs[7], float* p_Dst);
 
 ////////////////////////////////////////////////////////////////////////////////
 // Processor
@@ -81,9 +81,9 @@ public:
     {
     }
 
-    void setSrcImgs(OFX::Image* p_Imgs[5])
+    void setSrcImgs(OFX::Image* p_Imgs[7])
     {
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 7; ++i)
             _srcImgs[i] = p_Imgs[i];
     }
 
@@ -92,11 +92,11 @@ public:
     virtual void processImagesMetal()
     {
 #ifdef __APPLE__
-        const OfxRectI& bounds = _srcImgs[2]->getBounds();
+        const OfxRectI& bounds = _srcImgs[3]->getBounds();
         const int width = bounds.x2 - bounds.x1;
         const int height = bounds.y2 - bounds.y1;
-        const float* srcs[5];
-        for (int i = 0; i < 5; ++i)
+        const float* srcs[7];
+        for (int i = 0; i < 7; ++i)
             srcs[i] = static_cast<float*>(_srcImgs[i]->getPixelData());
         RunMetalNR(_pMetalCmdQ, width, height, _params, srcs, static_cast<float*>(_dstImg->getPixelData()));
 #endif
@@ -105,11 +105,11 @@ public:
     virtual void processImagesCUDA()
     {
 #ifdef HUSH_ENABLE_CUDA
-        const OfxRectI& bounds = _srcImgs[2]->getBounds();
+        const OfxRectI& bounds = _srcImgs[3]->getBounds();
         const int width = bounds.x2 - bounds.x1;
         const int height = bounds.y2 - bounds.y1;
-        const float* srcs[5];
-        for (int i = 0; i < 5; ++i)
+        const float* srcs[7];
+        for (int i = 0; i < 7; ++i)
             srcs[i] = static_cast<float*>(_srcImgs[i]->getPixelData());
         RunCudaNR(_pCudaStream, width, height, _params, srcs, static_cast<float*>(_dstImg->getPixelData()));
 #endif
@@ -117,11 +117,11 @@ public:
 
     virtual void processImagesOpenCL()
     {
-        const OfxRectI& bounds = _srcImgs[2]->getBounds();
+        const OfxRectI& bounds = _srcImgs[3]->getBounds();
         const int width = bounds.x2 - bounds.x1;
         const int height = bounds.y2 - bounds.y1;
-        const float* srcs[5];
-        for (int i = 0; i < 5; ++i)
+        const float* srcs[7];
+        for (int i = 0; i < 7; ++i)
             srcs[i] = static_cast<float*>(_srcImgs[i]->getPixelData());
         RunOpenCLNR(_pOpenCLCmdQ, width, height, _params, srcs, static_cast<float*>(_dstImg->getPixelData()));
     }
@@ -130,7 +130,7 @@ public:
     virtual void multiThreadProcessImages(OfxRectI) {}
 
 private:
-    OFX::Image* _srcImgs[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+    OFX::Image* _srcImgs[7] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
     NRParams _params = {};
 };
 
@@ -470,7 +470,7 @@ private:
         m_InAutoApply = true;
         beginEditBlock("Hush Auto Setup");
         m_EnableTemporal->setValue(as.enableTemporal != 0);
-        m_TemporalFrames->setValue(as.temporalFrames >= 5 ? 1 : 0);
+        m_TemporalFrames->setValue(as.temporalFrames >= 7 ? 2 : (as.temporalFrames >= 5 ? 1 : 0));
         m_TemporalLuma->setValue(as.temporalLuma);
         m_TemporalChroma->setValue(as.temporalChroma);
         m_MotionThresh->setValue(as.motionThresh);
@@ -569,7 +569,8 @@ private:
         {
             int choice = 0;
             m_TemporalFrames->getValueAtTime(t, choice);
-            reach = (choice == 1) ? 2 : 1;   // 0 -> 3 frames (+/-1), 1 -> 5 frames (+/-2)
+            // 0 -> 3 frames (+/-1), 1 -> 5 (+/-2), 2 -> 7 (+/-3, v3.3)
+            reach = (choice == 2) ? 3 : (choice == 1) ? 2 : 1;
         }
         int source = 0;
         m_ProfileSource->getValueAtTime(t, source);
@@ -637,7 +638,7 @@ private:
         p.enableTemporal  = m_EnableTemporal->getValueAtTime(t) ? 1 : 0;
         int framesChoice = 0;
         m_TemporalFrames->getValueAtTime(t, framesChoice);
-        p.temporalFrames  = (framesChoice == 1) ? 5 : 3;
+        p.temporalFrames  = (framesChoice == 2) ? 7 : (framesChoice == 1) ? 5 : 3;
         p.temporalLuma    = static_cast<float>(m_TemporalLuma->getValueAtTime(t) / 100.0);
         p.temporalChroma  = static_cast<float>(m_TemporalChroma->getValueAtTime(t) / 100.0);
         p.motionThresh    = static_cast<float>(m_MotionThresh->getValueAtTime(t) / 100.0);
@@ -714,13 +715,13 @@ private:
 
         const OfxRangeD clipRange = m_SrcClip->getFrameRange();
 
-        std::unique_ptr<OFX::Image> held[5];
-        OFX::Image* imgs[5] = { nullptr, nullptr, nullptr, nullptr, nullptr };
+        std::unique_ptr<OFX::Image> held[7];
+        OFX::Image* imgs[7] = { nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr };
 
-        held[2].reset(m_SrcClip->fetchImage(t));
-        if (!held[2])
+        held[3].reset(m_SrcClip->fetchImage(t));
+        if (!held[3])
             OFX::throwSuiteStatusException(kOfxStatFailed);
-        imgs[2] = held[2].get();
+        imgs[3] = held[3].get();
 
         for (int k = -prevReach; k <= reach; ++k)
         {
@@ -729,15 +730,15 @@ private:
             double tk = t + k;
             if (tk < clipRange.min) tk = clipRange.min;
             if (tk > clipRange.max) tk = clipRange.max;
-            held[2 + k].reset(m_SrcClip->fetchImage(tk));
-            imgs[2 + k] = held[2 + k] ? held[2 + k].get() : held[2].get();
+            held[3 + k].reset(m_SrcClip->fetchImage(tk));
+            imgs[3 + k] = held[3 + k] ? held[3 + k].get() : held[3].get();
         }
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 7; ++i)
             if (!imgs[i])
-                imgs[i] = held[2].get();
+                imgs[i] = held[3].get();
 
-        if ((imgs[2]->getPixelDepth() != dst->getPixelDepth()) ||
-            (imgs[2]->getPixelComponents() != dst->getPixelComponents()))
+        if ((imgs[3]->getPixelDepth() != dst->getPixelDepth()) ||
+            (imgs[3]->getPixelComponents() != dst->getPixelComponents()))
             OFX::throwSuiteStatusException(kOfxStatErrValue);
 
         const bool gpu = p_Args.isEnabledMetalRender || p_Args.isEnabledCudaRender || p_Args.isEnabledOpenCLRender;
@@ -757,9 +758,9 @@ private:
         }
     }
 
-    void renderCPU(OFX::Image* imgs[5], OFX::Image* dst, const NRParams& params)
+    void renderCPU(OFX::Image* imgs[7], OFX::Image* dst, const NRParams& params)
     {
-        const OfxRectI& b = imgs[2]->getBounds();
+        const OfxRectI& b = imgs[3]->getBounds();
         const int W = b.x2 - b.x1;
         const int H = b.y2 - b.y1;
         if (W <= 0 || H <= 0)
@@ -821,9 +822,9 @@ private:
 
         const size_t n = static_cast<size_t>(W) * H * 4;
         std::vector<std::vector<float>> packed;
-        const float* fptr[5];
+        const float* fptr[7];
 
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 7; ++i)
         {
             int prior = -1;
             for (int j = 0; j < i; ++j)
@@ -1257,9 +1258,11 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
     {
         OFX::ChoiceParamDescriptor* c = p_Desc.defineChoiceParam("temporalFrames");
         c->setLabels("Number of Frames", "Number of Frames", "Frames");
-        c->setHint("5 frames removes more noise on static areas, renders slower.");
+        c->setHint("More frames remove more noise on static areas but render slower; "
+                   "7 is for locked-off shots with heavy noise.");
         c->appendOption("3 Frames");
         c->appendOption("5 Frames");
+        c->appendOption("7 Frames");
         c->setDefault(0);
         c->setParent(*grpTemporal);
         page->addChild(*c);

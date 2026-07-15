@@ -16,7 +16,7 @@
 #include "NRParams.h"
 
 extern void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Params,
-                       const float* const p_Srcs[5], float* p_Dst);
+                       const float* const p_Srcs[7], float* p_Dst);
 
 static const int W = 512;
 static const int H = 288;
@@ -114,14 +114,16 @@ static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char*
                       bool sparseOK = false, bool injectImpulses = false, bool hudOK = false,
                       float panPx = 2.0f)
 {
-    std::vector<std::vector<float>> frames(5);
-    for (int k = 0; k < 5; ++k)
-        makeFrame(frames[k], k - 2, 100 + k, panPx);
+    // 7 frames, centre 3; seeds keyed to the offset so the middle five are
+    // bit-identical to the 5-frame era's
+    std::vector<std::vector<float>> frames(7);
+    for (int k = 0; k < 7; ++k)
+        makeFrame(frames[k], k - 3, 100 + (k - 3) + 2, panPx);
     if (injectImpulses) {
         std::mt19937 rng(7);
         std::uniform_int_distribution<int> RX(8, W - 9), RY(8, H - 9);
         for (int i = 0; i < 200; ++i) {
-            float* p = &frames[2][(static_cast<size_t>(RY(rng)) * W + RX(rng)) * 4];
+            float* p = &frames[3][(static_cast<size_t>(RY(rng)) * W + RX(rng)) * 4];
             const float v = (i & 1) ? 1.0f : 0.0f;
             p[0] = v; p[1] = v; p[2] = v;
         }
@@ -130,21 +132,22 @@ static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char*
     nrcore::Params cp;
     toCpuParams(gp, cp);
 
-    const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
-                             frames[3].data(), frames[4].data() };
+    const float* fptr[7] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                             frames[3].data(), frames[4].data(), frames[5].data(),
+                             frames[6].data() };
     std::vector<float> cpuOut(static_cast<size_t>(W) * H * 4), scratch;
     nrcore::denoiseFrame(fptr, W, H, cp, cpuOut.data(), scratch);
 
     id<MTLDevice> device = queue.device;
     const size_t bytes = static_cast<size_t>(W) * H * 4 * sizeof(float);
 
-    id<MTLBuffer> srcBuf[5];
-    for (int i = 0; i < 5; ++i)
+    id<MTLBuffer> srcBuf[7];
+    for (int i = 0; i < 7; ++i)
         srcBuf[i] = [device newBufferWithBytes:frames[i].data() length:bytes options:MTLResourceStorageModeShared];
     id<MTLBuffer> dstBuf = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
 
-    const float* srcs[5];
-    for (int i = 0; i < 5; ++i)
+    const float* srcs[7];
+    for (int i = 0; i < 7; ++i)
         srcs[i] = (const float*)srcBuf[i];
 
     RunMetalNR((void*)queue, W, H, gp, srcs, (float*)dstBuf);
@@ -368,6 +371,16 @@ int main()
     NRParams z5 = z1; z5.spatialLuma = 1.5f; z5.eqFine = 3.0f; z5.detailRescue = 0.8f;
     z5.spatialRadius = 8; z5.scopeMotion = 1;
     failures += compareRun(queue, z5, "v3.3 deep clean, crank + motion scope", false, false, true);
+
+    // B2: 7-frame stack
+    NRParams s7 = p; s7.temporalFrames = 7;
+    failures += compareRun(queue, s7, "v3.3 7-frame stack");
+
+    NRParams s7t = s7; s7t.motionTracking = 1;
+    failures += compareRun(queue, s7t, "v3.3 7 frames + tracking (2px pan)", true);
+
+    NRParams s7d = s7; s7d.deepClean = 1; s7d.viewMode = 6;
+    failures += compareRun(queue, s7d, "v3.3 7f + deep clean, activity view");
 
     printf(failures == 0 ? "ALL GPU PARITY CHECKS PASSED\n" : "%d GPU PARITY CHECK(S) FAILED\n", failures);
     return failures == 0 ? 0 : 1;

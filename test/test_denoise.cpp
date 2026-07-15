@@ -200,14 +200,19 @@ enum NoiseKind { NOISE_IID, NOISE_CORR, NOISE_BLOTCH, NOISE_BLOB4, NOISE_BLOB16 
 static void makeCaseFrames(float sigma, float stepX, float stepY, NoiseKind kind,
                            std::vector<std::vector<float>>& frames)
 {
-    frames.assign(5, {});
-    for (int k = 0; k < 5; ++k) {
-        renderScene(frames[k], (k - 2) * stepX, (k - 2) * stepY);
-        if (kind == NOISE_CORR) addCorrelatedNoise(frames[k], sigma, 1000 + k);
-        else if (kind == NOISE_BLOTCH) { addNoise(frames[k], sigma * 0.5f, 1000 + k); addChromaBlotchNoise(frames[k], sigma, 2000 + k); }
-        else if (kind == NOISE_BLOB4)  { addNoise(frames[k], sigma * 0.25f, 1000 + k); addLumaBlockNoise(frames[k], sigma, 4, 3000 + k); }
-        else if (kind == NOISE_BLOB16) { addNoise(frames[k], sigma * 0.25f, 1000 + k); addLumaBlockNoise(frames[k], sigma, 16, 4000 + k); }
-        else addNoise(frames[k], sigma, 1000 + k);
+    // v3.3 B2: 7 frames, centre at index 3. Seeds are keyed to the frame
+    // OFFSET (off+2 reproduces the 5-frame era's 1000+k), so the middle five
+    // frames are bit-identical to what the pinned goldens were captured on.
+    frames.assign(7, {});
+    for (int k = 0; k < 7; ++k) {
+        const int off = k - 3;
+        const int sk = off + 2;
+        renderScene(frames[k], off * stepX, off * stepY);
+        if (kind == NOISE_CORR) addCorrelatedNoise(frames[k], sigma, 1000 + sk);
+        else if (kind == NOISE_BLOTCH) { addNoise(frames[k], sigma * 0.5f, 1000 + sk); addChromaBlotchNoise(frames[k], sigma, 2000 + sk); }
+        else if (kind == NOISE_BLOB4)  { addNoise(frames[k], sigma * 0.25f, 1000 + sk); addLumaBlockNoise(frames[k], sigma, 4, 3000 + sk); }
+        else if (kind == NOISE_BLOB16) { addNoise(frames[k], sigma * 0.25f, 1000 + sk); addLumaBlockNoise(frames[k], sigma, 16, 4000 + sk); }
+        else addNoise(frames[k], sigma, 1000 + sk);
     }
 }
 
@@ -221,20 +226,21 @@ static CaseResult runCase(float sigma, float stepX, float stepY, NoiseKind kind,
     std::vector<std::vector<float>> frames;
     makeCaseFrames(sigma, stepX, stepY, kind, frames);
 
-    const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
-                             frames[3].data(), frames[4].data() };
+    const float* fptr[7] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                             frames[3].data(), frames[4].data(), frames[5].data(),
+                             frames[6].data() };
 
     std::vector<float> out(static_cast<size_t>(W) * H * 4);
     std::vector<float> scratch;
     const nrcore::Stats s = nrcore::denoiseFrame(fptr, W, H, p, out.data(), scratch);
 
     CaseResult r;
-    r.before = psnr(frames[2], clean);
+    r.before = psnr(frames[3], clean);
     r.after  = psnr(out, clean);
     r.stats  = s;
-    r.trueY  = trueSigmaY(frames[2], clean);
+    r.trueY  = trueSigmaY(frames[3], clean);
     if (outDenoised) *outDenoised = out;
-    if (outNoisy)    *outNoisy = frames[2];
+    if (outNoisy)    *outNoisy = frames[3];
     return r;
 }
 
@@ -271,8 +277,8 @@ static nranalyze::ClipAggregate analyzeFrames(const std::vector<std::vector<floa
 {
     nrcore::Params ap;   // auto whole-frame, adjust 1 — the analyzer's params
     std::vector<nrcore::Stats> per;
-    for (int i = 0; i < 5; ++i) {
-        const int partner = (i < 4) ? i + 1 : 3;
+    for (int i = 0; i < 7; ++i) {
+        const int partner = (i < 6) ? i + 1 : 5;
         nrcore::Stats st;
         nrcore::estimateInput(frames[i].data(), frames[partner].data(), W, H, ap, st);
         per.push_back(st);
@@ -408,7 +414,7 @@ int main()
         renderScene(clean, 0, 0);
         noisy = clean;
         addNoise(noisy, 0.05f, 7);
-        const float* fptr[5] = { noisy.data(), noisy.data(), noisy.data(), noisy.data(), noisy.data() };
+        const float* fptr[7] = { noisy.data(), noisy.data(), noisy.data(), noisy.data(), noisy.data(), noisy.data(), noisy.data() };
         nrcore::denoiseFrame(fptr, W, H, pid, out.data(), scratch);
         float maxd = 0.0f;
         for (size_t i = 0; i < out.size(); ++i)
@@ -422,7 +428,7 @@ int main()
         renderScene(clean, 0, 0);
         noisy = clean;
         addNoise(noisy, 0.05f, 8);
-        const float* fptr[5] = { noisy.data(), noisy.data(), noisy.data(), noisy.data(), noisy.data() };
+        const float* fptr[7] = { noisy.data(), noisy.data(), noisy.data(), noisy.data(), noisy.data(), noisy.data(), noisy.data() };
         nrcore::denoiseFrame(fptr, W, H, pid, out.data(), scratch);
         float maxd = 0.0f;
         for (size_t i = 0; i < out.size(); ++i)
@@ -632,10 +638,11 @@ int main()
         std::vector<std::vector<float>> frames;
         makeCaseFrames(0.02f, 0.0f, 0.0f, NOISE_IID, frames);
         std::vector<int> sites;
-        addImpulses(frames[2], 400, 99, sites);
+        addImpulses(frames[3], 400, 99, sites);
 
-        const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
-                                 frames[3].data(), frames[4].data() };
+        const float* fptr[7] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                                 frames[3].data(), frames[4].data(), frames[5].data(),
+                                 frames[6].data() };
         nrcore::Params pf = p;             // 5 frames, defaults otherwise
         pf.motionTracking = 1;
         std::vector<float> outOn(static_cast<size_t>(W) * H * 4), outOff(outOn.size()), scratch;
@@ -776,7 +783,7 @@ int main()
         pd.enableTemporal = 0; pd.enableSpatial = 0; pd.enableRefine = 1;
         pd.profileSource = 2; pd.sigmaY = 0.005f; pd.sigmaC = 0.005f;
         pd.deband = 1.0f;
-        const float* fptr[5] = { ramp.data(), ramp.data(), ramp.data(), ramp.data(), ramp.data() };
+        const float* fptr[7] = { ramp.data(), ramp.data(), ramp.data(), ramp.data(), ramp.data(), ramp.data(), ramp.data() };
         std::vector<float> out(ramp.size()), scratch;
         nrcore::denoiseFrame(fptr, W, H, pd, out.data(), scratch);
         const double eIn = bandingEnergy(ramp), eOut = bandingEnergy(out);
@@ -799,7 +806,7 @@ int main()
                 else { const float v = 0.15f + 0.30f * band; px[0] = px[1] = px[2] = v; }
                 px[3] = 1.0f;
             }
-        const float* cptr[5] = { chart.data(), chart.data(), chart.data(), chart.data(), chart.data() };
+        const float* cptr[7] = { chart.data(), chart.data(), chart.data(), chart.data(), chart.data(), chart.data(), chart.data() };
         std::vector<float> outC(chart.size());
         nrcore::denoiseFrame(cptr, W, H, pd, outC.data(), scratch);
         float maxd = 0.0f;
@@ -880,9 +887,10 @@ int main()
         {
             std::vector<std::vector<float>> fr;
             makeCaseFrames(0.04f, 0.0f, 0.0f, NOISE_IID, fr);
-            const float* fp[5] = { fr[0].data(), fr[1].data(), fr[2].data(),
-                                   fr[3].data(), fr[4].data() };
-            std::vector<float> outFast(fr[2].size()), scratchF;
+            const float* fp[7] = { fr[0].data(), fr[1].data(), fr[2].data(),
+                                   fr[3].data(), fr[4].data(), fr[5].data(),
+                                   fr[6].data() };
+            std::vector<float> outFast(fr[3].size()), scratchF;
             nrcore::Params pRun = plF;
             nrcore::denoiseFrame(fp, W, H, pRun, outFast.data(), scratchF);
 
@@ -892,11 +900,11 @@ int main()
             nrcore::Params pRef = plF;
             pRef.scopeMeasure = 1;
             nrcore::Stats sRef;
-            nrcore::estimateInput(fr[2].data(), fr[1].data(), W, H, pRef, sRef);
-            std::vector<float> tmpRef(fr[2].size()), outRef(fr[2].size());
+            nrcore::estimateInput(fr[3].data(), fr[2].data(), W, H, pRef, sRef);
+            std::vector<float> tmpRef(fr[3].size()), outRef(fr[3].size());
             nrcore::temporalMerge(fp, W, H, plF, sRef, tmpRef.data());
             nrcore::estimateResidual(tmpRef.data(), W, H, plF, sRef);
-            nrcore::spatialNLM(tmpRef.data(), tmpRef.data(), fr[2].data(), W, H, plF, sRef, outRef.data());
+            nrcore::spatialNLM(tmpRef.data(), tmpRef.data(), fr[3].data(), W, H, plF, sRef, outRef.data());
             float maxd = 0.0f;
             for (size_t i = 0; i < outFast.size(); ++i)
                 maxd = std::max(maxd, std::fabs(outFast[i] - outRef[i]));
@@ -957,7 +965,8 @@ int main()
               "settings are monotone in the noise class");
         check(mono(sSevere.preserveDetail, sNoisy.preserveDetail, sMod.preserveDetail, sClean.preserveDetail),
               "preserve-detail decreases with noise");
-        check(sClean.temporalFrames == 3 && sSevere.temporalFrames == 5, "frame count grows with noise");
+        check(sClean.temporalFrames == 3 && sNoisy.temporalFrames == 7 &&
+              sSevere.temporalFrames == 7, "frame count grows with noise (7 for static noisy)");
         check(sClean.lockProfile == 1 && sClean.eqFine == 100.0f, "auto always locks and keeps fine at 100");
         check(sSevere.deepClean == 1 && sNoisy.deepClean == 0 && sClean.deepClean == 0,
               "deep clean reserved for the severe class");
@@ -1175,8 +1184,8 @@ int main()
         renderScene(clean, 0, 0);
         noisy = clean;
         addNoise(noisy, 0.05f, 55);
-        const float* fptr[5] = { noisy.data(), noisy.data(), noisy.data(),
-                                 noisy.data(), noisy.data() };
+        const float* fptr[7] = { noisy.data(), noisy.data(), noisy.data(),
+                                 noisy.data(), noisy.data(), noisy.data(), noisy.data() };
         o0.resize(noisy.size()); o5.resize(noisy.size()); o1.resize(noisy.size());
         nrcore::denoiseFrame(fptr, W, H, b0, o0.data(), scratch);
         nrcore::denoiseFrame(fptr, W, H, b5, o5.data(), scratch);
@@ -1201,12 +1210,13 @@ int main()
         renderScene(clean, 0, 0);
         std::vector<std::vector<float>> frames;
         makeCaseFrames(0.05f, 0.0f, 0.0f, NOISE_CORR, frames);
-        const float truth = trueSigmaY(frames[2], clean);
+        const float truth = trueSigmaY(frames[3], clean);
         nrcore::Params pr = p;
         pr.enableTemporal = 0;   // residual == the input noise, unmerged
         std::vector<float> out(frames[2].size()), scratch;
-        const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
-                                 frames[3].data(), frames[4].data() };
+        const float* fptr[7] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                                 frames[3].data(), frames[4].data(), frames[5].data(),
+                                 frames[6].data() };
         const nrcore::Stats st = nrcore::denoiseFrame(fptr, W, H, pr, out.data(), scratch);
         printf("v3.2 residual on correlated noise: ry %.4f vs true %.4f (fine-only used to underread)\n",
                st.ry, truth);
@@ -1249,16 +1259,38 @@ int main()
         // identity states stay identity with the checkbox on
         std::vector<std::vector<float>> fid;
         makeCaseFrames(0.05f, 0.0f, 0.0f, NOISE_IID, fid);
-        const float* fidp[5] = { fid[0].data(), fid[1].data(), fid[2].data(),
-                                 fid[3].data(), fid[4].data() };
+        const float* fidp[7] = { fid[0].data(), fid[1].data(), fid[2].data(),
+                                 fid[3].data(), fid[4].data(), fid[5].data(),
+                                 fid[6].data() };
         nrcore::Params pid = pdc1;
         pid.master = 0.0f;
-        std::vector<float> outId(fid[2].size()), scratchId;
+        std::vector<float> outId(fid[3].size()), scratchId;
         nrcore::denoiseFrame(fidp, W, H, pid, outId.data(), scratchId);
         float maxdId = 0.0f;
         for (size_t i = 0; i < outId.size(); ++i)
-            maxdId = std::max(maxdId, std::fabs(outId[i] - fid[2][i]));
+            maxdId = std::max(maxdId, std::fabs(outId[i] - fid[3][i]));
         check(maxdId < 2e-5f, "master=0 stays identity with deep clean on");
+    }
+
+    // =====================================================================
+    // v3.3 B2 — 7-frame stack: more repeats, more averaging on static noise
+    // =====================================================================
+    {
+        nrcore::Params p5 = p; p5.temporalFrames = 5;
+        nrcore::Params p7 = p; p7.temporalFrames = 7;
+        CaseResult r5 = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, p5);
+        CaseResult r7 = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, p7);
+        printf("v3.3 7-frame stack, static: 5f %5.2f dB -> 7f %5.2f dB (effN %.1f -> %.1f)\n",
+               r5.after, r7.after, r5.stats.effNMed, r7.stats.effNMed);
+        check(r7.after >= r5.after + 0.3, "7 frames gain >= 0.3 dB over 5 on static noise");
+        check(r7.stats.effNMed > r5.stats.effNMed + 0.8, "7 frames average measurably more frames");
+
+        // under real motion the extra reach must never hurt: the outer
+        // frames are simply gated off (and Auto Setup picks 3 there anyway)
+        CaseResult m5 = runCase(0.05f, 3.0f, 1.5f, NOISE_IID, p5);
+        CaseResult m7 = runCase(0.05f, 3.0f, 1.5f, NOISE_IID, p7);
+        printf("v3.3 7-frame stack, motion: 5f %5.2f dB, 7f %5.2f dB\n", m5.after, m7.after);
+        check(m7.after >= m5.after - 0.10, "7 frames never hurt moving footage");
     }
 
     // --- render every view mode

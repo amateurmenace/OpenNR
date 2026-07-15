@@ -457,7 +457,8 @@ __device__ inline void loadSigmasIn(const NRParams& p, const unsigned int* stats
 
 __global__ void TemporalKernel(NRParams p, int W, int H,
                                const float4* f0, const float4* f1, const float4* f2,
-                               const float4* f3, const float4* f4,
+                               const float4* f3, const float4* f4, const float4* f5,
+                               const float4* f6,
                                const unsigned int* stats, float4* tmp)
 {
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -474,7 +475,8 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
     const float tC = clampf(p.temporalChroma * mLow, 0.0f, 1.25f);
     const float thrMul = 0.4f + 2.6f * clampf(p.motionThresh, 0.0f, 1.5f)
                        + 0.8f * (mHigh - 1.0f);
-    const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 5) ? 2 : 1);
+    // v3.3 B2: the stack grows to 7 frames (reach 3) for static heavy noise
+    const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 7) ? 3 : (p.temporalFrames >= 5) ? 2 : 1);
     const float loY = kAbsDiffBias * sigTY, hiY = loY + thrMul * sigTY;
     const float loC = kAbsDiffBias * sigTC, hiC = loC + thrMul * sigTC;
     const float invSpanY = 1.0f / (hiY - loY);
@@ -493,19 +495,19 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
     const float zapY = 6.0f * sigTY;
     const float zapC = 6.0f * sigTC;
 
-    const float4* frames[5] = { f0, f1, f2, f3, f4 };
+    const float4* frames[7] = { f0, f1, f2, f3, f4, f5, f6 };
 
     float cy9[9], ccb9[9], ccr9[9];
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx, ++i)
-            sampleYCC(f2, W, H, x + dx, y + dy, cy9[i], ccb9[i], ccr9[i]);
+            sampleYCC(f3, W, H, x + dx, y + dy, cy9[i], ccb9[i], ccr9[i]);
 
     // v3 firefly zapper — see nr_core.h for the three-test rationale
     if (zap) {
         float pY, pCb, pCr, nY, nCb, nCr;
-        sampleYCC(f1, W, H, x, y, pY, pCb, pCr);
-        sampleYCC(f3, W, H, x, y, nY, nCb, nCr);
+        sampleYCC(f2, W, H, x, y, pY, pCb, pCr);
+        sampleYCC(f4, W, H, x, y, nY, nCb, nCr);
         if (fabsf(pY - nY) < 0.5f * zapY &&
             0.5f * (fabsf(pCb - nCb) + fabsf(pCr - nCr)) < 0.5f * zapC &&
             fabsf(cy9[4] - med9(cy9)) > 0.5f * zapY) {
@@ -527,8 +529,8 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
     float cb9[9];
     bool haveCb9 = false;
 
-    for (int k = 2 - reach; k <= 2 + reach; ++k) {
-        if (k == 2)
+    for (int k = 3 - reach; k <= 3 + reach; ++k) {
+        if (k == 3)
             continue;
         const float4* f = frames[k];
 
@@ -550,7 +552,7 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
                     for (int dy = -1; dy <= 1; ++dy)
                         for (int dx = -1; dx <= 1; ++dx, ++i2) {
                             float bCb, bCr;
-                            blockMeanYCC(f2, W, H, x + dx * 2, y + dy * 2, cb9[i2], bCb, bCr);
+                            blockMeanYCC(f3, W, H, x + dx * 2, y + dy * 2, cb9[i2], bCb, bCr);
                         }
                     haveCb9 = true;
                 }
@@ -643,7 +645,8 @@ __global__ void ResidualEstKernel(NRParams p, int W, int H,
     atomicAdd(&stats[H_CR + clampi((int)(fabsf(lapCb) * kHistScaleC), 0, kHistBins - 1)], 1u);
     atomicAdd(&stats[H_CR + clampi((int)(fabsf(lapCr) * kHistScaleC), 0, kHistBins - 1)], 1u);
     const float effN = sampleTmp(tmp, W, H, x, y).w;
-    atomicAdd(&stats[H_EN + clampi((int)((effN - 1.0f) * 8.0f), 0, 31)], 1u);
+    // v3.3 B2: 64 bins (was 32) — see nr_core.h
+    atomicAdd(&stats[H_EN + clampi((int)((effN - 1.0f) * 8.0f), 0, 63)], 1u);
 
     // v3.2 coarse residual — see nr_core.h (even-aligned 2x2 blocks)
     if ((gx & 1) == 0 && (gy & 1) == 0) {
@@ -697,7 +700,7 @@ __global__ void FinalizeResidualKernel(NRParams p, unsigned int* stats)
             ry = fmaxf(ry, 0.9f * ryC);
             rc = fmaxf(rc, 0.9f * rcC);
         }
-        enmed = 1.0f + histQuantile(stats, H_EN, 32, total, 8.0f, 1, 2).value;
+        enmed = 1.0f + histQuantile(stats, H_EN, 64, total, 8.0f, 1, 2).value;
         const float floorY = 0.5f * sy / sqrtf(fmaxf(1.0f, enmed));
         const float floorC = 0.5f * sc / sqrtf(fmaxf(1.0f, enmed));
         ry = clampf(fmaxf(ry, floorY), kSigmaMin, sy > kSigmaMin ? sy : kSigmaMax);
@@ -1711,7 +1714,7 @@ struct StreamResources
 } // namespace
 
 void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Params,
-               const float* const p_Srcs[5], float* p_Dst)
+               const float* const p_Srcs[7], float* p_Dst)
 {
     cudaStream_t stream = static_cast<cudaStream_t>(p_Stream);
 
@@ -1746,13 +1749,13 @@ void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Para
         return;
 
     NRParams params = p_Params;
-    const float* partnerPtr = p_Srcs[2];
-    if (p_Srcs[1] != p_Srcs[2])      partnerPtr = p_Srcs[1];
-    else if (p_Srcs[3] != p_Srcs[2]) partnerPtr = p_Srcs[3];
-    params.hasTemporalDiff = (partnerPtr != p_Srcs[2]) ? 1 : 0;
+    const float* partnerPtr = p_Srcs[3];
+    if (p_Srcs[2] != p_Srcs[3])      partnerPtr = p_Srcs[2];
+    else if (p_Srcs[4] != p_Srcs[3]) partnerPtr = p_Srcs[4];
+    params.hasTemporalDiff = (partnerPtr != p_Srcs[3]) ? 1 : 0;
 
-    const float4* srcs[5];
-    for (int i = 0; i < 5; ++i)
+    const float4* srcs[7];
+    for (int i = 0; i < 7; ++i)
         srcs[i] = reinterpret_cast<const float4*>(p_Srcs[i]);
     const float4* partner = reinterpret_cast<const float4*>(partnerPtr);
     float4* dst = reinterpret_cast<float4*>(p_Dst);
@@ -1780,12 +1783,13 @@ void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Para
     }
     if (inputLive)
     {
-        NoiseEstKernel<<<blocksHalf, threads, 0, stream>>>(params, p_Width, p_Height, srcs[2], partner, res.stats);
+        NoiseEstKernel<<<blocksHalf, threads, 0, stream>>>(params, p_Width, p_Height, srcs[3], partner, res.stats);
         FinalizeStatsKernel<<<1, 1, 0, stream>>>(params, res.stats);
     }
 
     TemporalKernel<<<blocks, threads, 0, stream>>>(params, p_Width, p_Height,
                                                    srcs[0], srcs[1], srcs[2], srcs[3], srcs[4],
+                                                   srcs[5], srcs[6],
                                                    res.stats, res.tmp);
 
     if (residualLive)
@@ -1821,6 +1825,6 @@ void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Para
     const int tileW = 16 + 2 * (Rsp + 1);
     const size_t tileBytes = 3 * sizeof(float) * tileW * tileW;
     SpatialNLMKernel<<<blocks, threads, tileBytes, stream>>>(params, p_Width, p_Height,
-                                                             working, srcs[2], res.stats, dst,
+                                                             working, srcs[3], res.stats, dst,
                                                              res.tmp);
 }

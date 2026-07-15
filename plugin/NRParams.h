@@ -19,7 +19,7 @@ typedef struct NRParams
     int   hasTemporalDiff;
 
     int   enableTemporal;
-    int   temporalFrames;  // 3 or 5
+    int   temporalFrames;  // 3, 5 or 7 (v3.3)
     float temporalLuma;
     float temporalChroma;
     float motionThresh;
@@ -87,23 +87,26 @@ typedef struct NRParams
 #define NR_STATS_LUMA_C     2560     // same for chroma
 #define NR_STATS_HIST_YR    3584     // residual (on tmp) luma (256)
 #define NR_STATS_HIST_CR    3840
-#define NR_STATS_HIST_EFFN  4096     // effN histogram (32)
-#define NR_STATS_HIST_YR2   4176     // v3.2: coarse residual (2x2 blocks, 256)
-#define NR_STATS_HIST_CR2   4432
-#define NR_STATS_SIGMA_SY   4128     // float bits from here on
-#define NR_STATS_SIGMA_SC   4129
-#define NR_STATS_SIGMA_TY   4130
-#define NR_STATS_SIGMA_TC   4131
-#define NR_STATS_SIGMA_RY   4132
-#define NR_STATS_SIGMA_RC   4133
-#define NR_STATS_MEDBIN_Y   4134
-#define NR_STATS_HISTMAX_Y  4135
-#define NR_STATS_GAINY      4136     // 16 float-bit gains
-#define NR_STATS_GAINC      4152     // 16 float-bit gains
-#define NR_STATS_EFFN_MED   4168
-#define NR_STATS_FINE_Y     4169     // v3.1: per-band estimates for the EQ
-#define NR_STATS_FINE_C     4170     //       scope (float bits)
-#define NR_STATS_COARSE_Y   4171
-#define NR_STATS_UINTS      4688     // v3.2: grew by 2x256 for HIST_YR2/CR2
+#define NR_STATS_HIST_EFFN  4096     // effN histogram (64; v3.3 — was 32,
+                                     // which saturated at effN 4.875 and the
+                                     // 7-frame stack reaches ~6.7; everything
+                                     // below shifted +32)
+#define NR_STATS_HIST_YR2   4208     // v3.2: coarse residual (2x2 blocks, 256)
+#define NR_STATS_HIST_CR2   4464
+#define NR_STATS_SIGMA_SY   4160     // float bits from here on
+#define NR_STATS_SIGMA_SC   4161
+#define NR_STATS_SIGMA_TY   4162
+#define NR_STATS_SIGMA_TC   4163
+#define NR_STATS_SIGMA_RY   4164
+#define NR_STATS_SIGMA_RC   4165
+#define NR_STATS_MEDBIN_Y   4166
+#define NR_STATS_HISTMAX_Y  4167
+#define NR_STATS_GAINY      4168     // 16 float-bit gains
+#define NR_STATS_GAINC      4184     // 16 float-bit gains
+#define NR_STATS_EFFN_MED   4200
+#define NR_STATS_FINE_Y     4201     // v3.1: per-band estimates for the EQ
+#define NR_STATS_FINE_C     4202     //       scope (float bits)
+#define NR_STATS_COARSE_Y   4203
+#define NR_STATS_UINTS      4720     // v3.3: effN histogram grew 32 -> 64
 
 #endif // OPENNR_NRPARAMS_H

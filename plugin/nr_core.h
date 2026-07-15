@@ -80,7 +80,7 @@ struct Params {
     float regionSize     = 0.25f;
 
     int   enableTemporal = 1;
-    int   temporalFrames = 3;      // 3 or 5
+    int   temporalFrames = 3;      // 3, 5 or 7
     float temporalLuma   = 0.6f;
     float temporalChroma = 0.8f;
     float motionThresh   = 0.4f;
@@ -607,7 +607,7 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
 // ---------------------------------------------------------------------------
 // Stage 2 — motion-adaptive temporal merge (hard-knee gate)
 // ---------------------------------------------------------------------------
-inline void temporalMerge(const float* const frames[5], int W, int H,
+inline void temporalMerge(const float* const frames[7], int W, int H,
                           const Params& p, const Stats& s, float* tmp)
 {
     const float mLow  = std::min(p.master, 1.0f);
@@ -618,8 +618,9 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
     const float tC = clampf(p.temporalChroma * mLow, 0.0f, 1.25f);
     const float thrMul = 0.4f + 2.6f * clampf(p.motionThresh, 0.0f, 1.5f)
                        + 0.8f * (mHigh - 1.0f);   // master>1 widens the knee
+    // v3.3 B2: the stack grows to 7 frames (reach 3) for static heavy noise
     const int reach = (p.enableTemporal == 0) ? 0
-                    : ((p.temporalFrames >= 5) ? 2 : 1);
+                    : ((p.temporalFrames >= 7) ? 3 : (p.temporalFrames >= 5) ? 2 : 1);
     const float loY = kAbsDiffBias * s.ty, hiY = loY + thrMul * s.ty;
     const float loC = kAbsDiffBias * s.tc, hiC = loC + thrMul * s.tc;
     const float invSpanY = 1.0f / (hiY - loY);
@@ -653,7 +654,7 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
             int i = 0;
             for (int dy = -1; dy <= 1; ++dy)
                 for (int dx = -1; dx <= 1; ++dx, ++i)
-                    sampleYCC(frames[2], W, H, x + dx, y + dy, cy9[i], ccb9[i], ccr9[i]);
+                    sampleYCC(frames[3], W, H, x + dx, y + dy, cy9[i], ccb9[i], ccr9[i]);
 
             // Firefly zapper: a centre pixel is clipped to the 3-frame
             // temporal median only when three tests all agree it is a
@@ -666,8 +667,8 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
             //      pixel, but spatially coherent, and must not be erased.
             if (zap) {
                 float pY, pCb, pCr, nY, nCb, nCr;
-                sampleYCC(frames[1], W, H, x, y, pY, pCb, pCr);
-                sampleYCC(frames[3], W, H, x, y, nY, nCb, nCr);
+                sampleYCC(frames[2], W, H, x, y, pY, pCb, pCr);
+                sampleYCC(frames[4], W, H, x, y, nY, nCb, nCr);
                 if (std::fabs(pY - nY) < 0.5f * zapY &&
                     0.5f * (std::fabs(pCb - nCb) + std::fabs(pCr - nCr)) < 0.5f * zapC &&
                     std::fabs(cy9[4] - med9(cy9)) > 0.5f * zapY) {
@@ -689,8 +690,8 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
             float cb9[9];
             bool haveCb9 = false;
 
-            for (int k = 2 - reach; k <= 2 + reach; ++k) {
-                if (k == 2)
+            for (int k = 3 - reach; k <= 3 + reach; ++k) {
+                if (k == 3)
                     continue;
                 const float* f = frames[k];
 
@@ -725,7 +726,7 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
                             for (int dy = -1; dy <= 1; ++dy)
                                 for (int dx = -1; dx <= 1; ++dx, ++i) {
                                     float bCb, bCr;
-                                    blockMeanYCC(frames[2], W, H, x + dx * 2, y + dy * 2,
+                                    blockMeanYCC(frames[3], W, H, x + dx * 2, y + dy * 2,
                                                  cb9[i], bCb, bCr);
                                 }
                             haveCb9 = true;
@@ -818,7 +819,7 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
         return;
     }
 
-    std::vector<uint32_t> hYr(kHistBins, 0), hCr(kHistBins, 0), hN(32, 0);
+    std::vector<uint32_t> hYr(kHistBins, 0), hCr(kHistBins, 0), hN(64, 0);
     std::vector<uint32_t> hY2r(kHistBins, 0), hC2r(kHistBins, 0);
     uint64_t total = 0, total2 = 0;
     for (int y = 1; y < H - 1; y += 2) {
@@ -839,7 +840,9 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
             hCr[clampi(static_cast<int>(std::fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)]++;
             hCr[clampi(static_cast<int>(std::fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)]++;
             const float effN = tmpAt(tmp, W, H, x, y)[3];
-            hN[clampi(static_cast<int>((effN - 1.0f) * 8.0f), 0, 31)]++;
+            // v3.3 B2: 64 bins — the 5-frame era's 32 saturated at effN
+            // 4.875; the x8 scale is untouched so old bins decode identically
+            hN[clampi(static_cast<int>((effN - 1.0f) * 8.0f), 0, 63)]++;
             total++;
 
             // v3.2: coarse residual — 2x2-block Laplacian on the merged
@@ -1887,7 +1890,7 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
 // ---------------------------------------------------------------------------
 // Convenience full pipeline (CPU). Returns the stats actually used.
 // ---------------------------------------------------------------------------
-inline Stats denoiseFrame(const float* const frames[5], int W, int H,
+inline Stats denoiseFrame(const float* const frames[7], int W, int H,
                           const Params& p, float* out, std::vector<float>& scratch)
 {
     // v3.3: Deep Clean is a within-frame pass — it follows the spatial
@@ -1898,18 +1901,18 @@ inline Stats denoiseFrame(const float* const frames[5], int W, int H,
     float* tmp = scratch.data();
     float* tmp2 = deep ? scratch.data() + plane : tmp;
     const float* partner = nullptr;
-    if (frames[1] != frames[2]) partner = frames[1];
-    else if (frames[3] != frames[2]) partner = frames[3];
+    if (frames[2] != frames[3]) partner = frames[2];
+    else if (frames[4] != frames[3]) partner = frames[4];
 
     Stats s;
-    estimateInput(frames[2], partner, W, H, p, s);
+    estimateInput(frames[3], partner, W, H, p, s);
     temporalMerge(frames, W, H, p, s, tmp);
     estimateResidual(tmp, W, H, p, s);
     if (deep) {
         deepCleanPass(tmp, W, H, p, s, tmp2);
         estimateResidual(tmp2, W, H, p, s);   // the main pass adapts to what is left
     }
-    spatialNLM(tmp2, tmp, frames[2], W, H, p, s, out);
+    spatialNLM(tmp2, tmp, frames[3], W, H, p, s, out);
     return s;
 }
 

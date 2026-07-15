@@ -19,7 +19,7 @@
 #include "NRParams.h"
 
 extern void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Params,
-                       const float* const p_Srcs[5], float* p_Dst);
+                       const float* const p_Srcs[7], float* p_Dst);
 
 static void makeFrame(std::vector<float>& img, int W, int H, float shift, uint32_t seed)
 {
@@ -52,16 +52,16 @@ static double benchOne(id<MTLCommandQueue> queue, int W, int H, const NRParams& 
             id<MTLDevice> device = queue.device;
             const size_t bytes = static_cast<size_t>(W) * H * 4 * sizeof(float);
 
-            id<MTLBuffer> srcBuf[5];
-            for (int i = 0; i < 5; ++i) {
+            id<MTLBuffer> srcBuf[7];
+            for (int i = 0; i < 7; ++i) {
                 std::vector<float> frame;
-                makeFrame(frame, W, H, (i - 2) * panPerFrame, 100 + i);
+                makeFrame(frame, W, H, (i - 3) * panPerFrame, 100 + (i - 3) + 2);
                 srcBuf[i] = [device newBufferWithBytes:frame.data() length:bytes options:MTLResourceStorageModeShared];
             }
             id<MTLBuffer> dstBuf = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
 
-            const float* srcs[5];
-            for (int i = 0; i < 5; ++i)
+            const float* srcs[7];
+            for (int i = 0; i < 7; ++i)
                 srcs[i] = (const float*)srcBuf[i];
 
             auto sync = [&] {
@@ -83,7 +83,7 @@ static double benchOne(id<MTLCommandQueue> queue, int W, int H, const NRParams& 
 
             const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
             if (ms < best) best = ms;
-            for (int i = 0; i < 5; ++i) srcBuf[i] = nil;
+            for (int i = 0; i < 7; ++i) srcBuf[i] = nil;
             dstBuf = nil;
         }
     }
@@ -118,6 +118,9 @@ int main()
     NRParams noTrack = best;
     noTrack.motionTracking = 0;   // the v2.1-equivalent temporal path
 
+    NRParams seven = best;
+    seven.temporalFrames = 7;     // v3.3 B2 deep stack
+
     // v3.3 lock fast path: locked profile + no scopes skips the input
     // estimation dispatches entirely
     NRParams locked = best;
@@ -134,12 +137,13 @@ int main()
         const double msPan    = benchOne(queue, s.w, s.h, best, 1.5f, s.iters);
         const double msNoTrk  = benchOne(queue, s.w, s.h, noTrack, 0.0f, s.iters);
         const double msLock   = benchOne(queue, s.w, s.h, locked, 0.0f, s.iters);
+        const double msSeven  = benchOne(queue, s.w, s.h, seven, 0.0f, s.iters);
         const double msFast   = benchOne(queue, s.w, s.h, fast, 0.0f, s.iters);
         printf("%s   Better(NLM,R3,5f): static %6.2f ms (%5.1f fps)  panning %6.2f ms (%5.1f fps)  tracking-off %6.2f ms  locked %6.2f ms (%5.1f fps)\n",
                s.name, msStatic, 1000.0 / msStatic, msPan, 1000.0 / msPan, msNoTrk,
                msLock, 1000.0 / msLock);
-        printf("%s   Faster(Bilat,R2,3f): %6.2f ms/frame (%5.1f fps)\n",
-               s.name, msFast, 1000.0 / msFast);
+        printf("%s   7 Frames (NLM,R3): %6.2f ms (%5.1f fps)   Faster(Bilat,R2,3f): %6.2f ms (%5.1f fps)\n",
+               s.name, msSeven, 1000.0 / msSeven, msFast, 1000.0 / msFast);
     }
     return 0;
 }

@@ -63,13 +63,14 @@ static void writePPM(const char* path, const std::vector<float>& img)
 static void run(const char* path, float driftX, float driftY,
                 int sm, int se, int smo, int view)
 {
-    std::vector<float> frames[5];
-    for (int k = 0; k < 5; ++k) {
-        scene(frames[k], (k - 2) * driftX, (k - 2) * driftY);
-        addNoise(frames[k], 0.035f, 100 + k);
+    std::vector<float> frames[7];
+    for (int k = 0; k < 7; ++k) {
+        scene(frames[k], (k - 3) * driftX, (k - 3) * driftY);
+        addNoise(frames[k], 0.035f, 100 + (k - 3) + 2);   // offset-keyed seeds
     }
-    const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
-                             frames[3].data(), frames[4].data() };
+    const float* fptr[7] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                             frames[3].data(), frames[4].data(), frames[5].data(),
+                             frames[6].data() };
     nrcore::Params p;
     p.temporalFrames = 5;
     p.temporalLuma = 0.85f; p.temporalChroma = 1.05f;

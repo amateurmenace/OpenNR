@@ -157,7 +157,7 @@ inline float clampfLocal(float v, float lo, float hi)
 
 struct AutoSettings {
     int   enableTemporal  = 1;
-    int   temporalFrames  = 3;      // 3 or 5
+    int   temporalFrames  = 3;      // 3, 5 or 7 (v3.3)
     float temporalLuma    = 60.0f;  // UI percent
     float temporalChroma  = 80.0f;
     float motionThresh    = 30.0f;
@@ -241,6 +241,10 @@ inline AutoSettings mapAnalysisToSettings(const ClipAggregate& a)
     s.motionThresh = clampfLocal(26.0f + 4.0f * c - 18.0f * mNorm, 12.0f, 40.0f);
     if (a.motion > 0.15f)
         s.temporalFrames = 3;
+    // v3.3 B2: a 7-frame stack pays off only where frames genuinely repeat —
+    // noisy/severe clips from a steady camera
+    else if (s.noiseClass >= 2)
+        s.temporalFrames = 7;
 
     // Chroma-heavy noise: push chroma strength and the blotch pass. The
     // blotch radius scales with the slider, and the rings must clear the

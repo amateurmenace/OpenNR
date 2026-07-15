@@ -104,22 +104,22 @@ constant float kSigmaMax    = 0.25f;
 #define H_YR    3584
 #define H_CR    3840
 #define H_EN    4096
-#define H_YR2   4176
-#define H_CR2   4432
-#define S_SY    4128
-#define S_SC    4129
-#define S_TY    4130
-#define S_TC    4131
-#define S_RY    4132
-#define S_RC    4133
-#define S_MED   4134
-#define S_HMAX  4135
-#define S_GY    4136
-#define S_GC    4152
-#define S_ENMED 4168
-#define S_FINEY 4169
-#define S_FINEC 4170
-#define S_CRSY  4171
+#define H_YR2   4208
+#define H_CR2   4464
+#define S_SY    4160
+#define S_SC    4161
+#define S_TY    4162
+#define S_TC    4163
+#define S_RY    4164
+#define S_RC    4165
+#define S_MED   4166
+#define S_HMAX  4167
+#define S_GY    4168
+#define S_GC    4184
+#define S_ENMED 4200
+#define S_FINEY 4201
+#define S_FINEC 4202
+#define S_CRSY  4203
 
 inline float smooth01(float t)
 {
@@ -514,8 +514,10 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
                            const device float4* f2 [[buffer(5)]],
                            const device float4* f3 [[buffer(6)]],
                            const device float4* f4 [[buffer(7)]],
-                           const device uint* stats [[buffer(8)]],
-                           device float4* tmp [[buffer(9)]],
+                           const device float4* f5 [[buffer(8)]],
+                           const device float4* f6 [[buffer(9)]],
+                           const device uint* stats [[buffer(10)]],
+                           device float4* tmp [[buffer(11)]],
                            uint2 id [[thread_position_in_grid]])
 {
     const int x = int(id.x), y = int(id.y);
@@ -530,7 +532,8 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
     const float tC = clamp(p.temporalChroma * mLow, 0.0f, 1.25f);
     const float thrMul = 0.4f + 2.6f * clamp(p.motionThresh, 0.0f, 1.5f)
                        + 0.8f * (mHigh - 1.0f);
-    const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 5) ? 2 : 1);
+    // v3.3 B2: the stack grows to 7 frames (reach 3) for static heavy noise
+    const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 7) ? 3 : (p.temporalFrames >= 5) ? 2 : 1);
     const float loY = kAbsDiffBias * sig.z, hiY = loY + thrMul * sig.z;
     const float loC = kAbsDiffBias * sig.w, hiC = loC + thrMul * sig.w;
     const float invSpanY = 1.0f / (hiY - loY);
@@ -549,18 +552,18 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
     const float zapY = 6.0f * sig.z;
     const float zapC = 6.0f * sig.w;
 
-    const device float4* frames[5] = { f0, f1, f2, f3, f4 };
+    const device float4* frames[7] = { f0, f1, f2, f3, f4, f5, f6 };
 
     float3 c9[9];
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx, ++i)
-            c9[i] = sampleYCC(f2, W, H, x + dx, y + dy);
+            c9[i] = sampleYCC(f3, W, H, x + dx, y + dy);
 
     // v3 firefly zapper — see nr_core.h for the three-test rationale
     if (zap) {
-        const float3 pv = sampleYCC(f1, W, H, x, y);
-        const float3 nv = sampleYCC(f3, W, H, x, y);
+        const float3 pv = sampleYCC(f2, W, H, x, y);
+        const float3 nv = sampleYCC(f4, W, H, x, y);
         float lum9[9];
         for (int j = 0; j < 9; ++j) lum9[j] = c9[j].x;
         if (fabs(pv.x - nv.x) < 0.5f * zapY &&
@@ -584,8 +587,8 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
     float cb9[9];
     bool haveCb9 = false;
 
-    for (int k = 2 - reach; k <= 2 + reach; ++k) {
-        if (k == 2)
+    for (int k = 3 - reach; k <= 3 + reach; ++k) {
+        if (k == 3)
             continue;
         const device float4* f = frames[k];
 
@@ -607,7 +610,7 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
                     int i2 = 0;
                     for (int dy = -1; dy <= 1; ++dy)
                         for (int dx = -1; dx <= 1; ++dx, ++i2)
-                            cb9[i2] = blockMeanYCC(f2, W, H, x + dx * 2, y + dy * 2).x;
+                            cb9[i2] = blockMeanYCC(f3, W, H, x + dx * 2, y + dy * 2).x;
                     haveCb9 = true;
                 }
                 // coarse level: best step-4 node on block means
@@ -697,7 +700,8 @@ kernel void ResidualEstKernel(constant NRParams& p [[buffer(0)]],
     atomic_fetch_add_explicit(&stats[H_CR + clamp(int(fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)], 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&stats[H_CR + clamp(int(fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)], 1u, memory_order_relaxed);
     const float effN = sampleTmp(tmp, W, H, x, y).w;
-    atomic_fetch_add_explicit(&stats[H_EN + clamp(int((effN - 1.0f) * 8.0f), 0, 31)], 1u, memory_order_relaxed);
+    // v3.3 B2: 64 bins (was 32) — see nr_core.h
+    atomic_fetch_add_explicit(&stats[H_EN + clamp(int((effN - 1.0f) * 8.0f), 0, 63)], 1u, memory_order_relaxed);
 
     // v3.2 coarse residual — see nr_core.h (even-aligned 2x2 blocks)
     if ((id.x & 1) == 0 && (id.y & 1) == 0) {
@@ -755,7 +759,7 @@ kernel void FinalizeResidualKernel(constant NRParams& p [[buffer(0)]],
             ry = max(ry, 0.9f * ryC);
             rc = max(rc, 0.9f * rcC);
         }
-        enmed = 1.0f + histQuantile(stats, H_EN, 32, total, 8.0f, 1, 2).value;
+        enmed = 1.0f + histQuantile(stats, H_EN, 64, total, 8.0f, 1, 2).value;
         const float floorY = 0.5f * sy / sqrt(max(1.0f, enmed));
         const float floorC = 0.5f * sc / sqrt(max(1.0f, enmed));
         ry = clamp(max(ry, floorY), kSigmaMin, sy > kSigmaMin ? sy : kSigmaMax);
@@ -1751,7 +1755,7 @@ static id<MTLComputePipelineState> makePipeline(id<MTLDevice> device, id<MTLLibr
 }
 
 void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Params,
-                const float* const p_Srcs[5], float* p_Dst)
+                const float* const p_Srcs[7], float* p_Dst)
 {
     id<MTLCommandQueue> queue = static_cast<id<MTLCommandQueue> >(p_CmdQ);
     id<MTLDevice> device = queue.device;
@@ -1813,13 +1817,13 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
     }
 
     NRParams params = p_Params;
-    const float* partnerPtr = p_Srcs[2];
-    if (p_Srcs[1] != p_Srcs[2])      partnerPtr = p_Srcs[1];
-    else if (p_Srcs[3] != p_Srcs[2]) partnerPtr = p_Srcs[3];
-    params.hasTemporalDiff = (partnerPtr != p_Srcs[2]) ? 1 : 0;
+    const float* partnerPtr = p_Srcs[3];
+    if (p_Srcs[2] != p_Srcs[3])      partnerPtr = p_Srcs[2];
+    else if (p_Srcs[4] != p_Srcs[3]) partnerPtr = p_Srcs[4];
+    params.hasTemporalDiff = (partnerPtr != p_Srcs[3]) ? 1 : 0;
 
-    id<MTLBuffer> src[5];
-    for (int i = 0; i < 5; ++i)
+    id<MTLBuffer> src[7];
+    for (int i = 0; i < 7; ++i)
         src[i] = reinterpret_cast<id<MTLBuffer> >(const_cast<float*>(p_Srcs[i]));
     id<MTLBuffer> partner = reinterpret_cast<id<MTLBuffer> >(const_cast<float*>(partnerPtr));
     id<MTLBuffer> dst = reinterpret_cast<id<MTLBuffer> >(p_Dst);
@@ -1857,7 +1861,7 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
         [enc setBytes:&W length:sizeof(int) atIndex:1];
         [enc setBytes:&H length:sizeof(int) atIndex:2];
-        [enc setBuffer:src[2] offset:0 atIndex:3];
+        [enc setBuffer:src[3] offset:0 atIndex:3];
         [enc setBuffer:partner offset:0 atIndex:4];
         [enc setBuffer:res.stats offset:0 atIndex:5];
         [enc dispatchThreadgroups:gridHalf threadsPerThreadgroup:tg];
@@ -1875,10 +1879,10 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
         [enc setBytes:&W length:sizeof(int) atIndex:1];
         [enc setBytes:&H length:sizeof(int) atIndex:2];
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 7; ++i)
             [enc setBuffer:src[i] offset:0 atIndex:(3 + i)];
-        [enc setBuffer:res.stats offset:0 atIndex:8];
-        [enc setBuffer:res.tmp offset:0 atIndex:9];
+        [enc setBuffer:res.stats offset:0 atIndex:10];
+        [enc setBuffer:res.tmp offset:0 atIndex:11];
         [enc dispatchThreadgroups:gridFull threadsPerThreadgroup:tg];
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
@@ -1959,7 +1963,7 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         [enc setBytes:&W length:sizeof(int) atIndex:1];
         [enc setBytes:&H length:sizeof(int) atIndex:2];
         [enc setBuffer:working offset:0 atIndex:3];
-        [enc setBuffer:src[2] offset:0 atIndex:4];
+        [enc setBuffer:src[3] offset:0 atIndex:4];
         [enc setBuffer:res.stats offset:0 atIndex:5];
         [enc setBuffer:dst offset:0 atIndex:6];
         [enc setBuffer:res.tmp offset:0 atIndex:7];   // the TRUE temporal result

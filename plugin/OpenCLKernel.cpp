@@ -110,22 +110,22 @@ typedef struct NRParams
 #define H_YR    3584
 #define H_CR    3840
 #define H_EN    4096
-#define H_YR2   4176
-#define H_CR2   4432
-#define S_SY    4128
-#define S_SC    4129
-#define S_TY    4130
-#define S_TC    4131
-#define S_RY    4132
-#define S_RC    4133
-#define S_MED   4134
-#define S_HMAX  4135
-#define S_GY    4136
-#define S_GC    4152
-#define S_ENMED 4168
-#define S_FINEY 4169
-#define S_FINEC 4170
-#define S_CRSY  4171
+#define H_YR2   4208
+#define H_CR2   4464
+#define S_SY    4160
+#define S_SC    4161
+#define S_TY    4162
+#define S_TC    4163
+#define S_RY    4164
+#define S_RC    4165
+#define S_MED   4166
+#define S_HMAX  4167
+#define S_GY    4168
+#define S_GC    4184
+#define S_ENMED 4200
+#define S_FINEY 4201
+#define S_FINEC 4202
+#define S_CRSY  4203
 
 inline float smooth01f(float t)
 {
@@ -500,7 +500,8 @@ inline float4 loadSigmasIn(NRParams p, __global const uint* stats)
 __kernel void TemporalKernel(NRParams p, int W, int H,
                              __global const float4* f0, __global const float4* f1,
                              __global const float4* f2, __global const float4* f3,
-                             __global const float4* f4,
+                             __global const float4* f4, __global const float4* f5,
+                             __global const float4* f6,
                              __global const uint* stats, __global float4* tmp)
 {
     const int x = get_global_id(0);
@@ -516,7 +517,8 @@ __kernel void TemporalKernel(NRParams p, int W, int H,
     const float tC = clamp(p.temporalChroma * mLow, 0.0f, 1.25f);
     const float thrMul = 0.4f + 2.6f * clamp(p.motionThresh, 0.0f, 1.5f)
                        + 0.8f * (mHigh - 1.0f);
-    const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 5) ? 2 : 1);
+    // v3.3 B2: the stack grows to 7 frames (reach 3) for static heavy noise
+    const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 7) ? 3 : (p.temporalFrames >= 5) ? 2 : 1);
     const float loY = kAbsDiffBias * sig.z, hiY = loY + thrMul * sig.z;
     const float loC = kAbsDiffBias * sig.w, hiC = loC + thrMul * sig.w;
     const float invSpanY = 1.0f / (hiY - loY);
@@ -539,12 +541,12 @@ __kernel void TemporalKernel(NRParams p, int W, int H,
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx, ++i)
-            c9[i] = sampleYCC(f2, W, H, x + dx, y + dy);
+            c9[i] = sampleYCC(f3, W, H, x + dx, y + dy);
 
     // v3 firefly zapper — see nr_core.h for the three-test rationale
     if (zap) {
-        const float3 pv = sampleYCC(f1, W, H, x, y);
-        const float3 nv = sampleYCC(f3, W, H, x, y);
+        const float3 pv = sampleYCC(f2, W, H, x, y);
+        const float3 nv = sampleYCC(f4, W, H, x, y);
         float lum9[9];
         for (int j = 0; j < 9; ++j) lum9[j] = c9[j].x;
         if (fabs(pv.x - nv.x) < 0.5f * zapY &&
@@ -568,10 +570,11 @@ __kernel void TemporalKernel(NRParams p, int W, int H,
     float cb9[9];
     bool haveCb9 = false;
 
-    for (int k = 2 - reach; k <= 2 + reach; ++k) {
-        if (k == 2)
+    for (int k = 3 - reach; k <= 3 + reach; ++k) {
+        if (k == 3)
             continue;
-        __global const float4* f = (k == 0) ? f0 : ((k == 1) ? f1 : ((k == 3) ? f3 : f4));
+        __global const float4* f = (k == 0) ? f0 : (k == 1) ? f1 : (k == 2) ? f2
+                                 : (k == 4) ? f4 : (k == 5) ? f5 : f6;
 
         float dY, dC, sdY;
         float3 fc;
@@ -591,7 +594,7 @@ __kernel void TemporalKernel(NRParams p, int W, int H,
                     int i2 = 0;
                     for (int dy = -1; dy <= 1; ++dy)
                         for (int dx = -1; dx <= 1; ++dx, ++i2)
-                            cb9[i2] = blockMeanYCC(f2, W, H, x + dx * 2, y + dy * 2).x;
+                            cb9[i2] = blockMeanYCC(f3, W, H, x + dx * 2, y + dy * 2).x;
                     haveCb9 = true;
                 }
                 // coarse level: best step-4 node on block means
@@ -675,7 +678,8 @@ __kernel void ResidualEstKernel(NRParams p, int W, int H,
     atomic_inc(&stats[H_CR + clamp((int)(fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)]);
     atomic_inc(&stats[H_CR + clamp((int)(fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)]);
     const float effN = sampleTmp(tmp, W, H, x, y).w;
-    atomic_inc(&stats[H_EN + clamp((int)((effN - 1.0f) * 8.0f), 0, 31)]);
+    // v3.3 B2: 64 bins (was 32) — see nr_core.h
+    atomic_inc(&stats[H_EN + clamp((int)((effN - 1.0f) * 8.0f), 0, 63)]);
 
     // v3.2 coarse residual — see nr_core.h (even-aligned 2x2 blocks)
     if ((get_global_id(0) & 1) == 0 && (get_global_id(1) & 1) == 0) {
@@ -731,7 +735,7 @@ __kernel void FinalizeResidualKernel(NRParams p, __global uint* stats)
             ry = fmax(ry, 0.9f * ryC);
             rc = fmax(rc, 0.9f * rcC);
         }
-        enmed = 1.0f + histQuantile(stats, H_EN, 32, total, 8.0f, 1, 2).value;
+        enmed = 1.0f + histQuantile(stats, H_EN, 64, total, 8.0f, 1, 2).value;
         const float floorY = 0.5f * sy / sqrt(fmax(1.0f, enmed));
         const float floorC = 0.5f * sc / sqrt(fmax(1.0f, enmed));
         ry = clamp(fmax(ry, floorY), kSigmaMin, sy > kSigmaMin ? sy : kSigmaMax);
@@ -1729,7 +1733,7 @@ struct QueueResources
 } // namespace
 
 void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Params,
-                 const float* const p_Srcs[5], float* p_Dst)
+                 const float* const p_Srcs[7], float* p_Dst)
 {
     cl_int error;
     cl_command_queue cmdQ = static_cast<cl_command_queue>(p_CmdQ);
@@ -1819,10 +1823,10 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
         return;
 
     NRParams params = p_Params;
-    const float* partner = p_Srcs[2];
-    if (p_Srcs[1] != p_Srcs[2])      partner = p_Srcs[1];
-    else if (p_Srcs[3] != p_Srcs[2]) partner = p_Srcs[3];
-    params.hasTemporalDiff = (partner != p_Srcs[2]) ? 1 : 0;
+    const float* partner = p_Srcs[3];
+    if (p_Srcs[2] != p_Srcs[3])      partner = p_Srcs[2];
+    else if (p_Srcs[4] != p_Srcs[3]) partner = p_Srcs[4];
+    params.hasTemporalDiff = (partner != p_Srcs[3]) ? 1 : 0;
 
     int W = p_Width, H = p_Height;
     // v3.3 lock fast path: a locked profile still runs input estimation when
@@ -1852,7 +1856,7 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
         error  = clSetKernelArg(res.est, c++, sizeof(NRParams), &params);
         error |= clSetKernelArg(res.est, c++, sizeof(int), &W);
         error |= clSetKernelArg(res.est, c++, sizeof(int), &H);
-        error |= clSetKernelArg(res.est, c++, sizeof(cl_mem), &p_Srcs[2]);
+        error |= clSetKernelArg(res.est, c++, sizeof(cl_mem), &p_Srcs[3]);
         error |= clSetKernelArg(res.est, c++, sizeof(cl_mem), &partner);
         error |= clSetKernelArg(res.est, c++, sizeof(cl_mem), &res.stats);
         CheckError(error, "est args");
@@ -1872,7 +1876,7 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
         error  = clSetKernelArg(res.temp, c++, sizeof(NRParams), &params);
         error |= clSetKernelArg(res.temp, c++, sizeof(int), &W);
         error |= clSetKernelArg(res.temp, c++, sizeof(int), &H);
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 7; ++i)
             error |= clSetKernelArg(res.temp, c++, sizeof(cl_mem), &p_Srcs[i]);
         error |= clSetKernelArg(res.temp, c++, sizeof(cl_mem), &res.stats);
         error |= clSetKernelArg(res.temp, c++, sizeof(cl_mem), &res.tmp);
@@ -1958,7 +1962,7 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
         error |= clSetKernelArg(res.nlm, c++, sizeof(int), &W);
         error |= clSetKernelArg(res.nlm, c++, sizeof(int), &H);
         error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &working);
-        error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &p_Srcs[2]);
+        error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &p_Srcs[3]);
         error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &res.stats);
         error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &p_Dst);
         error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &res.tmp);   // the TRUE temporal result
