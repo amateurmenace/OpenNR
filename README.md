@@ -165,20 +165,21 @@ Temporal Activity view) to understand what each is contributing.
 | Step | Control | What it does |
 |---|---|---|
 | — | **Strength** | Overall amount; scales every strength at once. 0 = off, 1 = normal, up to 3 the filters widen what they treat as noise. |
-| — | **Auto Setup (Analyze Footage)** | Analyzes the clip and writes the best settings into the sliders below, then locks the profile. Everything stays manually adjustable; one undo reverts. |
+| — | **Auto Setup (Analyze Footage)** | Analyzes the clip (honoring your region, if set) and writes the best settings into the sliders below, then locks the profile. Everything stays manually adjustable; one undo reverts. |
 | — | Analysis | Read-only report of what the last Auto Setup measured and decided. |
-| — | Revert Auto Setup | Restores every denoise control to its pre-Auto-Setup value. |
-| 1 | **Noise Profile** | Automatic (whole frame) / Automatic (from region) / Manual. |
-| 1 | Region Center X/Y, Size | The measurement rectangle (visible in Noise Analysis view). Put it on a flat area. |
-| 1 | **Auto Profile Adjust** | Scales the automatic measurement (×0.25–×6). The escape hatch when the estimate reads low/high. |
+| — | **Clean Slate (All Off)** | Zeroes every processing control — true passthrough, build up manually from nothing. One undo restores. |
+| 1 | **Noise Profile** | Automatic (whole frame) / Automatic (from region) / Manual. Unlocked, the measurement is live per frame; **Lock Profile** is the "stop changing" switch. |
+| 1 | Region Center X/Y, Size | The measurement rectangle (drag it in the viewer). Put it on a flat area. |
+| 1 | **Auto Profile Adjust** | Scales the measurement (×0.25–×6) — live **and locked** profiles alike. |
 | 1 | Manual Luma / Chroma Noise (%) | Direct noise levels, used only in Manual mode. Clean ≈ 0.5–1, noisy ≈ 2–5, low-light ≈ 5–10. |
-| 1 | **Lock Profile** | Measures across the clip and freezes the profile so every frame filters against the same numbers. The scope shows LOCKED; saved with the project. |
+| 1 | **Lock Profile** | Freezes the measurement you have right now — region included — averaged across the clip. Dial in on a good still, then lock. Saved with the project. |
 | 1 | **Scope: Measurements** | The measurement panel, drawn live in the viewer. |
 | 2 | **Enable Temporal NR** | Toggle the across-frames stage. |
 | 2 | Number of Frames | 3 or 5 frames averaged. |
 | 2 | **Motion Tracking** | Shift-search patch matching (±2 px) so slow pans keep their temporal averaging. |
 | 2 | Luma / Chroma Strength | Temporal blending (0–125; above 100 matching neighbours outweigh the current frame). |
-| 2 | Motion Threshold | How much change counts as motion (0–150). Lower if you see ghosting. |
+| 2 | Motion Threshold | How much change counts as motion (0–150). Seeing smear on movement? Lower this first. |
+| 2 | **Ghost Guard** | Second motion test on the *signed* patch mean — catches the slow, subtle motion (slow-mo smear) the magnitude gate can't see. Nearly free; leave on. |
 | 2 | **Firefly Removal** | Clips single-frame impulses (hot pixels) to the temporal median. |
 | 2 | **Scope: Motion Map** | Live mini-map: green = frames stacking, red = motion-protected. |
 | 3 | **Enable Spatial NR** | Toggle the within-frame stage. |
@@ -193,6 +194,7 @@ Temporal Activity view) to understand what each is contributing.
 | 4 | Luma Texture | Re-injects original brightness texture after denoising. |
 | 4 | **Deband** | Gradient-aware banding smoother + micro-dither. Edges are never touched. |
 | 4 | Film Grain, Grain Size, Grain Color | Clean synthesized grain to finish. |
+| — | **Global Blend** | Final crossfade original ↔ processed result, after everything else. |
 | 5 | **View** | Result / Split / Input / After Temporal / Noise Removed (auto gain) / Noise Analysis / Temporal Activity / SNR Map / **Matte: Noisiness** (map in RGB + alpha, for keying downstream). |
 
 ### Coming from Resolve Studio's NR palette?

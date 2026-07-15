@@ -33,20 +33,22 @@
 #define kPluginName "Hush Open NR"
 #define kPluginGrouping "Hush"
 #define kPluginDescription \
-    "Hush Open NR v3.1 — the free noise reduction suite.\n\n" \
+    "Hush Open NR v3.2 — the free noise reduction suite.\n\n" \
     "Click AUTO SETUP and the plugin measures your clip and dials in every " \
-    "slider (one undo reverts). Work top to bottom: 1 measure, 2 temporal, " \
-    "3 spatial, 4 refine, 5 inspect.\n\n" \
-    "New in 3.1: every range goes further, Auto Setup is bolder, and DETAIL " \
-    "RESCUE lets you crank the smoothing without blurring — anything the " \
-    "filter changed by more than a noise-sized amount is put back.\n\n" \
-    "Each step has a Scope checkbox that draws a panel right in the viewer — " \
-    "measurements, the Noise EQ bands, the motion map — so you can see what " \
-    "the plugin sees. Turn scopes off before rendering.\n\n" \
+    "slider (one undo reverts) — or CLEAN SLATE to zero everything and work " \
+    "fully manually. Work top to bottom: 1 measure, 2 temporal, 3 spatial, " \
+    "4 refine, 5 inspect.\n\n" \
+    "New in 3.2: LOCK PROFILE freezes exactly the measurement you dialed in " \
+    "(region included, Adjust still trims it), GHOST GUARD catches the " \
+    "slow-motion smear the main gate can't see, the spatial stage now " \
+    "measures residual noise at two scales so compressed blotch can't hide " \
+    "from it, and a GLOBAL BLEND crossfades the final result.\n\n" \
+    "Each step has a Scope checkbox that draws a panel right in the viewer. " \
+    "Turn scopes off before rendering.\n\n" \
     "MIT-licensed and free forever."
 #define kPluginIdentifier "org.opennr.Denoise"
 #define kPluginVersionMajor 3
-#define kPluginVersionMinor 1
+#define kPluginVersionMinor 2
 
 #define kSupportsTiles false
 #define kSupportsMultiResolution false
@@ -148,7 +150,7 @@ public:
         m_Master         = fetchDoubleParam("master");
         m_AutoSetup      = fetchPushButtonParam("autoSetup");
         m_AutoReport     = fetchStringParam("autoReport");
-        m_RevertAuto     = fetchPushButtonParam("revertAutoSetup");
+        m_CleanSlate     = fetchPushButtonParam("cleanSlate");
         m_AutoUndo       = fetchStringParam("autoSetupUndo");
         m_ProfileSource  = fetchChoiceParam("profileSource");
         m_ProfileAdjust  = fetchDoubleParam("profileAdjust");
@@ -180,6 +182,8 @@ public:
         m_ScopeMeasure   = fetchBooleanParam("scopeMeasure");
         m_ScopeMotion    = fetchBooleanParam("scopeMotion");
         m_ScopeEq        = fetchBooleanParam("scopeEq");
+        m_GhostGuard     = fetchBooleanParam("ghostGuard");
+        m_GlobalBlend    = fetchDoubleParam("globalBlend");
         m_EnableRefine   = fetchBooleanParam("enableRefine");
         m_ShadowDesat    = fetchDoubleParam("shadowDesat");
         m_DesatRange     = fetchDoubleParam("desatRange");
@@ -236,7 +240,7 @@ public:
                           m_GrainAmount->getValueAtTime(t) > 0.0 ||
                           m_Deband->getValueAtTime(t) > 0.0);
 
-        if (master <= 0.0 || (!tOn && !sOn && !rOn))
+        if (master <= 0.0 || m_GlobalBlend->getValueAtTime(t) <= 0.0 || (!tOn && !sOn && !rOn))
         {
             p_IdentityClip = m_SrcClip;
             p_IdentityTime = t;
@@ -263,8 +267,8 @@ public:
         {
             if (p_ParamName == "autoSetup")
                 runAutoSetup(p_Args.time);
-            else if (p_ParamName == "revertAutoSetup")
-                revertAutoSetup();
+            else if (p_ParamName == "cleanSlate")
+                runCleanSlate();
             else if (p_ParamName == "lockProfile")
                 lockProfileToggled(p_Args.time);
 
@@ -340,6 +344,22 @@ private:
                 if (!dup)
                     times.push_back(t);
             }
+            // v3.2: honor the user's measurement setup — if they placed a
+            // sampling region, measure THERE, not the whole frame (this was
+            // the "lock brings the noise back" bug: locking silently swapped
+            // a region profile for a blander whole-frame one). The lock
+            // stores the RAW measurement — Auto Profile Adjust is applied
+            // live at use time so the trim keeps working afterwards.
+            nrcore::Params ap;
+            int src = 0;
+            m_ProfileSource->getValue(src);
+            if (src == 1)
+            {
+                ap.profileSource = 1;
+                ap.regionCX   = static_cast<float>(m_RegionCX->getValue());
+                ap.regionCY   = static_cast<float>(m_RegionCY->getValue());
+                ap.regionSize = static_cast<float>(m_RegionSize->getValue());
+            }
             for (size_t ti = 0; ti < times.size(); ++ti)
             {
                 const double t = times[ti];
@@ -369,7 +389,6 @@ private:
                             partner = pbuf.data();
                     }
                 }
-                nrcore::Params ap;   // stock automatic whole-frame profiling
                 nrcore::Stats st;
                 nrcore::estimateInput(buf.data(), partner, W, H, ap, st);
                 p_Out.push_back(st);
@@ -401,11 +420,12 @@ private:
         std::string lockStr;
         m_LockData->getValue(lockStr);
         snprintf(buf, sizeof(buf),
-                 "v1|et=%d|tf=%d|tl=%.17g|tc=%.17g|mt=%.17g|mtr=%d|ff=%d|es=%d|sm=%d|sr=%d|"
+                 "v1|et=%d|tf=%d|tl=%.17g|tc=%.17g|mt=%.17g|mtr=%d|ff=%d|gg=%d|es=%d|sm=%d|sr=%d|"
                  "sl=%.17g|sc=%.17g|pd=%.17g|rs=%.17g|cb=%.17g|eqf=%.17g|eqm=%.17g|eqc=%.17g|pa=%.17g|lp=%d|ld=%s",
                  m_EnableTemporal->getValue() ? 1 : 0, tf,
                  m_TemporalLuma->getValue(), m_TemporalChroma->getValue(), m_MotionThresh->getValue(),
                  m_MotionTracking->getValue() ? 1 : 0, m_FireflyRemoval->getValue() ? 1 : 0,
+                 m_GhostGuard->getValue() ? 1 : 0,
                  m_EnableSpatial->getValue() ? 1 : 0, sm, m_SpatialRadius->getValue(),
                  m_SpatialLuma->getValue(), m_SpatialChroma->getValue(),
                  m_PreserveDetail->getValue(), m_DetailRescue->getValue(), m_ChromaBlotch->getValue(),
@@ -453,6 +473,7 @@ private:
         m_MotionThresh->setValue(as.motionThresh);
         m_MotionTracking->setValue(as.motionTracking != 0);
         m_FireflyRemoval->setValue(as.fireflyRemoval != 0);
+        m_GhostGuard->setValue(as.ghostGuard != 0);
         m_EnableSpatial->setValue(as.enableSpatial != 0);
         m_SpatialMode->setValue(as.spatialMode);
         m_SpatialRadius->setValue(as.spatialRadius);
@@ -467,7 +488,9 @@ private:
         m_ProfileAdjust->setValue(as.profileAdjust);
         m_LockData->setValue(nranalyze::formatLockedProfile(agg));
         m_LockProfile->setValue(as.lockProfile != 0);
-        m_AutoReport->setValue(nranalyze::formatAutoReport(agg, as));
+        int srcNow = 0;
+        m_ProfileSource->getValue(srcNow);
+        m_AutoReport->setValue(nranalyze::formatAutoReport(agg, as, srcNow == 1 ? 1 : 0));
         endEditBlock();
         m_InAutoApply = false;
 
@@ -476,48 +499,37 @@ private:
         updateEnabledness();
     }
 
-    void revertAutoSetup()
+    // v3.2: zero every processing control so the node passes the image
+    // through untouched — the fully-manual starting point (defaults and
+    // Auto Setup both process; this is the "do nothing until I say so"
+    // button). One Cmd+Z restores the previous state (single edit block).
+    void runCleanSlate()
     {
-        std::string s;
-        m_AutoUndo->getValue(s);
-        if (s.compare(0, 3, "v1|") != 0)
-        {
-            sendMessage(OFX::Message::eMessageMessage, "",
-                        "Nothing to revert — Auto Setup has not been run on this node.");
-            return;
-        }
-        std::string v;
+        m_AutoUndo->setValue(snapshotDenoiseParams());
         m_InAutoApply = true;
-        beginEditBlock("Revert Hush Auto Setup");
-        if (snapField(s, "et", v))  m_EnableTemporal->setValue(atoi(v.c_str()) != 0);
-        if (snapField(s, "tf", v))  m_TemporalFrames->setValue(atoi(v.c_str()));
-        if (snapField(s, "tl", v))  m_TemporalLuma->setValue(atof(v.c_str()));
-        if (snapField(s, "tc", v))  m_TemporalChroma->setValue(atof(v.c_str()));
-        if (snapField(s, "mt", v))  m_MotionThresh->setValue(atof(v.c_str()));
-        if (snapField(s, "mtr", v)) m_MotionTracking->setValue(atoi(v.c_str()) != 0);
-        if (snapField(s, "ff", v))  m_FireflyRemoval->setValue(atoi(v.c_str()) != 0);
-        if (snapField(s, "es", v))  m_EnableSpatial->setValue(atoi(v.c_str()) != 0);
-        if (snapField(s, "sm", v))  m_SpatialMode->setValue(atoi(v.c_str()));
-        if (snapField(s, "sr", v))  m_SpatialRadius->setValue(atoi(v.c_str()));
-        if (snapField(s, "sl", v))  m_SpatialLuma->setValue(atof(v.c_str()));
-        if (snapField(s, "sc", v))  m_SpatialChroma->setValue(atof(v.c_str()));
-        if (snapField(s, "pd", v))  m_PreserveDetail->setValue(atof(v.c_str()));
-        if (snapField(s, "rs", v))  m_DetailRescue->setValue(atof(v.c_str()));
-        if (snapField(s, "cb", v))  m_ChromaBlotch->setValue(atof(v.c_str()));
-        if (snapField(s, "eqf", v)) m_EqFine->setValue(atof(v.c_str()));
-        if (snapField(s, "eqm", v)) m_EqMedium->setValue(atof(v.c_str()));
-        if (snapField(s, "eqc", v)) m_EqCoarse->setValue(atof(v.c_str()));
-        if (snapField(s, "pa", v))  m_ProfileAdjust->setValue(atof(v.c_str()));
-        if (snapField(s, "ld", v))  m_LockData->setValue(v);
-        if (snapField(s, "lp", v))  m_LockProfile->setValue(atoi(v.c_str()) != 0);
-        m_AutoReport->setValue("Reverted. Click Auto Setup to analyze again.");
-        m_AutoUndo->setValue("");
+        beginEditBlock("Hush Clean Slate");
+        m_Master->setValue(1.0);
+        m_TemporalLuma->setValue(0.0);
+        m_TemporalChroma->setValue(0.0);
+        m_MotionThresh->setValue(30.0);
+        m_SpatialLuma->setValue(0.0);
+        m_SpatialChroma->setValue(0.0);
+        m_PreserveDetail->setValue(35.0);
+        m_DetailRescue->setValue(0.0);
+        m_ChromaBlotch->setValue(0.0);
+        m_EqFine->setValue(100.0);
+        m_EqMedium->setValue(0.0);
+        m_EqCoarse->setValue(0.0);
+        m_ShadowDesat->setValue(0.0);
+        m_LumaTexture->setValue(0.0);
+        m_Deband->setValue(0.0);
+        m_GrainAmount->setValue(0.0);
+        m_GlobalBlend->setValue(100.0);
+        m_ProfileAdjust->setValue(1.0);
+        m_LockProfile->setValue(false);
+        m_AutoReport->setValue("Clean slate — nothing is processing. Raise sliders, or click Auto Setup.");
         endEditBlock();
         m_InAutoApply = false;
-
-        std::string lockStr;
-        m_LockData->getValue(lockStr);
-        m_LockValid = nranalyze::parseLockedProfile(lockStr, m_LockAgg);
         updateEnabledness();
     }
 
@@ -661,6 +673,10 @@ private:
         p.scopeMeasure    = m_ScopeMeasure->getValueAtTime(t) ? 1 : 0;
         p.scopeMotion     = m_ScopeMotion->getValueAtTime(t) ? 1 : 0;
         p.scopeEq         = m_ScopeEq->getValueAtTime(t) ? 1 : 0;
+
+        // ---- v3.2 ----
+        p.ghostGuard      = m_GhostGuard->getValueAtTime(t) ? 1 : 0;
+        p.globalBlend     = static_cast<float>(m_GlobalBlend->getValueAtTime(t) / 100.0);
         const bool locked = m_LockProfile->getValueAtTime(t) && m_LockValid;
         p.profileLocked   = locked ? 1 : 0;
         p.lockSY = locked ? m_LockAgg.sy : 0.02f;
@@ -781,6 +797,8 @@ private:
         p.scopeMeasure   = params.scopeMeasure;
         p.scopeMotion    = params.scopeMotion;
         p.scopeEq        = params.scopeEq;
+        p.ghostGuard     = params.ghostGuard;
+        p.globalBlend    = params.globalBlend;
         p.profileLocked  = params.profileLocked;
         p.lockSY         = params.lockSY;
         p.lockSC         = params.lockSC;
@@ -835,7 +853,7 @@ private:
     OFX::DoubleParam*  m_Master = nullptr;
     OFX::PushButtonParam* m_AutoSetup = nullptr;
     OFX::StringParam*  m_AutoReport = nullptr;
-    OFX::PushButtonParam* m_RevertAuto = nullptr;
+    OFX::PushButtonParam* m_CleanSlate = nullptr;
     OFX::StringParam*  m_AutoUndo = nullptr;
     OFX::BooleanParam* m_LockProfile = nullptr;
     OFX::StringParam*  m_LockData = nullptr;
@@ -871,6 +889,8 @@ private:
     OFX::BooleanParam* m_ScopeMeasure = nullptr;
     OFX::BooleanParam* m_ScopeMotion = nullptr;
     OFX::BooleanParam* m_ScopeEq = nullptr;
+    OFX::BooleanParam* m_GhostGuard = nullptr;
+    OFX::DoubleParam*  m_GlobalBlend = nullptr;
     bool m_EqScopeShown = false;
     OFX::BooleanParam* m_EnableRefine = nullptr;
     OFX::DoubleParam*  m_ShadowDesat = nullptr;
@@ -1141,9 +1161,11 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
         page->addChild(*s);
     }
     {
-        OFX::PushButtonParamDescriptor* b = p_Desc.definePushButtonParam("revertAutoSetup");
-        b->setLabels("Revert Auto Setup", "Revert Auto Setup", "Revert Auto");
-        b->setHint("Restores every denoise control to its value from before the last Auto Setup.");
+        OFX::PushButtonParamDescriptor* b = p_Desc.definePushButtonParam("cleanSlate");
+        b->setLabels("Clean Slate (All Off)", "Clean Slate (All Off)", "Clean Slate");
+        b->setHint("Zeroes every processing control so the node passes the image through "
+                   "untouched — the fully-manual starting point. Raise sliders from nothing, "
+                   "or click Auto Setup. One undo restores what you had.");
         page->addChild(*b);
     }
     {
@@ -1183,8 +1205,8 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
     defineDouble(p_Desc, page, "regionSize", "Region Size",
                  "Size of the measurement region relative to the frame.", 0.25, 0.05, 1.0, grpProfile);
     defineDouble(p_Desc, page, "profileAdjust", "Auto Profile Adjust",
-                 "Scales the automatic measurement. Raise if noise is left behind, lower if "
-                 "detail is being eaten.",
+                 "Scales the measurement — live and locked profiles alike. Raise if noise is "
+                 "left behind, lower if detail is being eaten.",
                  1.0, 0.25, 6.0, grpProfile);
     defineDouble(p_Desc, page, "sigmaLuma", "Manual Luma Noise (%)",
                  "Brightness-noise level in percent (Manual profile only). Clean 0.5–1, "
@@ -1192,9 +1214,11 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
     defineDouble(p_Desc, page, "sigmaChroma", "Manual Chroma Noise (%)",
                  "Color-noise level in percent (Manual profile only).", 2.0, 0.05, 40.0, grpProfile);
     defineBool(p_Desc, page, "lockProfile", "Lock Profile",
-               "Freezes the noise profile, averaged across the clip, so every frame filters "
-               "against the same numbers. Lock for repeatable renders or flickering content; "
-               "saved with the project.",
+               "Freezes the measurement you have RIGHT NOW — including a From Region setup — "
+               "averaged across the clip, so the profile stops changing as the scene moves. "
+               "Dial in on a good still, then lock. Auto Profile Adjust still trims a locked "
+               "profile; un-tick to go back to live per-frame measurement. Saved with the "
+               "project.",
                false, grpProfile);
     defineBool(p_Desc, page, "scopeMeasure", "Scope: Measurements",
                "Draws the measurement panel in the viewer: noise levels in and after Step 2, "
@@ -1241,10 +1265,16 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "Color averaging strength; color takes more than brightness without side "
                  "effects.", 80.0, 0.0, 125.0, grpTemporal);
     defineDouble(p_Desc, page, "motionThreshold", "Motion Threshold",
-                 "How much change counts as motion — past it a pixel is never blended, so "
-                 "ghosting is impossible. Lower if you see trails; raise for stronger "
-                 "averaging on near-static shots.",
+                 "How much change counts as motion — past it a pixel is never blended. "
+                 "SEEING SMEAR OR GHOSTING ON MOVEMENT? Lower this first, and keep Ghost "
+                 "Guard on. Check Scope: Motion Map — moving things should read red.",
                  30.0, 0.0, 150.0, grpTemporal);
+    defineBool(p_Desc, page, "ghostGuard", "Ghost Guard",
+               "Second motion test that catches the slow, subtle movement the main gate "
+               "cannot see (the classic slow-motion smear): noise differences cancel out "
+               "when averaged with their signs, coherent motion does not. Nearly free on "
+               "static footage — leave on.",
+               true, grpTemporal);
     defineBool(p_Desc, page, "fireflyRemoval", "Firefly Removal",
                "Removes single-frame hot pixels and sparkles. Three tests must agree, so "
                "real moving detail is left alone; turn off only if strobes or glints lose "
@@ -1365,6 +1395,12 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "0 = monochrome film-like grain; higher adds color grain (digital-sensor "
                  "character).",
                  25.0, 0.0, 100.0, grpRefine);
+
+    // ------------------------------------------------------- v3.2: global mix
+    defineDouble(p_Desc, page, "globalBlend", "Global Blend",
+                 "Final crossfade between the original image (0) and the fully processed "
+                 "result (100) — a plain output mix, applied after everything else.",
+                 100.0, 0.0, 100.0, nullptr);
 
     // ---------------------------------------------------------- step 5: inspect
     OFX::GroupParamDescriptor* grpOutput = p_Desc.defineGroupParam("grpOutput");

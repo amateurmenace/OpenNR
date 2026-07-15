@@ -292,6 +292,7 @@ static nrcore::Params paramsFromAuto(const nranalyze::AutoSettings& as,
     q.motionThresh   = as.motionThresh / 100.0f;
     q.motionTracking = as.motionTracking;
     q.fireflyRemoval = as.fireflyRemoval;
+    q.ghostGuard     = as.ghostGuard;
     q.enableSpatial  = as.enableSpatial;
     q.spatialMode    = as.spatialMode;
     q.spatialRadius  = as.spatialRadius;
@@ -554,13 +555,16 @@ int main()
         check(std::fabs(rb.after - 26.791311) < 0.02, "EQ defaults reproduce v2.1 blotch output (PSNR)");
         check(std::fabs(meanAbs(out) - 0.54452496) < 2e-5, "EQ defaults reproduce v2.1 blotch output (mean)");
 
-        // full pipeline with the v3 temporal features disabled == v2.1
+        // full pipeline with the v3/v3.2 temporal features disabled — the
+        // two-scale residual (v3.2) shifts this slightly from the original
+        // v2.1 value; re-pinned and explained in CHANGELOG 3.2.0
         nrcore::Params pv21 = p;           // temporalFrames=5 from above
         pv21.motionTracking = 0;
         pv21.fireflyRemoval = 0;
+        pv21.ghostGuard = 0;
         CaseResult rs = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pv21);
-        printf("v2.1 golden full static: PSNR %.6f (want 40.926957)\n", rs.after);
-        check(std::fabs(rs.after - 40.926957) < 0.02, "tracking+firefly off reproduces v2.1 static");
+        printf("v3.2 golden full static: PSNR %.6f (want 40.948263)\n", rs.after);
+        check(std::fabs(rs.after - 40.948263) < 0.02, "v3 features off reproduces pinned static golden");
     }
 
     // =====================================================================
@@ -1046,6 +1050,91 @@ int main()
         printf("letterbox: measured sigma %.4f vs true %.4f\n", sb.sy, truth);
         check(std::fabs(sb.sy - truth) / truth < 0.30f,
               "letterbox bars do not collapse the noise estimate");
+    }
+
+    // =====================================================================
+    // v3.2 — locked profile honors Auto Profile Adjust (live trim)
+    // =====================================================================
+    {
+        std::vector<float> clean;
+        renderScene(clean, 0, 0);
+        std::vector<float> noisy = clean;
+        addNoise(noisy, 0.05f, 41);
+        nrcore::Params pl = p;
+        pl.profileLocked = 1;
+        pl.lockSY = 0.020f; pl.lockSC = 0.015f; pl.lockTY = 0.019f; pl.lockTC = 0.014f;
+        pl.profileAdjust = 2.0f;
+        nrcore::Stats st;
+        nrcore::estimateInput(noisy.data(), nullptr, W, H, pl, st);
+        check(std::fabs(st.sy - 0.040f) < 1e-6f && std::fabs(st.tc - 0.028f) < 1e-6f,
+              "Auto Profile Adjust trims a locked profile live");
+    }
+
+    // =====================================================================
+    // v3.2 — Ghost Guard: subtle coherent drift smears less, static ~free
+    // =====================================================================
+    {
+        nrcore::Params gOff = p; gOff.ghostGuard = 0;
+        nrcore::Params gOn  = p; gOn.ghostGuard  = 1;
+        const CaseResult subOff = runCase(0.05f, 0.4f, 0.25f, NOISE_IID, gOff);
+        const CaseResult subOn  = runCase(0.05f, 0.4f, 0.25f, NOISE_IID, gOn);
+        printf("v3.2 ghost guard, subtle drift 0.4px: off %5.2f dB -> on %5.2f dB\n",
+               subOff.after, subOn.after);
+        check(subOn.after >= subOff.after - 0.05, "ghost guard never hurts subtle drift");
+
+        const CaseResult stOff = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, gOff);
+        const CaseResult stOn  = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, gOn);
+        printf("v3.2 ghost guard, static: off %5.2f dB -> on %5.2f dB\n", stOff.after, stOn.after);
+        check(stOn.after >= stOff.after - 0.40, "ghost guard costs <= 0.4 dB on static");
+    }
+
+    // =====================================================================
+    // v3.2 — global blend: 0 = identity, 0.5 = exact midpoint
+    // =====================================================================
+    {
+        nrcore::Params b0 = p;  b0.globalBlend = 0.0f;
+        nrcore::Params b5 = p;  b5.globalBlend = 0.5f;
+        nrcore::Params b1 = p;  b1.globalBlend = 1.0f;
+        std::vector<float> clean, noisy, o0, o5, o1, scratch;
+        renderScene(clean, 0, 0);
+        noisy = clean;
+        addNoise(noisy, 0.05f, 55);
+        const float* fptr[5] = { noisy.data(), noisy.data(), noisy.data(),
+                                 noisy.data(), noisy.data() };
+        o0.resize(noisy.size()); o5.resize(noisy.size()); o1.resize(noisy.size());
+        nrcore::denoiseFrame(fptr, W, H, b0, o0.data(), scratch);
+        nrcore::denoiseFrame(fptr, W, H, b5, o5.data(), scratch);
+        nrcore::denoiseFrame(fptr, W, H, b1, o1.data(), scratch);
+        float maxd0 = 0.0f, maxdMid = 0.0f;
+        for (size_t i = 0; i < o0.size(); i += 4)
+            for (int c = 0; c < 3; ++c) {
+                maxd0 = std::max(maxd0, std::fabs(o0[i+c] - noisy[i+c]));
+                maxdMid = std::max(maxdMid, std::fabs(o5[i+c] - 0.5f * (noisy[i+c] + o1[i+c])));
+            }
+        printf("v3.2 global blend: blend0 maxdiff %.2e, midpoint maxdiff %.2e\n", maxd0, maxdMid);
+        check(maxd0 < 2e-5f, "global blend 0 is identity");
+        check(maxdMid < 1e-5f, "global blend 50 is the exact midpoint");
+    }
+
+    // =====================================================================
+    // v3.2 — two-scale residual: correlated noise can no longer hide from
+    // the spatial stage (temporal off -> residual == input noise)
+    // =====================================================================
+    {
+        std::vector<float> clean;
+        renderScene(clean, 0, 0);
+        std::vector<std::vector<float>> frames;
+        makeCaseFrames(0.05f, 0.0f, 0.0f, NOISE_CORR, frames);
+        const float truth = trueSigmaY(frames[2], clean);
+        nrcore::Params pr = p;
+        pr.enableTemporal = 0;   // residual == the input noise, unmerged
+        std::vector<float> out(frames[2].size()), scratch;
+        const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                                 frames[3].data(), frames[4].data() };
+        const nrcore::Stats st = nrcore::denoiseFrame(fptr, W, H, pr, out.data(), scratch);
+        printf("v3.2 residual on correlated noise: ry %.4f vs true %.4f (fine-only used to underread)\n",
+               st.ry, truth);
+        check(st.ry > 0.55f * truth, "coarse residual sees correlated noise");
     }
 
     // --- render every view mode

@@ -1,5 +1,56 @@
 # OpenNR changelog
 
+## 3.2.0 — 2026-07-15
+
+Field-review release: lock/region behavior fixed, slow-motion ghosting
+attacked at the algorithm level, and the spatial stage taught to see the
+noise it was told didn't exist.
+
+### Fixed
+- **Lock Profile no longer throws away your region setup.** Locking (and
+  Auto Setup) used to re-measure the WHOLE frame with stock settings —
+  so the profile you dialed in from a region was silently replaced and
+  "the noise came back". Both now measure exactly what you set up: region
+  honored, and the lock freezes it. **Auto Profile Adjust now trims a
+  locked profile live** (the lock stores the raw measurement; Adjust is
+  applied at use time). Unlocked + From Region still re-measures per frame
+  — that is what the region mode is for; lock is the "stop changing" switch,
+  and the tooltips now say so.
+- **Spatial NR under-reported on compressed footage.** The residual noise
+  (what the spatial stage filters against) was measured with a fine-scale
+  estimator only — the correlated, blotchy residue compression leaves after
+  temporal averaging is LARGER than a pixel and was invisible to it, so the
+  spatial stage idled while the eye still saw noise. The residual is now
+  measured at two scales (the v1.1 input-estimator lesson, applied to the
+  residual; coarse blocks even-aligned to match 4:2:0 chroma siting).
+  Correlated-noise PSNR: +2.1 dB at defaults. Bit-exact on clean/iid
+  footage where the fine estimator was already right.
+
+### Added
+- **Ghost Guard (Step 2, on by default) — the slow-motion smear fix.** The
+  magnitude gate cannot distinguish subtle coherent motion from noise of the
+  same size; that is exactly where slow-motion ghosting lives. Ghost Guard
+  adds a second knee on the SIGNED patch mean: noise differences cancel
+  toward zero when averaged with their signs, coherent motion does not — so
+  creeping movement gets its weight cut ~3x earlier while pure noise sails
+  through. Measured cost on static footage: ~0.01 dB. The Motion Threshold
+  tooltip now spells out the ghost-fixing path (lower threshold, keep guard
+  on, check the Motion Map scope — moving things should read red).
+- **Clean Slate (All Off) button** — replaces Revert Auto Setup. Zeroes
+  every processing control so the node passes the image through untouched:
+  the fully-manual starting point the defaults never gave you. One undo
+  restores what you had (Auto Setup's single-undo behavior is unchanged).
+- **Global Blend** — a plain final crossfade original ↔ processed result,
+  after everything else (grain included). 0 = untouched (and the node
+  short-circuits to identity).
+
+### Changed
+- Auto Setup reports "(from region)" when it measured your region, and sets
+  Ghost Guard on.
+- The full-pipeline static golden re-pinned 40.927 → 40.948 dB (the
+  two-scale residual measures the merge's own slight correlation); the
+  spatial-stage goldens were unaffected (bit-exact).
+
 ## 3.1.0 — 2026-07-15
 
 The power & transparency release, built from field feedback: "only when I

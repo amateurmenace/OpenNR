@@ -163,6 +163,7 @@ struct AutoSettings {
     float motionThresh    = 30.0f;
     int   motionTracking  = 1;
     int   fireflyRemoval  = 1;
+    int   ghostGuard      = 1;      // v3.2
     int   enableSpatial   = 1;
     int   spatialMode     = 1;      // NLM
     int   spatialRadius   = 3;
@@ -266,13 +267,15 @@ inline AutoSettings mapAnalysisToSettings(const ClipAggregate& a)
 // ---------------------------------------------------------------------------
 // Human-readable report for the Auto Setup status line
 // ---------------------------------------------------------------------------
-inline std::string formatAutoReport(const ClipAggregate& a, const AutoSettings& s)
+inline std::string formatAutoReport(const ClipAggregate& a, const AutoSettings& s,
+                                    int fromRegion = 0)
 {
     static const char* kClassName[4] = { "clean", "moderate noise", "noisy", "severe noise" };
     char buf[256];
     snprintf(buf, sizeof(buf),
-             "Analyzed %d frame%s \xc2\xb7 noise %.1f%%Y / %.1f%%C (%s) \xc2\xb7 %s \xc2\xb7 profile locked",
+             "Analyzed %d frame%s%s \xc2\xb7 noise %.1f%%Y / %.1f%%C (%s) \xc2\xb7 %s \xc2\xb7 profile locked",
              a.frames, a.frames == 1 ? "" : "s",
+             fromRegion ? " (from region)" : "",
              a.sy * 100.0f, a.sc * 100.0f,
              kClassName[s.noiseClass],
              s.movingCamera ? "moving camera" : "steady camera");

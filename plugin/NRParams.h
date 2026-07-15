@@ -66,6 +66,10 @@ typedef struct NRParams
     int   scopeMeasure;    // overlay: Noise Analysis panel (0/1)
     int   scopeMotion;     // overlay: temporal-activity mini map (0/1)
     int   scopeEq;         // overlay: Noise EQ panel (0/1)
+
+    // ---- v3.2 ----
+    int   ghostGuard;      // temporal signed-mean coherence gate (0/1)
+    float globalBlend;     // 0..1 final crossfade original -> result
 } NRParams;
 
 // stats buffer layout (uint32 slots)
@@ -80,6 +84,8 @@ typedef struct NRParams
 #define NR_STATS_HIST_YR    3584     // residual (on tmp) luma (256)
 #define NR_STATS_HIST_CR    3840
 #define NR_STATS_HIST_EFFN  4096     // effN histogram (32)
+#define NR_STATS_HIST_YR2   4176     // v3.2: coarse residual (2x2 blocks, 256)
+#define NR_STATS_HIST_CR2   4432
 #define NR_STATS_SIGMA_SY   4128     // float bits from here on
 #define NR_STATS_SIGMA_SC   4129
 #define NR_STATS_SIGMA_TY   4130
@@ -94,6 +100,6 @@ typedef struct NRParams
 #define NR_STATS_FINE_Y     4169     // v3.1: per-band estimates for the EQ
 #define NR_STATS_FINE_C     4170     //       scope (float bits)
 #define NR_STATS_COARSE_Y   4171
-#define NR_STATS_UINTS      4176
+#define NR_STATS_UINTS      4688     // v3.2: grew by 2x256 for HIST_YR2/CR2
 
 #endif // OPENNR_NRPARAMS_H

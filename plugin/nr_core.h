@@ -133,6 +133,14 @@ struct Params {
     int   scopeMeasure   = 0;      // overlay: Noise Analysis panel (top-left)
     int   scopeMotion    = 0;      // overlay: temporal-activity mini map (b-r)
     int   scopeEq        = 0;      // overlay: Noise EQ panel (top-right)
+
+    // ---- v3.2 ----
+    int   ghostGuard     = 1;      // temporal coherence gate: noise diffs
+                                   // cancel when averaged SIGNED, subtle
+                                   // coherent motion does not — catch the
+                                   // slow-motion ghosting the magnitude gate
+                                   // cannot see
+    float globalBlend    = 1.0f;   // 0..1 final crossfade original -> result
 };
 
 // Sigmas and everything the analysis HUD displays.
@@ -295,14 +303,17 @@ static const int kOffX[9] = { 0, 1, -1, 0, 0, 2, -2, 0, 0 };
 static const int kOffY[9] = { 0, 0, 0, 1, -1, 0, 0, 2, -2 };
 
 // Mean |3x3 patch difference| of neighbour frame f shifted by (ox,oy) against
-// the current frame's patch (cy9/ccb9/ccr9); also returns the shifted centre
-// sample for blending. At (0,0) this is exactly the v2.1 matching term.
+// the current frame's patch (cy9/ccb9/ccr9); also returns the SIGNED mean
+// luma difference (v3.2 Ghost Guard: noise diffs cancel when averaged signed,
+// coherent motion/lighting change does not) and the shifted centre sample for
+// blending. At (0,0) the magnitude term is exactly the v2.1 matching term.
 static inline void patchDiff(const float* f, int W, int H, int x, int y,
                              int ox, int oy,
                              const float* cy9, const float* ccb9, const float* ccr9,
-                             float& dY, float& dC, float& fy, float& fcb, float& fcr)
+                             float& dY, float& dC, float& sdY,
+                             float& fy, float& fcb, float& fcr)
 {
-    dY = 0.0f; dC = 0.0f; fy = 0.0f; fcb = 0.0f; fcr = 0.0f;
+    dY = 0.0f; dC = 0.0f; sdY = 0.0f; fy = 0.0f; fcb = 0.0f; fcr = 0.0f;
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx, ++i) {
@@ -310,11 +321,13 @@ static inline void patchDiff(const float* f, int W, int H, int x, int y,
             sampleYCC(f, W, H, x + ox + dx, y + oy + dy, vy, vcb, vcr);
             if (i == 4) { fy = vy; fcb = vcb; fcr = vcr; }
             dY += std::fabs(vy - cy9[i]);
+            sdY += (vy - cy9[i]);
             dC += 0.5f * (std::fabs(vcb - ccb9[i]) + std::fabs(vcr - ccr9[i]));
         }
     }
     dY *= (1.0f / 9.0f);
     dC *= (1.0f / 9.0f);
+    sdY *= (1.0f / 9.0f);
 }
 
 // Integer hash noise (identical across CPU/Metal/CUDA/OpenCL: pure uint32 math)
@@ -346,14 +359,17 @@ static inline float valueNoise(float x, float y, float size, uint32_t f, uint32_
 // ---------------------------------------------------------------------------
 // v3: a locked profile overrides the measured sigmas and gains, but the
 // measurement still runs so the HUD histogram stays live.
+// v3.2: the lock stores the RAW measurement; Auto Profile Adjust is applied
+// here, at use time, so the trim slider keeps working on a locked profile.
 static inline void applyLockedProfile(const Params& p, Stats& out)
 {
     if (p.profileLocked == 0)
         return;
-    out.sy = clampf(p.lockSY, kSigmaMin, kSigmaMax);
-    out.sc = clampf(p.lockSC, kSigmaMin, kSigmaMax);
-    out.ty = clampf(p.lockTY, kSigmaMin, kSigmaMax);
-    out.tc = clampf(p.lockTC, kSigmaMin, kSigmaMax);
+    const float adjL = clampf(p.profileAdjust, 0.25f, 6.0f);
+    out.sy = clampf(p.lockSY * adjL, kSigmaMin, kSigmaMax);
+    out.sc = clampf(p.lockSC * adjL, kSigmaMin, kSigmaMax);
+    out.ty = clampf(p.lockTY * adjL, kSigmaMin, kSigmaMax);
+    out.tc = clampf(p.lockTC * adjL, kSigmaMin, kSigmaMax);
     for (int b = 0; b < kLumaBins; ++b) {
         out.gainY[b] = clampf(p.lockGainY[b], 0.6f, 2.2f);
         out.gainC[b] = clampf(p.lockGainC[b], 0.6f, 2.2f);
@@ -569,6 +585,15 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
     // the centre and inflates its gate) stays negligible on static footage.
     const bool  track = (p.motionTracking != 0);
     const float searchThresh = loY + 0.75f * (hiY - loY);
+    // v3.2 Ghost Guard: a second knee on the SIGNED patch mean. Pure-noise
+    // signed means cancel toward zero (sigma_mean = sqrt(2)sigma/3, so the
+    // knee start 1.128sigma sits at ~2.4 sigma_mean — barely any pure-noise
+    // pixels reach it), while subtle coherent motion — the slow-motion
+    // smear the magnitude gate cannot see — pushes the signed mean straight
+    // past it and gets its weight cut.
+    const bool  guard = (p.ghostGuard != 0);
+    const float loS = kAbsDiffBias * s.ty;
+    const float invSpanS = 1.0f / (0.5f * thrMul * s.ty);
     // v3 firefly zapper: active only when the temporal stage itself is
     // (identity when master is 0 or the stage contributes nothing).
     const bool  zap = (reach >= 1) && (p.fireflyRemoval != 0) &&
@@ -618,9 +643,9 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
                     continue;
                 const float* f = frames[k];
 
-                float dY, dC, fy9c, fcb9c, fcr9c;
+                float dY, dC, sdY, fy9c, fcb9c, fcr9c;
                 patchDiff(f, W, H, x, y, 0, 0, cy9, ccb9, ccr9,
-                          dY, dC, fy9c, fcb9c, fcr9c);
+                          dY, dC, sdY, fy9c, fcb9c, fcr9c);
 
                 // Shift search: try the 8 shifted candidates and keep the
                 // best luma match. A candidate must beat the running best by
@@ -628,11 +653,11 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
                 float shiftTight = 1.0f;
                 if (track && dY > searchThresh) {
                     for (int c = 1; c < 9; ++c) {
-                        float dY2, dC2, fy2, fcb2, fcr2;
+                        float dY2, dC2, sd2, fy2, fcb2, fcr2;
                         patchDiff(f, W, H, x, y, kOffX[c], kOffY[c],
-                                  cy9, ccb9, ccr9, dY2, dC2, fy2, fcb2, fcr2);
+                                  cy9, ccb9, ccr9, dY2, dC2, sd2, fy2, fcb2, fcr2);
                         if (dY2 < dY * 0.99f) {
-                            dY = dY2; dC = dC2;
+                            dY = dY2; dC = dC2; sdY = sd2;
                             fy9c = fy2; fcb9c = fcb2; fcr9c = fcr2;
                             // a shifted patch must match like a static one to
                             // be trusted: the knee START stays (true rematches
@@ -645,7 +670,9 @@ inline void temporalMerge(const float* const frames[5], int W, int H,
                     }
                 }
 
-                const float gY = 1.0f - smooth01((dY - loY) * invSpanY * shiftTight);
+                float gY = 1.0f - smooth01((dY - loY) * invSpanY * shiftTight);
+                if (guard)
+                    gY *= 1.0f - smooth01((std::fabs(sdY) - loS) * invSpanS * shiftTight);
                 const float gC = 1.0f - smooth01((dC - loC) * invSpanC * shiftTight);
                 const float wY = tL * gY;
                 const float wC = tC * gC * gY;   // chroma slaved to the luma gate
@@ -683,7 +710,8 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
     }
 
     std::vector<uint32_t> hYr(kHistBins, 0), hCr(kHistBins, 0), hN(32, 0);
-    uint64_t total = 0;
+    std::vector<uint32_t> hY2r(kHistBins, 0), hC2r(kHistBins, 0);
+    uint64_t total = 0, total2 = 0;
     for (int y = 1; y < H - 1; y += 2) {
         for (int x = 1; x < W - 1; x += 2) {
             float Y[9], Cb[9], Cr[9];
@@ -704,6 +732,31 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
             const float effN = tmpAt(tmp, W, H, x, y)[3];
             hN[clampi(static_cast<int>((effN - 1.0f) * 8.0f), 0, 31)]++;
             total++;
+
+            // v3.2: coarse residual — 2x2-block Laplacian on the merged
+            // image, exactly the input estimator's trick. Compression noise
+            // survives temporal averaging as blotch LARGER than a pixel;
+            // the fine Laplacian is blind to it, so the spatial stage was
+            // being told the image is cleaner than the eye can see. Blocks
+            // are EVEN-aligned (x-1, y-1: the sampling grid is odd) so
+            // 2x2-structured noise — 4:2:0 chroma sits on this grid — lands
+            // inside one block instead of straddling four and cancelling.
+            if ((((x - 1) >> 1) & 1) == 0 && (((y - 1) >> 1) & 1) == 0) {
+                float bY[9], bCb[9], bCr[9];
+                i = 0;
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dx = -1; dx <= 1; ++dx, ++i)
+                        blockMeanTmp(tmp, W, H, (x - 1) + dx * 2, (y - 1) + dy * 2, bY[i], bCb[i], bCr[i]);
+                const float lY  = 4.0f * bY[4]  - 2.0f * (bY[1] + bY[3] + bY[5] + bY[7])   + (bY[0] + bY[2] + bY[6] + bY[8]);
+                const float lCb = 4.0f * bCb[4] - 2.0f * (bCb[1] + bCb[3] + bCb[5] + bCb[7]) + (bCb[0] + bCb[2] + bCb[6] + bCb[8]);
+                const float lCr = 4.0f * bCr[4] - 2.0f * (bCr[1] + bCr[3] + bCr[5] + bCr[7]) + (bCr[0] + bCr[2] + bCr[6] + bCr[8]);
+                if (lY != 0.0f || lCb != 0.0f || lCr != 0.0f) {
+                    hY2r[clampi(static_cast<int>(std::fabs(lY)  * kHistScaleY), 0, kHistBins - 1)]++;
+                    hC2r[clampi(static_cast<int>(std::fabs(lCb) * kHistScaleC), 0, kHistBins - 1)]++;
+                    hC2r[clampi(static_cast<int>(std::fabs(lCr) * kHistScaleC), 0, kHistBins - 1)]++;
+                    total2++;
+                }
+            }
         }
     }
     if (total < 64) {
@@ -725,6 +778,14 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
     const float adj = clampf(p.profileAdjust, 0.25f, 6.0f);
     float ry = med(hYr, total, kHistScaleY) * kMedianCal * adj;
     float rc = med(hCr, total * 2, kHistScaleC) * kMedianCal * adj;
+    // v3.2: filter against whichever scale still carries noise (0.9 factor
+    // and 2x block calibration exactly as the input estimator)
+    if (total2 >= 64) {
+        const float ryC = 2.0f * med(hY2r, total2, kHistScaleY) * kMedianCal * adj;
+        const float rcC = 2.0f * med(hC2r, total2 * 2, kHistScaleC) * kMedianCal * adj;
+        ry = std::max(ry, 0.9f * ryC);
+        rc = std::max(rc, 0.9f * rcC);
+    }
     s.effNMed = 1.0f + med(hN, total, 8.0f);
 
     // Floors: the residual cannot be less than the theoretical reduction, and
@@ -1149,12 +1210,17 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
     // v3 Noise EQ: the fine slider scales the NLM band's blend (1 = v2.1).
     // v3.1: above 100% it also widens the similarity h — the blend saturates
     // at 1, so the slider's top half used to be a silent no-op.
+    // v3.2: the over-100 regions bite harder (field feedback: the spatial
+    // stage needed more reach per slider unit); at and below 100 the curves
+    // are bit-identical to earlier releases.
     const float eqF = clampf(p.eqFine, 0.0f, 3.0f);
-    const float eqH = std::sqrt(std::max(1.0f, eqF));
+    const float eqH = std::pow(std::max(1.0f, eqF), 0.8f);
     const float aY = (p.enableSpatial == 0) ? 0.0f : clampf(sL * mLow * eqF, 0.0f, 1.0f);
     const float aC = (p.enableSpatial == 0) ? 0.0f : clampf(sC * mLow * eqF, 0.0f, 1.0f);
-    const float hMulY = (0.6f + 1.4f * std::pow(sL, 1.5f)) * hBoost * eqH;
-    const float hMulC = (0.6f + 1.4f * std::pow(sC, 1.5f)) * hBoost * eqH;
+    const float overL = (sL > 1.0f) ? 1.6f * std::pow(sL - 1.0f, 1.2f) : 0.0f;
+    const float overC = (sC > 1.0f) ? 1.6f * std::pow(sC - 1.0f, 1.2f) : 0.0f;
+    const float hMulY = (0.6f + 1.4f * std::pow(sL, 1.5f) + overL) * hBoost * eqH;
+    const float hMulC = (0.6f + 1.4f * std::pow(sC, 1.5f) + overC) * hBoost * eqH;
     const float pd = clampf(p.preserveDetail, 0.0f, 1.0f);
     const int   R  = clampi(p.spatialRadius, 1, 10);
     const bool  nlm = (p.spatialMode == 1);
@@ -1200,6 +1266,9 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
     const float grainSize = clampf(p.grainSize, 0.5f, 6.0f);
     const float grainCh = clampf(p.grainChroma, 0.0f, 1.0f);
     const uint32_t frame = static_cast<uint32_t>(p.frameIndex);
+    // v3.2: final crossfade original -> processed (a plain output mix, unlike
+    // Strength which reshapes the filters themselves)
+    const float gBlend = clampf(p.globalBlend, 0.0f, 1.0f);
 
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
@@ -1465,6 +1534,15 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
                         Crr += grainAmt * grainCh * 0.6f * resp * valueNoise(static_cast<float>(x), static_cast<float>(y), grainSize, frame, 2u);
                     }
                 }
+            }
+
+            // v3.2 global blend: crossfade back toward the untouched input.
+            // Applied to the finished result only — the Noise Removed view
+            // keeps showing the full-strength diagnostic.
+            if (gBlend < 1.0f) {
+                Yr  = cyIn  + gBlend * (Yr  - cyIn);
+                Cbr = ccbIn + gBlend * (Cbr - ccbIn);
+                Crr = ccrIn + gBlend * (Crr - ccrIn);
             }
 
             float r, g, b;

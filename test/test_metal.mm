@@ -93,6 +93,8 @@ static void toCpuParams(const NRParams& gp, nrcore::Params& cp)
     cp.scopeMeasure   = gp.scopeMeasure;
     cp.scopeMotion    = gp.scopeMotion;
     cp.scopeEq        = gp.scopeEq;
+    cp.ghostGuard     = gp.ghostGuard;
+    cp.globalBlend    = gp.globalBlend;
 }
 
 // sparseOK: cases that exercise the v3 shift-search selection. Picking the
@@ -204,6 +206,7 @@ int main()
     p.motionTracking = 0; p.fireflyRemoval = 1;
     p.eqFine = 1.0f; p.eqMedium = 0.0f; p.eqCoarse = 0.0f; p.deband = 0.0f;
     p.profileLocked = 0;
+    p.ghostGuard = 1; p.globalBlend = 1.0f;   // v3.2 defaults
     p.lockSY = 0.02f; p.lockSC = 0.02f; p.lockTY = 0.02f; p.lockTC = 0.02f;
     for (int b = 0; b < 16; ++b) { p.lockGainY[b] = 1.0f; p.lockGainC[b] = 1.0f; }
 
@@ -305,6 +308,23 @@ int main()
 
     NRParams w6 = p; w6.viewMode = 4; w6.temporalLuma = 1.25f; w6.motionThresh = 1.5f;
     failures += compareRun(queue, w6, "v3.1 noise view + extended temporal");
+
+    // ---- v3.2 cases ----
+    NRParams x1 = p; x1.ghostGuard = 0;
+    failures += compareRun(queue, x1, "v3.2 ghost guard off");
+
+    NRParams x2 = p; x2.globalBlend = 0.5f;
+    failures += compareRun(queue, x2, "v3.2 global blend 50");
+
+    NRParams x3 = p; x3.globalBlend = 0.0f;
+    failures += compareRun(queue, x3, "v3.2 global blend 0 (identity mix)");
+
+    NRParams x4 = p; x4.profileLocked = 1; x4.profileAdjust = 2.5f;
+    x4.lockSY = 0.02f; x4.lockSC = 0.015f; x4.lockTY = 0.019f; x4.lockTC = 0.014f;
+    failures += compareRun(queue, x4, "v3.2 locked profile x adjust");
+
+    NRParams x5 = p; x5.motionTracking = 1; x5.ghostGuard = 1;
+    failures += compareRun(queue, x5, "v3.2 guard + tracking (2px pan)", true);
 
     printf(failures == 0 ? "ALL GPU PARITY CHECKS PASSED\n" : "%d GPU PARITY CHECK(S) FAILED\n", failures);
     return failures == 0 ? 0 : 1;

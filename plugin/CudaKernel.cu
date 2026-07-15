@@ -44,6 +44,8 @@ namespace {
 #define H_YR    NR_STATS_HIST_YR
 #define H_CR    NR_STATS_HIST_CR
 #define H_EN    NR_STATS_HIST_EFFN
+#define H_YR2   NR_STATS_HIST_YR2
+#define H_CR2   NR_STATS_HIST_CR2
 #define S_SY    NR_STATS_SIGMA_SY
 #define S_SC    NR_STATS_SIGMA_SC
 #define S_TY    NR_STATS_SIGMA_TY
@@ -172,9 +174,10 @@ __device__ const int kOffY[9] = { 0, 0, 0, 1, -1, 0, 0, 2, -2 };
 __device__ inline void patchDiff(const float4* f, int W, int H, int x, int y,
                                  int ox, int oy,
                                  const float* cy9, const float* ccb9, const float* ccr9,
-                                 float& dY, float& dC, float& fy, float& fcb, float& fcr)
+                                 float& dY, float& dC, float& sdY,
+                                 float& fy, float& fcb, float& fcr)
 {
-    dY = 0.0f; dC = 0.0f; fy = 0.0f; fcb = 0.0f; fcr = 0.0f;
+    dY = 0.0f; dC = 0.0f; sdY = 0.0f; fy = 0.0f; fcb = 0.0f; fcr = 0.0f;
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx, ++i) {
@@ -182,11 +185,13 @@ __device__ inline void patchDiff(const float4* f, int W, int H, int x, int y,
             sampleYCC(f, W, H, x + ox + dx, y + oy + dy, vy, vcb, vcr);
             if (i == 4) { fy = vy; fcb = vcb; fcr = vcr; }
             dY += fabsf(vy - cy9[i]);
+            sdY += (vy - cy9[i]);
             dC += 0.5f * (fabsf(vcb - ccb9[i]) + fabsf(vcr - ccr9[i]));
         }
     }
     dY *= (1.0f / 9.0f);
     dC *= (1.0f / 9.0f);
+    sdY *= (1.0f / 9.0f);
 }
 
 __device__ inline float hashNoise(unsigned int ix, unsigned int iy, unsigned int f, unsigned int ch)
@@ -374,11 +379,14 @@ __global__ void FinalizeStatsKernel(NRParams p, unsigned int* stats)
 
     // v3: a locked profile overrides the measured sigmas and gains; the
     // histogram/medbin stay live so the HUD keeps showing the measurement.
+    // v3.2: the lock stores the RAW measurement — Auto Profile Adjust is
+    // applied here so the trim slider keeps working while locked.
     if (p.profileLocked != 0) {
-        sy = clampf(p.lockSY, kSigmaMin, kSigmaMax);
-        sc = clampf(p.lockSC, kSigmaMin, kSigmaMax);
-        ty = clampf(p.lockTY, kSigmaMin, kSigmaMax);
-        tc = clampf(p.lockTC, kSigmaMin, kSigmaMax);
+        const float adjL = clampf(p.profileAdjust, 0.25f, 6.0f);
+        sy = clampf(p.lockSY * adjL, kSigmaMin, kSigmaMax);
+        sc = clampf(p.lockSC * adjL, kSigmaMin, kSigmaMax);
+        ty = clampf(p.lockTY * adjL, kSigmaMin, kSigmaMax);
+        tc = clampf(p.lockTC * adjL, kSigmaMin, kSigmaMax);
     }
 
     stats[S_SY] = __float_as_uint(sy);
@@ -445,6 +453,10 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
     // also keeps GPU warps convergent on static footage (see nr_core.h).
     const bool  track = (p.motionTracking != 0);
     const float searchThresh = loY + 0.75f * (hiY - loY);
+    // v3.2 Ghost Guard — see nr_core.h for the signed-mean rationale
+    const bool  guard = (p.ghostGuard != 0);
+    const float loS = kAbsDiffBias * sigTY;
+    const float invSpanS = 1.0f / (0.5f * thrMul * sigTY);
     const bool  zap = (reach >= 1) && (p.fireflyRemoval != 0) &&
                       (p.master > 0.0f) && (tL > 0.0f || tC > 0.0f);
     const float zapY = 6.0f * sigTY;
@@ -484,26 +496,28 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
             continue;
         const float4* f = frames[k];
 
-        float dY, dC, fyc, fcbc, fcrc;
-        patchDiff(f, W, H, x, y, 0, 0, cy9, ccb9, ccr9, dY, dC, fyc, fcbc, fcrc);
+        float dY, dC, sdY, fyc, fcbc, fcrc;
+        patchDiff(f, W, H, x, y, 0, 0, cy9, ccb9, ccr9, dY, dC, sdY, fyc, fcbc, fcrc);
 
         // v3 shift search — see nr_core.h for the acceptance margin and the
         // tightened roll-off for shifted winners
         float shiftTight = 1.0f;
         if (track && dY > searchThresh) {
             for (int c = 1; c < 9; ++c) {
-                float dY2, dC2, fy2, fcb2, fcr2;
+                float dY2, dC2, sd2, fy2, fcb2, fcr2;
                 patchDiff(f, W, H, x, y, kOffX[c], kOffY[c],
-                          cy9, ccb9, ccr9, dY2, dC2, fy2, fcb2, fcr2);
+                          cy9, ccb9, ccr9, dY2, dC2, sd2, fy2, fcb2, fcr2);
                 if (dY2 < dY * 0.99f) {
-                    dY = dY2; dC = dC2;
+                    dY = dY2; dC = dC2; sdY = sd2;
                     fyc = fy2; fcbc = fcb2; fcrc = fcr2;
                     shiftTight = 1.0f / 0.6f;
                 }
             }
         }
 
-        const float gY = 1.0f - smooth01f((dY - loY) * invSpanY * shiftTight);
+        float gY = 1.0f - smooth01f((dY - loY) * invSpanY * shiftTight);
+        if (guard)
+            gY *= 1.0f - smooth01f((fabsf(sdY) - loS) * invSpanS * shiftTight);
         const float gC = 1.0f - smooth01f((dC - loC) * invSpanC * shiftTight);
         const float wY = tL * gY;
         const float wC = tC * gC * gY;
@@ -552,6 +566,23 @@ __global__ void ResidualEstKernel(NRParams p, int W, int H,
     atomicAdd(&stats[H_CR + clampi((int)(fabsf(lapCr) * kHistScaleC), 0, kHistBins - 1)], 1u);
     const float effN = sampleTmp(tmp, W, H, x, y).w;
     atomicAdd(&stats[H_EN + clampi((int)((effN - 1.0f) * 8.0f), 0, 31)], 1u);
+
+    // v3.2 coarse residual — see nr_core.h (even-aligned 2x2 blocks)
+    if ((gx & 1) == 0 && (gy & 1) == 0) {
+        float bY[9], bCb[9], bCr[9];
+        i = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx, ++i)
+                blockMeanTmp(tmp, W, H, (x - 1) + dx * 2, (y - 1) + dy * 2, bY[i], bCb[i], bCr[i]);
+        const float lY  = 4.0f * bY[4]  - 2.0f * (bY[1] + bY[3] + bY[5] + bY[7])   + (bY[0] + bY[2] + bY[6] + bY[8]);
+        const float lCb = 4.0f * bCb[4] - 2.0f * (bCb[1] + bCb[3] + bCb[5] + bCb[7]) + (bCb[0] + bCb[2] + bCb[6] + bCb[8]);
+        const float lCr = 4.0f * bCr[4] - 2.0f * (bCr[1] + bCr[3] + bCr[5] + bCr[7]) + (bCr[0] + bCr[2] + bCr[6] + bCr[8]);
+        if (lY != 0.0f || lCb != 0.0f || lCr != 0.0f) {
+            atomicAdd(&stats[H_YR2 + clampi((int)(fabsf(lY)  * kHistScaleY), 0, kHistBins - 1)], 1u);
+            atomicAdd(&stats[H_CR2 + clampi((int)(fabsf(lCb) * kHistScaleC), 0, kHistBins - 1)], 1u);
+            atomicAdd(&stats[H_CR2 + clampi((int)(fabsf(lCr) * kHistScaleC), 0, kHistBins - 1)], 1u);
+        }
+    }
 }
 
 __global__ void FinalizeResidualKernel(NRParams p, unsigned int* stats)
@@ -559,9 +590,11 @@ __global__ void FinalizeResidualKernel(NRParams p, unsigned int* stats)
     if (blockIdx.x != 0 || threadIdx.x != 0)
         return;
 
-    unsigned long long total = 0;
-    for (int b = 0; b < kHistBins; ++b)
+    unsigned long long total = 0, total2 = 0;
+    for (int b = 0; b < kHistBins; ++b) {
         total += stats[H_YR + b];
+        total2 += stats[H_YR2 + b];
+    }
 
     const float sy = __uint_as_float(stats[S_SY]);
     const float sc = __uint_as_float(stats[S_SC]);
@@ -571,6 +604,13 @@ __global__ void FinalizeResidualKernel(NRParams p, unsigned int* stats)
         const float adj = clampf(p.profileAdjust, 0.25f, 6.0f);
         ry = histQuantile(stats, H_YR, kHistBins, total, kHistScaleY, 1, 2).value * kMedianCal * adj;
         rc = histQuantile(stats, H_CR, kHistBins, total * 2, kHistScaleC, 1, 2).value * kMedianCal * adj;
+        // v3.2: two-scale residual — see nr_core.h
+        if (total2 >= 64) {
+            const float ryC = 2.0f * histQuantile(stats, H_YR2, kHistBins, total2, kHistScaleY, 1, 2).value * kMedianCal * adj;
+            const float rcC = 2.0f * histQuantile(stats, H_CR2, kHistBins, total2 * 2, kHistScaleC, 1, 2).value * kMedianCal * adj;
+            ry = fmaxf(ry, 0.9f * ryC);
+            rc = fmaxf(rc, 0.9f * rcC);
+        }
         enmed = 1.0f + histQuantile(stats, H_EN, 32, total, 8.0f, 1, 2).value;
         const float floorY = 0.5f * sy / sqrtf(fmaxf(1.0f, enmed));
         const float floorC = 0.5f * sc / sqrtf(fmaxf(1.0f, enmed));
@@ -989,11 +1029,13 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
     // v3 Noise EQ: the fine slider scales the NLM band's blend (1 = v2.1);
     // v3.1: above 100% it also widens the similarity h
     const float eqF = clampf(p.eqFine, 0.0f, 3.0f);
-    const float eqH = sqrtf(fmaxf(1.0f, eqF));
+    const float eqH = powf(fmaxf(1.0f, eqF), 0.8f);
     const float aY = (p.enableSpatial == 0) ? 0.0f : clampf(sL * mLow * eqF, 0.0f, 1.0f);
     const float aC = (p.enableSpatial == 0) ? 0.0f : clampf(sC * mLow * eqF, 0.0f, 1.0f);
-    const float hMulY = (0.6f + 1.4f * powf(sL, 1.5f)) * hBoost * eqH;
-    const float hMulC = (0.6f + 1.4f * powf(sC, 1.5f)) * hBoost * eqH;
+    const float overL = (sL > 1.0f) ? 1.6f * powf(sL - 1.0f, 1.2f) : 0.0f;
+    const float overC = (sC > 1.0f) ? 1.6f * powf(sC - 1.0f, 1.2f) : 0.0f;
+    const float hMulY = (0.6f + 1.4f * powf(sL, 1.5f) + overL) * hBoost * eqH;
+    const float hMulC = (0.6f + 1.4f * powf(sC, 1.5f) + overC) * hBoost * eqH;
     const float pd = clampf(p.preserveDetail, 0.0f, 1.0f);
     const int   R  = clampi(p.spatialRadius, 1, 10);
     const bool  nlm = (p.spatialMode == 1);
@@ -1033,6 +1075,8 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
     const float grainSize = clampf(p.grainSize, 0.5f, 6.0f);
     const float grainCh = clampf(p.grainChroma, 0.0f, 1.0f);
     const unsigned int frame = (unsigned int)p.frameIndex;
+    // v3.2 global blend — see nr_core.h
+    const float gBlend = clampf(p.globalBlend, 0.0f, 1.0f);
 
     const float4 tc = tmp[y * W + x];
     const int lb = clampi((int)(tc.x * kLumaBins), 0, kLumaBins - 1);
@@ -1274,6 +1318,13 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
                 Crr += grainAmt * grainCh * 0.6f * resp * valueNoise((float)x, (float)y, grainSize, frame, 2u);
             }
         }
+    }
+
+    // v3.2 global blend — result only; Noise Removed stays full-strength
+    if (gBlend < 1.0f) {
+        Yr  = cinY  + gBlend * (Yr  - cinY);
+        Cbr = cinCb + gBlend * (Cbr - cinCb);
+        Crr = cinCr + gBlend * (Crr - cinCr);
     }
 
     float r, g, b;
