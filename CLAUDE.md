@@ -96,9 +96,9 @@ keychain profile named `opennr-notary` for notarization (not stored yet; set
 up with `xcrun notarytool store-credentials opennr-notary --apple-id ...
 --team-id 6M536MV7GT --password <app-specific password>`).
 
-GitHub: repo `amateurmenace/Hush` (renamed from `OpenNR` 2026-07-15 — old
+GitHub: repo `amateurmenace/Hush-OpenNR` (renamed from `OpenNR` 2026-07-15 — old
 github.com URLs redirect, but the old Pages URL `github.io/OpenNR/` does
-NOT: anything hard-linking Pages assets must use `github.io/Hush/`);
+NOT: anything hard-linking Pages assets must use `github.io/Hush-OpenNR/`);
 releases hold the pkg/zip artifacts
 (`gh release create vX.Y.Z release/*.pkg release/*.zip`). The portfolio page
 in `site/index.html` links to `releases/latest`.

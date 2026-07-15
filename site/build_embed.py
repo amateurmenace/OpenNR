@@ -10,7 +10,7 @@
 import os, re
 
 here = os.path.dirname(os.path.abspath(__file__))
-PAGES = "https://amateurmenace.github.io/Hush/assets"
+PAGES = "https://amateurmenace.github.io/Hush-OpenNR/assets"
 
 t = open(os.path.join(here, "index.template.html")).read()
 
@@ -80,7 +80,7 @@ out = f"""<!-- ============================================================
   3. JavaScript in Code Blocks requires a Business plan or higher —
      on Personal plans the live demo/interactions are stripped, so use
      the iframe embed instead:
-       <iframe src="https://amateurmenace.github.io/Hush/"
+       <iframe src="https://amateurmenace.github.io/Hush-OpenNR/"
                style="width:100%;height:5200px;border:0"
                loading="lazy" title="Hush Open NR"></iframe>
   Images load from GitHub Pages; nothing to upload to Squarespace.
