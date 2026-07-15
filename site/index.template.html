@@ -497,15 +497,15 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
     <h3>Engineering</h3>
     <p>One reference implementation in C++; Metal, CUDA and OpenCL kernels are line-by-line
     ports, and a parity harness drives the actual plugin GPU entry point — the one Resolve
-    calls — asserting agreement with the reference to ~10⁻⁶ across 31 configurations, with
-    86 synthetic-truth checks gating every build (including "Auto Setup must beat stock
+    calls — asserting agreement with the reference to ~10⁻⁶ across 51 configurations, with
+    116 synthetic-truth checks gating every build (including "Auto Setup must beat stock
     defaults on every footage class"). Even the film grain is bit-deterministic
     (integer-hash value noise). Honest limitations: no motion-vector compensation and no
     neural net — that's what keeps it fast, predictable, and free.</p>
     <table>
-      <tr><th>Resolution</th><th>Best quality (NLM r3 · 5 frames · blotch)</th><th>Faster mode</th></tr>
-      <tr><td>HD 1920×1080</td><td>8 ms/frame — 126 fps</td><td>4.4 ms — 228 fps</td></tr>
-      <tr><td>UHD 3840×2160</td><td>31 ms/frame — 33 fps</td><td>17 ms — 59 fps</td></tr>
+      <tr><th>Resolution</th><th>Best quality (NLM r3 · 5 frames · blotch)</th><th>Locked profile</th><th>Faster mode</th></tr>
+      <tr><td>HD 1920×1080</td><td>9.2 ms/frame — 109 fps</td><td>7.5 ms — 133 fps</td><td>5.4 ms — 184 fps</td></tr>
+      <tr><td>UHD 3840×2160</td><td>35 ms/frame — 28 fps</td><td>30 ms — 33 fps</td><td>20 ms — 49 fps</td></tr>
     </table>
   </div>
 </section>

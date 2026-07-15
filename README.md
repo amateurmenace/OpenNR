@@ -89,19 +89,20 @@ edges, fine checker texture and 2-px lines survive.*
 
 ## Performance
 
-Measured on an Apple M1 Max (`test/bench_metal.mm`), v3.0 — unchanged in
-v3.1 at defaults (the new power is opt-in; cranked radius/EQ settings cost
-proportionally more). The v3 bench feeds realistic frames (scene + per-frame
-noise) rather than v2.1's identical buffers, so numbers are not comparable
-to older tables. Motion Tracking (on by default) costs ~13% at defaults and
-can be toggled off.
+Measured on an Apple M1 Max (`test/bench_metal.mm`), v3.3. The bench feeds
+realistic frames (scene + per-frame noise). Panning costs more than v3.2
+because the motion search now genuinely re-aims up to ~8 px — including the
+±2-frame neighbours v3.2 simply gated off; toggle Motion Tracking off for
+the old speed. Lock Profile is now also the fast path: with no scopes open,
+a locked profile skips the whole input measurement.
 
-| Resolution | Better (NLM, R3, 5 frames) | Better, panning footage | Faster (bilateral, R2, 3 frames) |
-|---|---|---|---|
-| HD 1920×1080 | 8.5 ms/frame (118 fps) | 8.3 ms/frame (121 fps) | 4.7 ms/frame (214 fps) |
-| UHD 3840×2160 | 33.3 ms/frame (30 fps) | 32.7 ms/frame (31 fps) | 18.0 ms/frame (55 fps) |
+| Resolution | Better (NLM, R3, 5 frames) | Locked profile | Panning footage | 7 Frames | Faster (bilateral, R2, 3 frames) |
+|---|---|---|---|---|---|
+| HD 1920×1080 | 9.2 ms (109 fps) | 7.5 ms (133 fps) | 19.4 ms (52 fps) | 9.9 ms (101 fps) | 5.4 ms (184 fps) |
+| UHD 3840×2160 | 35.4 ms (28 fps) | 30.1 ms (33 fps) | 75.4 ms (13 fps) | 38.0 ms (26 fps) | 20.3 ms (49 fps) |
 
-Real-time UHD at maximum quality on Apple Silicon.
+Real-time UHD at maximum quality on Apple Silicon; Deep Clean adds ~3 ms at
+HD when enabled.
 
 ---
 

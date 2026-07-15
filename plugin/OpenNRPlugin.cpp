@@ -33,22 +33,23 @@
 #define kPluginName "Hush Open NR"
 #define kPluginGrouping "Hush"
 #define kPluginDescription \
-    "Hush Open NR v3.2 — the free noise reduction suite.\n\n" \
+    "Hush Open NR v3.3 — the free noise reduction suite.\n\n" \
     "Click AUTO SETUP and the plugin measures your clip and dials in every " \
     "slider (one undo reverts) — or CLEAN SLATE to zero everything and work " \
     "fully manually. Work top to bottom: 1 measure, 2 temporal, 3 spatial, " \
     "4 refine, 5 inspect.\n\n" \
-    "New in 3.2: LOCK PROFILE freezes exactly the measurement you dialed in " \
-    "(region included, Adjust still trims it), GHOST GUARD catches the " \
-    "slow-motion smear the main gate can't see, the spatial stage now " \
-    "measures residual noise at two scales so compressed blotch can't hide " \
-    "from it, and a GLOBAL BLEND crossfades the final result.\n\n" \
+    "New in 3.3: MOTION TRACKING reaches ~8 px (was 2) so real pans keep " \
+    "their temporal averaging, a 7 FRAMES stack for locked-off noisy shots, " \
+    "DEEP CLEAN — a gentle second pass for severe or compressed noise, " \
+    "per-channel chroma profiles (blue-channel night noise finally reads " \
+    "right), a big fps win when the profile is locked, and Auto Setup now " \
+    "suggests where a sampling region would go.\n\n" \
     "Each step has a Scope checkbox that draws a panel right in the viewer. " \
     "Turn scopes off before rendering.\n\n" \
     "MIT-licensed and free forever."
 #define kPluginIdentifier "org.opennr.Denoise"
 #define kPluginVersionMajor 3
-#define kPluginVersionMinor 2
+#define kPluginVersionMinor 3
 
 #define kSupportsTiles false
 #define kSupportsMultiResolution false

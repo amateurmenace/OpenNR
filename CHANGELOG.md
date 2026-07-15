@@ -1,5 +1,84 @@
 # OpenNR changelog
 
+## 3.3.0 — 2026-07-15
+
+More powerful and more efficient: the motion search quadruples its reach,
+the temporal stack grows to 7 frames, a second spatial pass takes on
+severe noise, chroma finally gets per-channel treatment — and locked
+profiles render measurably faster.
+
+### Added
+- **Hierarchical motion search (~±8 px, was ±2).** Motion Tracking now runs
+  a two-level search: a step-4 coarse grid scored on 2×2 block means (so a
+  4 px step sees structure instead of aliasing on texture), then a
+  converging ±1 refine walk. Real pans keep their temporal averaging: 4 and
+  6 px/frame pans beat spatial-only by ~4 dB where v3.2 gated them off
+  entirely; at a 1.5 px pan even the ±2-frame neighbours now re-aim. All
+  the ghost-proofing survives untouched — knee start, the 1.7× steeper
+  roll-off for shifted winners, the 1% acceptance margin (10% for the far
+  coarse jumps: measured, anything looser leaked 0.07 dB of slow-drift
+  quality), and Ghost Guard on the winner's signed mean. Same toggle, no
+  new UI; tracking-off path is bit-exact with v3.2.
+- **7 Frames** option on Number of Frames (append-only — existing projects
+  keep their choice). +1.4 dB on static heavy noise, effective sample count
+  measured at 6.7; under motion the outer frames simply gate off. Auto
+  Setup picks 7 only for noisy/severe clips from a steady camera. The
+  effective-frames histogram grew 32→64 bins (the old range saturated at
+  4.875 — a 5-frame-era assumption).
+- **Deep Clean (Step 3 checkbox, off by default).** A gentle fine-NLM
+  pre-pass at 0.6× h into a second buffer before the main spatial stage;
+  the residual is re-measured on its output so the main pass adapts to
+  what is actually left. Corrections hard-clamped to noise size —
+  structure-safe by construction, hence a checkbox and not another slider.
+  +1.6 dB on correlated/compressed noise, +2.8 dB on heavy iid; costs
+  ~3 ms at HD. Auto Setup enables it for the severe class. The After
+  Temporal view keeps showing the true temporal result.
+- **Per-channel chroma profiles.** Every chroma estimate (input fine +
+  coarse, temporal, residual ×2) now measures Cb and Cr separately; the
+  temporal chroma gate runs per channel against its own knee, and the fine
+  NLM band normalizes each channel by its own sigma inside a pooled weight
+  (at equal sigmas this is algebraically the old formula — every pinned
+  golden stayed within its ±0.02 dB tolerance, no re-pins). Blue-channel
+  night noise is the payoff: on σ_Cb = 3×σ_Cr footage the pipeline beats
+  the combined treatment by +1.25 dB and cleans the Cb plane 18% better.
+  Locked profiles carry the pairs (old project locks load with Cr = Cb).
+- **Auto Setup suggests a sampling region.** The Analysis line now reports
+  the flattest patch it found (lowest local variance minus expected noise
+  at that brightness) — "flattest patch at 38%, 15%". Report-only: your
+  From Region rectangle is never moved.
+
+### Faster
+- **Lock fast path.** With the profile locked and no scope/analysis view
+  showing the live measurement, the input-estimation dispatches are
+  skipped entirely (they were output-inert in that state — everything the
+  filters use is locked or re-measured from the merged image). HD 127→152
+  fps at v3.2 defaults on an M1 Max; the residual measurement stays live.
+- **On-chip tile caching for the fine NLM loop** (Metal threadgroup / CUDA
+  shared / OpenCL local memory). The (2R+1)²×10 overlapping reads per pixel
+  now come from a cooperatively-staged tile. Bit-identical math. Modest on
+  Apple Silicon (3–11%, the system cache was absorbing most of it); aimed
+  squarely at the discrete-GPU CUDA/OpenCL paths, pending Windows
+  verification.
+
+### Evaluated and rejected (recorded so the ideas stay dead)
+- **Sparse candidate search above radius 6** (checkerboard + weight
+  compensation): lost 0.29 dB at R=8 / 0.20 dB at R=10 against a 0.1 dB
+  budget — halving the averaged samples raises output noise variance in
+  exactly the regime big radii serve. Dropped per its gate.
+- **Half-float tmp buffer:** failed GPU parity in 11/51 cases (max diff
+  3× tolerance) for a ~1.5% win — the A2 tile had already absorbed the
+  bandwidth this was meant to save. Rejected per its gate.
+
+### Compatibility
+- Old locked profiles (HUSHLOCK1) load with Cr = Cb; project files keep
+  their Number of Frames indices; defaults at 3.2 settings stay within
+  ±0.02 dB of the pinned goldens (bit-exact everywhere except the
+  per-channel chroma estimator's sampling differences, documented in the
+  B5 commit); tracking-off temporal path is bit-exact.
+- Windows note: the CUDA kernel is a faithful textual port, still awaiting
+  verification on NVIDIA hardware; Windows renders via OpenCL as before.
+
+
 ## 3.2.0 — 2026-07-15
 
 Field-review release: lock/region behavior fixed, slow-motion ghosting
