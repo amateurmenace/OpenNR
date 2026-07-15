@@ -141,6 +141,10 @@ struct Params {
                                    // slow-motion ghosting the magnitude gate
                                    // cannot see
     float globalBlend    = 1.0f;   // 0..1 final crossfade original -> result
+
+    // ---- v3.3 ----
+    int   deepClean      = 0;      // fine-NLM pre-pass at 0.6h before the
+                                   // main spatial stage (see deepCleanPass)
 };
 
 // Sigmas and everything the analysis HUD displays.
@@ -902,6 +906,89 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
 }
 
 // ---------------------------------------------------------------------------
+// Stage 3b — v3.3 "Deep Clean": optional fine-NLM pre-pass over the temporal
+// result, into a second buffer the rest of the pipeline then reads.
+// ---------------------------------------------------------------------------
+// Compressed/correlated noise survives a single NLM pass because
+// neighbouring patches share the noise's structure and win spurious
+// similarity; a conservative first pass at 0.6x the similarity h (weights
+// die ~2.8x faster than the main pass') decorrelates exactly that component,
+// and the main pass then sees patches whose remaining differences are
+// honest. Corrections are hard-clamped to twice the pixel's noise scale, so
+// the pre-pass can only ever make noise-sized changes — structure is safe by
+// construction, which is why it ships as a plain checkbox with no strength
+// slider. It runs on the PASS-1 residual measurement (the two-scale
+// estimator reads correlated energy correctly there) and the residual is
+// re-measured on its output, so the main pass adapts to what is actually
+// left. effN passes through untouched; the After Temporal view keeps
+// showing the true temporal result (spatialNLM reads both buffers).
+inline void deepCleanPass(const float* tmp, int W, int H,
+                          const Params& p, const Stats& s, float* out)
+{
+    const int R = 2;
+    for (int y = 0; y < H; ++y) {
+        for (int x = 0; x < W; ++x) {
+            const size_t idx = (static_cast<size_t>(y) * W + x) * 4;
+            const float* tc = tmp + idx;
+            const int lb = clampi(static_cast<int>(tc[0] * kLumaBins), 0, kLumaBins - 1);
+            const float sigY = clampf(s.ry * s.gainY[lb], 1e-5f, 1.0f);
+            const float sigC = clampf(s.rc * s.gainC[lb], 1e-5f, 1.0f);
+            const float hY = 0.6f * kNlmHLuma * sigY;
+            const float hC = 0.6f * kNlmHChroma * sigC;
+            const float invHY2 = 1.0f / std::max(hY * hY, 1e-12f);
+            const float invHC2 = 1.0f / std::max(hC * hC, 1e-12f);
+            const float biasY = 2.0f * sigY * sigY;
+            const float biasC = 2.0f * sigC * sigC;
+
+            float accY = 0.0f, accCb = 0.0f, accCr = 0.0f;
+            float sumWY = 0.0f, sumWC = 0.0f, wYmax = 0.0f, wCmax = 0.0f;
+            for (int dy = -R; dy <= R; ++dy) {
+                for (int dx = -R; dx <= R; ++dx) {
+                    if (dx == 0 && dy == 0)
+                        continue;
+                    const float* ts = tmpAt(tmp, W, H, x + dx, y + dy);
+                    float dY2 = 0.0f, dC2 = 0.0f;
+                    for (int qy = -1; qy <= 1; ++qy) {
+                        for (int qx = -1; qx <= 1; ++qx) {
+                            const float* tp = tmpAt(tmp, W, H, x + qx, y + qy);
+                            const float* tq = tmpAt(tmp, W, H, x + dx + qx, y + dy + qy);
+                            const float eY = tp[0] - tq[0];
+                            const float eCb = tp[1] - tq[1];
+                            const float eCr = tp[2] - tq[2];
+                            dY2 += eY * eY;
+                            dC2 += 0.5f * (eCb * eCb + eCr * eCr);
+                        }
+                    }
+                    dY2 *= (1.0f / 9.0f);
+                    dC2 *= (1.0f / 9.0f);
+                    dY2 = std::max(0.0f, dY2 - biasY);
+                    dC2 = std::max(0.0f, dC2 - biasC);
+                    const float wY = std::exp(-dY2 * invHY2);
+                    const float wC = std::exp(-dC2 * invHC2) * std::exp(-dY2 * invHY2 * 0.25f);
+                    accY  += wY * ts[0];
+                    accCb += wC * ts[1];
+                    accCr += wC * ts[2];
+                    sumWY += wY;
+                    sumWC += wC;
+                    wYmax = std::max(wYmax, wY);
+                    wCmax = std::max(wCmax, wC);
+                }
+            }
+            const float wYc = std::max(wYmax, 1e-4f);
+            const float wCc = std::max(wCmax, 1e-4f);
+            const float Yf  = (accY  + wYc * tc[0]) / (sumWY + wYc);
+            const float Cbf = (accCb + wCc * tc[1]) / (sumWC + wCc);
+            const float Crf = (accCr + wCc * tc[2]) / (sumWC + wCc);
+            float* o = out + idx;
+            o[0] = tc[0] + clampf(Yf  - tc[0], -2.0f * sigY, 2.0f * sigY);
+            o[1] = tc[1] + clampf(Cbf - tc[1], -2.0f * sigC, 2.0f * sigC);
+            o[2] = tc[2] + clampf(Crf - tc[2], -2.0f * sigC, 2.0f * sigC);
+            o[3] = tc[3];
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HUD v3 + scopes (Noise Analysis panel, Noise EQ panel, Motion mini-map)
 // ---------------------------------------------------------------------------
 // All text renders at 2x glyph scale (10x14 px strokes of 2 px at scale 1) so
@@ -1303,8 +1390,12 @@ static inline bool motionScopePixel(int x, int y, int W, int H,
 // ---------------------------------------------------------------------------
 // Stage 4+5+6 — spatial NLM + chroma blotch + refine + output assembly
 // ---------------------------------------------------------------------------
-inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
-                       const Params& p, const Stats& s, float* out)
+// tmp is the working buffer the bands filter (the Deep Clean output when
+// that pass ran); tmpTrue is the TRUE temporal result — the After Temporal
+// view and the motion scope read it, so they never show the pre-pass.
+// Without Deep Clean the two are the same buffer.
+inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr,
+                       int W, int H, const Params& p, const Stats& s, float* out)
 {
     const float mLow  = std::min(p.master, 1.0f);
     const float mHigh = std::max(p.master, 1.0f);
@@ -1669,9 +1760,11 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
                 o[0] = c[0]; o[1] = c[1]; o[2] = c[2];
                 break;
             }
-            case 3: { // after temporal (mid-pipeline)
+            case 3: { // after temporal (mid-pipeline): the TRUE temporal
+                      // result, even when Deep Clean rewrote the working buffer
+                const float* tt = tmpTrue + idx;
                 float rr, gg, bb;
-                ycc2rgb(tc[0], tc[1], tc[2], rr, gg, bb);
+                ycc2rgb(tt[0], tt[1], tt[2], rr, gg, bb);
                 o[0] = rr; o[1] = gg; o[2] = bb;
                 break;
             }
@@ -1770,7 +1863,7 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
                     bool drew = false;
                     if (wantEq && eqScopePixel(x, y, W, H, s, p, rr, gg, bb))
                         drew = true;
-                    if (wantMo && motionScopePixel(x, y, W, H, tmp, curr, rr, gg, bb))
+                    if (wantMo && motionScopePixel(x, y, W, H, tmpTrue, curr, rr, gg, bb))
                         drew = true;
                     if (wantHud) {
                         if (hudPixel(x, y, W, H, s, p.enableTemporal, p.profileLocked, rr, gg, bb)) {
@@ -1797,16 +1890,26 @@ inline void spatialNLM(const float* tmp, const float* curr, int W, int H,
 inline Stats denoiseFrame(const float* const frames[5], int W, int H,
                           const Params& p, float* out, std::vector<float>& scratch)
 {
-    scratch.resize(static_cast<size_t>(W) * H * 4);
+    // v3.3: Deep Clean is a within-frame pass — it follows the spatial
+    // stage's enable and the master switch so identity states stay identity.
+    const bool deep = (p.deepClean != 0) && (p.enableSpatial != 0) && (p.master > 0.0f);
+    const size_t plane = static_cast<size_t>(W) * H * 4;
+    scratch.resize(deep ? plane * 2 : plane);
+    float* tmp = scratch.data();
+    float* tmp2 = deep ? scratch.data() + plane : tmp;
     const float* partner = nullptr;
     if (frames[1] != frames[2]) partner = frames[1];
     else if (frames[3] != frames[2]) partner = frames[3];
 
     Stats s;
     estimateInput(frames[2], partner, W, H, p, s);
-    temporalMerge(frames, W, H, p, s, scratch.data());
-    estimateResidual(scratch.data(), W, H, p, s);
-    spatialNLM(scratch.data(), frames[2], W, H, p, s, out);
+    temporalMerge(frames, W, H, p, s, tmp);
+    estimateResidual(tmp, W, H, p, s);
+    if (deep) {
+        deepCleanPass(tmp, W, H, p, s, tmp2);
+        estimateResidual(tmp2, W, H, p, s);   // the main pass adapts to what is left
+    }
+    spatialNLM(tmp2, tmp, frames[2], W, H, p, s, out);
     return s;
 }
 

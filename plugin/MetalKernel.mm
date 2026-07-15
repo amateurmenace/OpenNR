@@ -72,6 +72,8 @@ typedef struct NRParams
 
     int   ghostGuard;
     float globalBlend;
+
+    int   deepClean;
 } NRParams;
 
 constant float kMedianCal   = 0.247100f;   // 1 / (6 * 0.674490)
@@ -766,6 +768,95 @@ kernel void FinalizeResidualKernel(constant NRParams& p [[buffer(0)]],
 }
 
 // ---------------------------------------------------------------------------
+// Stage 3b — v3.3 "Deep Clean": fine-NLM pre-pass at 0.6h over the temporal
+// result into a second buffer; corrections clamped to noise size. The
+// residual is re-measured on the output. See nr_core.h.
+// ---------------------------------------------------------------------------
+kernel void DeepCleanKernel(constant NRParams& p [[buffer(0)]],
+                            constant int& W [[buffer(1)]],
+                            constant int& H [[buffer(2)]],
+                            const device float4* tmp [[buffer(3)]],
+                            const device uint* stats [[buffer(4)]],
+                            device float4* dst [[buffer(5)]],
+                            uint2 id [[thread_position_in_grid]])
+{
+    const int x = int(id.x), y = int(id.y);
+    if (x >= W || y >= H)
+        return;
+
+    const bool manual = (p.profileSource == 2) && (p.profileLocked == 0);
+    const bool locked = (p.profileLocked != 0);
+    const float ryG = manual ? clamp(p.sigmaY, kSigmaMin, kSigmaMax) : as_type<float>(stats[S_RY]);
+    const float rcG = manual ? clamp(p.sigmaC, kSigmaMin, kSigmaMax) : as_type<float>(stats[S_RC]);
+
+    const int R = 2;
+    const float4 tc = tmp[y * W + x];
+    const int lb = clamp(int(tc.x * kLumaBins), 0, kLumaBins - 1);
+    const float gainYv = locked ? clamp(p.lockGainY[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : as_type<float>(stats[S_GY + lb]);
+    const float gainCv = locked ? clamp(p.lockGainC[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : as_type<float>(stats[S_GC + lb]);
+    const float sigY = clamp(ryG * gainYv, 1e-5f, 1.0f);
+    const float sigC = clamp(rcG * gainCv, 1e-5f, 1.0f);
+    const float hY = 0.6f * kNlmHLuma * sigY;
+    const float hC = 0.6f * kNlmHChroma * sigC;
+    const float invHY2 = 1.0f / max(hY * hY, 1e-12f);
+    const float invHC2 = 1.0f / max(hC * hC, 1e-12f);
+    const float biasY = 2.0f * sigY * sigY;
+    const float biasC = 2.0f * sigC * sigC;
+
+    float3 pPatch[9];
+    {
+        int i = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx, ++i)
+                pPatch[i] = sampleTmp(tmp, W, H, x + dx, y + dy).xyz;
+    }
+
+    float accY = 0.0f, accCb = 0.0f, accCr = 0.0f;
+    float sumWY = 0.0f, sumWC = 0.0f, wYmax = 0.0f, wCmax = 0.0f;
+    for (int dy = -R; dy <= R; ++dy) {
+        for (int dx = -R; dx <= R; ++dx) {
+            if (dx == 0 && dy == 0)
+                continue;
+            const float3 ts = sampleTmp(tmp, W, H, x + dx, y + dy).xyz;
+            float dY2 = 0.0f, dC2 = 0.0f;
+            int i = 0;
+            for (int qy = -1; qy <= 1; ++qy) {
+                for (int qx = -1; qx <= 1; ++qx, ++i) {
+                    const float3 tq = sampleTmp(tmp, W, H, x + dx + qx, y + dy + qy).xyz;
+                    const float3 e = pPatch[i] - tq;
+                    dY2 += e.x * e.x;
+                    dC2 += 0.5f * (e.y * e.y + e.z * e.z);
+                }
+            }
+            dY2 *= (1.0f / 9.0f);
+            dC2 *= (1.0f / 9.0f);
+            dY2 = max(0.0f, dY2 - biasY);
+            dC2 = max(0.0f, dC2 - biasC);
+            const float wY = exp(-dY2 * invHY2);
+            const float wC = exp(-dC2 * invHC2) * exp(-dY2 * invHY2 * 0.25f);
+            accY  += wY * ts.x;
+            accCb += wC * ts.y;
+            accCr += wC * ts.z;
+            sumWY += wY;
+            sumWC += wC;
+            wYmax = max(wYmax, wY);
+            wCmax = max(wCmax, wC);
+        }
+    }
+    const float wYc = max(wYmax, 1e-4f);
+    const float wCc = max(wCmax, 1e-4f);
+    const float Yf  = (accY  + wYc * tc.x) / (sumWY + wYc);
+    const float Cbf = (accCb + wCc * tc.y) / (sumWC + wCc);
+    const float Crf = (accCr + wCc * tc.z) / (sumWC + wCc);
+    dst[y * W + x] = float4(tc.x + clamp(Yf  - tc.x, -2.0f * sigY, 2.0f * sigY),
+                            tc.y + clamp(Cbf - tc.y, -2.0f * sigC, 2.0f * sigC),
+                            tc.z + clamp(Crf - tc.z, -2.0f * sigC, 2.0f * sigC),
+                            tc.w);
+}
+
+// ---------------------------------------------------------------------------
 // HUD v3 + scopes — see nr_core.h for the layout rationale
 // ---------------------------------------------------------------------------
 // glyph order: 0-9 . % A-Z + space - | =
@@ -1159,6 +1250,9 @@ inline float3 tileAt(threadgroup const float* tile, int tileW, int lx, int ly)
     return float3(tile[i], tile[i + 1], tile[i + 2]);
 }
 
+// tmp is the working buffer (the Deep Clean output when that pass ran);
+// tmpTrue is the TRUE temporal result for the After Temporal view and the
+// motion scope. Without Deep Clean the host binds the same buffer to both.
 kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
                              constant int& W [[buffer(1)]],
                              constant int& H [[buffer(2)]],
@@ -1166,6 +1260,7 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
                              const device float4* curr [[buffer(4)]],
                              const device uint* stats [[buffer(5)]],
                              device float4* dst [[buffer(6)]],
+                             const device float4* tmpTrue [[buffer(7)]],
                              threadgroup float* tile [[threadgroup(0)]],
                              uint2 id [[thread_position_in_grid]],
                              uint2 lid [[thread_position_in_threadgroup]],
@@ -1516,7 +1611,8 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
     } else if (p.viewMode == 2) {
         o.xyz = c.xyz;
     } else if (p.viewMode == 3) {
-        o.xyz = ycc2rgb(tc.xyz);
+        // the TRUE temporal result, even when Deep Clean rewrote tmp
+        o.xyz = ycc2rgb(tmpTrue[y * W + x].xyz);
     } else if (p.viewMode == 4) {
         // noise removed: noise-adaptive gain + soft knee — see nr_core.h
         const float nrGain = 0.08f / clamp(sy, 0.004f, 0.08f);
@@ -1593,7 +1689,7 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
                                  p.enableSpatial, sco))
                     drew = true;
             }
-            if (wantMo && motionScopePixel(x, y, W, H, tmp, curr, sco))
+            if (wantMo && motionScopePixel(x, y, W, H, tmpTrue, curr, sco))
                 drew = true;
             if (wantHud) {
                 if (hudPixel(x, y, W, H, sy, sc, ryG, rcG, enmed,
@@ -1629,8 +1725,10 @@ struct QueueResources
     id<MTLComputePipelineState> temp = nil;
     id<MTLComputePipelineState> est2 = nil;
     id<MTLComputePipelineState> fin2 = nil;
+    id<MTLComputePipelineState> deep = nil;
     id<MTLComputePipelineState> nlm  = nil;
     id<MTLBuffer> tmp   = nil;
+    id<MTLBuffer> tmp2  = nil;   // v3.3 Deep Clean output (lazy — only when used)
     id<MTLBuffer> stats = nil;
     int w = 0, h = 0;
 };
@@ -1687,8 +1785,9 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
             r.temp = makePipeline(device, lib, @"TemporalKernel");
             r.est2 = makePipeline(device, lib, @"ResidualEstKernel");
             r.fin2 = makePipeline(device, lib, @"FinalizeResidualKernel");
+            r.deep = makePipeline(device, lib, @"DeepCleanKernel");
             r.nlm  = makePipeline(device, lib, @"SpatialNLMKernel");
-            if (!r.est || !r.fin || !r.temp || !r.est2 || !r.fin2 || !r.nlm)
+            if (!r.est || !r.fin || !r.temp || !r.est2 || !r.fin2 || !r.deep || !r.nlm)
                 return;
         }
 
@@ -1699,9 +1798,17 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         if (r.tmp == nil || r.w != p_Width || r.h != p_Height) {
             r.tmp = [device newBufferWithLength:(static_cast<size_t>(p_Width) * p_Height * 4 * sizeof(float))
                                         options:MTLResourceStorageModePrivate];
+            r.tmp2 = nil;   // re-created lazily at the new size when needed
             r.w = p_Width;
             r.h = p_Height;
         }
+        // v3.3 Deep Clean writes a second frame-sized buffer; allocate it
+        // only once the pass is actually used
+        const bool wantDeep = (p_Params.deepClean != 0) && (p_Params.enableSpatial != 0) &&
+                              (p_Params.master > 0.0f);
+        if (wantDeep && r.tmp2 == nil)
+            r.tmp2 = [device newBufferWithLength:(static_cast<size_t>(p_Width) * p_Height * 4 * sizeof(float))
+                                         options:MTLResourceStorageModePrivate];
         res = r;
     }
 
@@ -1793,15 +1900,69 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
 
+    // v3.3 Deep Clean: fine pre-pass on the PASS-1 residual, then re-zero
+    // the residual histogram slots and re-measure on the cleaned buffer so
+    // the main pass adapts to what is actually left (see nr_core.h).
+    const bool deep = (params.deepClean != 0) && (params.enableSpatial != 0) &&
+                      (params.master > 0.0f) && (res.tmp2 != nil);
+    id<MTLBuffer> working = deep ? res.tmp2 : res.tmp;
+
+    if (deep) {
+        [enc setComputePipelineState:res.deep];
+        [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
+        [enc setBytes:&W length:sizeof(int) atIndex:1];
+        [enc setBytes:&H length:sizeof(int) atIndex:2];
+        [enc setBuffer:res.tmp offset:0 atIndex:3];
+        [enc setBuffer:res.stats offset:0 atIndex:4];
+        [enc setBuffer:res.tmp2 offset:0 atIndex:5];
+        [enc dispatchThreadgroups:gridFull threadsPerThreadgroup:tg];
+    }
+
+    if (deep && residualLive) {
+        // the residual slots hold pass-1 counts — blit encoders cannot
+        // interleave with compute, so close, zero the two histogram ranges
+        // (NOT the sigma/gain slots between them), and reopen
+        [enc endEncoding];
+        id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
+        [blit fillBuffer:res.stats
+                   range:NSMakeRange(NR_STATS_HIST_YR * sizeof(uint32_t),
+                                     (NR_STATS_SIGMA_SY - NR_STATS_HIST_YR) * sizeof(uint32_t))
+                   value:0];
+        [blit fillBuffer:res.stats
+                   range:NSMakeRange(NR_STATS_HIST_YR2 * sizeof(uint32_t),
+                                     (NR_STATS_UINTS - NR_STATS_HIST_YR2) * sizeof(uint32_t))
+                   value:0];
+        [blit endEncoding];
+        enc = [cmdBuf computeCommandEncoder];
+
+        [enc setComputePipelineState:res.est2];
+        [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
+        [enc setBytes:&W length:sizeof(int) atIndex:1];
+        [enc setBytes:&H length:sizeof(int) atIndex:2];
+        [enc setBuffer:res.tmp2 offset:0 atIndex:3];
+        [enc setBuffer:res.stats offset:0 atIndex:4];
+        [enc dispatchThreadgroups:gridHalf threadsPerThreadgroup:tg];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+        [enc setComputePipelineState:res.fin2];
+        [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
+        [enc setBuffer:res.stats offset:0 atIndex:1];
+        [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    } else if (deep) {
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+
     {
         [enc setComputePipelineState:res.nlm];
         [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
         [enc setBytes:&W length:sizeof(int) atIndex:1];
         [enc setBytes:&H length:sizeof(int) atIndex:2];
-        [enc setBuffer:res.tmp offset:0 atIndex:3];
+        [enc setBuffer:working offset:0 atIndex:3];
         [enc setBuffer:src[2] offset:0 atIndex:4];
         [enc setBuffer:res.stats offset:0 atIndex:5];
         [enc setBuffer:dst offset:0 atIndex:6];
+        [enc setBuffer:res.tmp offset:0 atIndex:7];   // the TRUE temporal result
         // v3.3 A2: threadgroup tile for the fine-band loop — sized for the
         // actual radius (same formula as the kernel; 17.3 KB at R=10 max)
         const int Rsp = params.spatialRadius < 1 ? 1 : (params.spatialRadius > 10 ? 10 : params.spatialRadius);

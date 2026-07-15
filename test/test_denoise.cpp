@@ -896,7 +896,7 @@ int main()
             std::vector<float> tmpRef(fr[2].size()), outRef(fr[2].size());
             nrcore::temporalMerge(fp, W, H, plF, sRef, tmpRef.data());
             nrcore::estimateResidual(tmpRef.data(), W, H, plF, sRef);
-            nrcore::spatialNLM(tmpRef.data(), fr[2].data(), W, H, plF, sRef, outRef.data());
+            nrcore::spatialNLM(tmpRef.data(), tmpRef.data(), fr[2].data(), W, H, plF, sRef, outRef.data());
             float maxd = 0.0f;
             for (size_t i = 0; i < outFast.size(); ++i)
                 maxd = std::max(maxd, std::fabs(outFast[i] - outRef[i]));
@@ -959,6 +959,8 @@ int main()
               "preserve-detail decreases with noise");
         check(sClean.temporalFrames == 3 && sSevere.temporalFrames == 5, "frame count grows with noise");
         check(sClean.lockProfile == 1 && sClean.eqFine == 100.0f, "auto always locks and keeps fine at 100");
+        check(sSevere.deepClean == 1 && sNoisy.deepClean == 0 && sClean.deepClean == 0,
+              "deep clean reserved for the severe class");
 
         const AutoSettings sMotion = nranalyze::mapAnalysisToSettings(makeAgg(0.040f, 0.60f, 1.0f, 1.0f));
         check(sMotion.temporalFrames == 3, "heavy motion prefers 3 frames");
@@ -1209,6 +1211,54 @@ int main()
         printf("v3.2 residual on correlated noise: ry %.4f vs true %.4f (fine-only used to underread)\n",
                st.ry, truth);
         check(st.ry > 0.55f * truth, "coarse residual sees correlated noise");
+    }
+
+    // =====================================================================
+    // v3.3 B3 — Deep Clean: fine pre-pass at 0.6h before the main stage
+    // =====================================================================
+    {
+        // correlated noise is the motivating case: one NLM pass keeps being
+        // fooled by patches that share the noise structure; the conservative
+        // pre-pass decorrelates it and the main pass finishes the job
+        nrcore::Params pdc0 = p; pdc0.deepClean = 0;
+        nrcore::Params pdc1 = p; pdc1.deepClean = 1;
+        CaseResult c0 = runCase(0.05f, 0.0f, 0.0f, NOISE_CORR, pdc0);
+        CaseResult c1 = runCase(0.05f, 0.0f, 0.0f, NOISE_CORR, pdc1);
+        printf("v3.3 deep clean, correlated: off %5.2f dB -> on %5.2f dB\n", c0.after, c1.after);
+        check(c1.after >= c0.after + 0.8, "deep clean gains >= 0.8 dB on correlated noise");
+
+        // iid noise: the pass must never hurt (its whole design is
+        // noise-sized clamped corrections)
+        CaseResult i0 = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pdc0);
+        CaseResult i1 = runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pdc1);
+        printf("v3.3 deep clean, iid: off %5.2f dB -> on %5.2f dB\n", i0.after, i1.after);
+        check(i1.after >= i0.after - 0.10, "deep clean never hurts iid footage");
+
+        // the After Temporal view must keep showing the TRUE temporal
+        // result — bit-identical with the pass on and off
+        std::vector<float> v3on, v3off;
+        nrcore::Params pv3on = pdc1, pv3off = pdc0;
+        pv3on.viewMode = 3; pv3off.viewMode = 3;
+        runCase(0.05f, 0.0f, 0.0f, NOISE_CORR, pv3off, &v3off);
+        runCase(0.05f, 0.0f, 0.0f, NOISE_CORR, pv3on, &v3on);
+        float maxdV3 = 0.0f;
+        for (size_t i = 0; i < v3on.size(); ++i)
+            maxdV3 = std::max(maxdV3, std::fabs(v3on[i] - v3off[i]));
+        check(maxdV3 == 0.0f, "After Temporal view shows the true temporal result under deep clean");
+
+        // identity states stay identity with the checkbox on
+        std::vector<std::vector<float>> fid;
+        makeCaseFrames(0.05f, 0.0f, 0.0f, NOISE_IID, fid);
+        const float* fidp[5] = { fid[0].data(), fid[1].data(), fid[2].data(),
+                                 fid[3].data(), fid[4].data() };
+        nrcore::Params pid = pdc1;
+        pid.master = 0.0f;
+        std::vector<float> outId(fid[2].size()), scratchId;
+        nrcore::denoiseFrame(fidp, W, H, pid, outId.data(), scratchId);
+        float maxdId = 0.0f;
+        for (size_t i = 0; i < outId.size(); ++i)
+            maxdId = std::max(maxdId, std::fabs(outId[i] - fid[2][i]));
+        check(maxdId < 2e-5f, "master=0 stays identity with deep clean on");
     }
 
     // --- render every view mode

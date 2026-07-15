@@ -175,6 +175,7 @@ public:
         m_SpatialChroma  = fetchDoubleParam("spatialChroma");
         m_PreserveDetail = fetchDoubleParam("preserveDetail");
         m_DetailRescue   = fetchDoubleParam("detailRescue");
+        m_DeepClean      = fetchBooleanParam("deepClean");
         m_ChromaBlotch   = fetchDoubleParam("chromaBlotch");
         m_EqFine         = fetchDoubleParam("eqFine");
         m_EqMedium       = fetchDoubleParam("eqMedium");
@@ -231,7 +232,8 @@ public:
         const bool tOn = m_EnableTemporal->getValueAtTime(t) &&
                          (m_TemporalLuma->getValueAtTime(t) > 0.0 || m_TemporalChroma->getValueAtTime(t) > 0.0);
         const bool sOn = m_EnableSpatial->getValueAtTime(t) &&
-                         (m_SpatialLuma->getValueAtTime(t) > 0.0 || m_SpatialChroma->getValueAtTime(t) > 0.0);
+                         (m_SpatialLuma->getValueAtTime(t) > 0.0 || m_SpatialChroma->getValueAtTime(t) > 0.0 ||
+                          m_DeepClean->getValueAtTime(t));   // v3.3: the pre-pass renders on its own
         // v3: refine-only configurations (grain / texture / desat / deband
         // with both NR stages off) must render — v2.1 wrongly skipped them
         const bool rOn = m_EnableRefine->getValueAtTime(t) &&
@@ -421,14 +423,15 @@ private:
         m_LockData->getValue(lockStr);
         snprintf(buf, sizeof(buf),
                  "v1|et=%d|tf=%d|tl=%.17g|tc=%.17g|mt=%.17g|mtr=%d|ff=%d|gg=%d|es=%d|sm=%d|sr=%d|"
-                 "sl=%.17g|sc=%.17g|pd=%.17g|rs=%.17g|cb=%.17g|eqf=%.17g|eqm=%.17g|eqc=%.17g|pa=%.17g|lp=%d|ld=%s",
+                 "sl=%.17g|sc=%.17g|pd=%.17g|rs=%.17g|dc=%d|cb=%.17g|eqf=%.17g|eqm=%.17g|eqc=%.17g|pa=%.17g|lp=%d|ld=%s",
                  m_EnableTemporal->getValue() ? 1 : 0, tf,
                  m_TemporalLuma->getValue(), m_TemporalChroma->getValue(), m_MotionThresh->getValue(),
                  m_MotionTracking->getValue() ? 1 : 0, m_FireflyRemoval->getValue() ? 1 : 0,
                  m_GhostGuard->getValue() ? 1 : 0,
                  m_EnableSpatial->getValue() ? 1 : 0, sm, m_SpatialRadius->getValue(),
                  m_SpatialLuma->getValue(), m_SpatialChroma->getValue(),
-                 m_PreserveDetail->getValue(), m_DetailRescue->getValue(), m_ChromaBlotch->getValue(),
+                 m_PreserveDetail->getValue(), m_DetailRescue->getValue(),
+                 m_DeepClean->getValue() ? 1 : 0, m_ChromaBlotch->getValue(),
                  m_EqFine->getValue(), m_EqMedium->getValue(), m_EqCoarse->getValue(),
                  m_ProfileAdjust->getValue(), m_LockProfile->getValue() ? 1 : 0,
                  lockStr.c_str());
@@ -481,6 +484,7 @@ private:
         m_SpatialChroma->setValue(as.spatialChroma);
         m_PreserveDetail->setValue(as.preserveDetail);
         m_DetailRescue->setValue(as.detailRescue);
+        m_DeepClean->setValue(as.deepClean != 0);
         m_ChromaBlotch->setValue(as.chromaBlotch);
         m_EqFine->setValue(as.eqFine);
         m_EqMedium->setValue(as.eqMedium);
@@ -516,6 +520,7 @@ private:
         m_SpatialChroma->setValue(0.0);
         m_PreserveDetail->setValue(35.0);
         m_DetailRescue->setValue(0.0);
+        m_DeepClean->setValue(false);
         m_ChromaBlotch->setValue(0.0);
         m_EqFine->setValue(100.0);
         m_EqMedium->setValue(0.0);
@@ -599,6 +604,7 @@ private:
         m_SpatialChroma->setEnabled(sOn);
         m_PreserveDetail->setEnabled(sOn);
         m_DetailRescue->setEnabled(sOn);
+        m_DeepClean->setEnabled(sOn);
         m_ChromaBlotch->setEnabled(sOn);
         m_EqFine->setEnabled(sOn);
         m_EqMedium->setEnabled(sOn);
@@ -676,6 +682,8 @@ private:
 
         // ---- v3.2 ----
         p.ghostGuard      = m_GhostGuard->getValueAtTime(t) ? 1 : 0;
+        // ---- v3.3 ----
+        p.deepClean       = m_DeepClean->getValueAtTime(t) ? 1 : 0;
         p.globalBlend     = static_cast<float>(m_GlobalBlend->getValueAtTime(t) / 100.0);
         const bool locked = m_LockProfile->getValueAtTime(t) && m_LockValid;
         p.profileLocked   = locked ? 1 : 0;
@@ -799,6 +807,7 @@ private:
         p.scopeEq        = params.scopeEq;
         p.ghostGuard     = params.ghostGuard;
         p.globalBlend    = params.globalBlend;
+        p.deepClean      = params.deepClean;
         p.profileLocked  = params.profileLocked;
         p.lockSY         = params.lockSY;
         p.lockSC         = params.lockSC;
@@ -885,6 +894,7 @@ private:
     OFX::DoubleParam*  m_SpatialChroma = nullptr;
     OFX::DoubleParam*  m_PreserveDetail = nullptr;
     OFX::DoubleParam*  m_DetailRescue = nullptr;
+    OFX::BooleanParam* m_DeepClean = nullptr;
     OFX::DoubleParam*  m_ChromaBlotch = nullptr;
     OFX::BooleanParam* m_ScopeMeasure = nullptr;
     OFX::BooleanParam* m_ScopeMotion = nullptr;
@@ -1330,6 +1340,11 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "Puts back anything the smoothing changed by more than a noise-sized amount. "
                  "Crank the strengths for smoothness, then raise this until faces and edges "
                  "come back crisp — smoothing without blur. 0 = off.", 0.0, 0.0, 100.0, grpSpatial);
+    defineBool(p_Desc, page, "deepClean", "Deep Clean (2-Pass)",
+               "Runs a gentle extra cleaning pass before the main one — its corrections are "
+               "capped at noise size, so detail is safe. Helps severe or compressed noise; "
+               "costs some render speed.",
+               false, grpSpatial);
 
     // Noise EQ subgroup: the spatial stage split by the SIZE of the noise
     OFX::GroupParamDescriptor* grpEq = p_Desc.defineGroupParam("grpEq");

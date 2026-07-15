@@ -70,6 +70,10 @@ typedef struct NRParams
     // ---- v3.2 ----
     int   ghostGuard;      // temporal signed-mean coherence gate (0/1)
     float globalBlend;     // 0..1 final crossfade original -> result
+
+    // ---- v3.3 ----
+    int   deepClean;       // fine-NLM pre-pass at 0.6h before the main
+                           // spatial stage (0/1)
 } NRParams;
 
 // stats buffer layout (uint32 slots)

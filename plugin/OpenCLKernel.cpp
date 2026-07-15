@@ -78,6 +78,8 @@ typedef struct NRParams
 
     int   ghostGuard;
     float globalBlend;
+
+    int   deepClean;
 } NRParams;
 
 #define kMedianCal   0.247100f
@@ -1117,6 +1119,93 @@ inline bool motionScopePixel(int x, int y, int W, int H,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Stage 3b — v3.3 "Deep Clean": fine-NLM pre-pass at 0.6h over the temporal
+// result into a second buffer; corrections clamped to noise size. The
+// residual is re-measured on the output. See nr_core.h.
+// ---------------------------------------------------------------------------
+__kernel void DeepCleanKernel(NRParams p, int W, int H,
+                              __global const float4* tmp,
+                              __global const uint* stats,
+                              __global float4* dst)
+{
+    const int x = get_global_id(0);
+    const int y = get_global_id(1);
+    if (x >= W || y >= H)
+        return;
+
+    const int manual = (p.profileSource == 2) && (p.profileLocked == 0);
+    const int locked = (p.profileLocked != 0);
+    const float ryG = manual ? clamp(p.sigmaY, kSigmaMin, kSigmaMax) : as_float(stats[S_RY]);
+    const float rcG = manual ? clamp(p.sigmaC, kSigmaMin, kSigmaMax) : as_float(stats[S_RC]);
+
+    const int R = 2;
+    const float4 tc = tmp[y * W + x];
+    const int lb = clamp((int)(tc.x * kLumaBins), 0, kLumaBins - 1);
+    const float gainYv = locked ? clamp(p.lockGainY[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : as_float(stats[S_GY + lb]);
+    const float gainCv = locked ? clamp(p.lockGainC[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : as_float(stats[S_GC + lb]);
+    const float sigY = clamp(ryG * gainYv, 1e-5f, 1.0f);
+    const float sigC = clamp(rcG * gainCv, 1e-5f, 1.0f);
+    const float hY = 0.6f * kNlmHLuma * sigY;
+    const float hC = 0.6f * kNlmHChroma * sigC;
+    const float invHY2 = 1.0f / fmax(hY * hY, 1e-12f);
+    const float invHC2 = 1.0f / fmax(hC * hC, 1e-12f);
+    const float biasY = 2.0f * sigY * sigY;
+    const float biasC = 2.0f * sigC * sigC;
+
+    float3 pPatch[9];
+    {
+        int i = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx, ++i)
+                pPatch[i] = sampleTmp(tmp, W, H, x + dx, y + dy).xyz;
+    }
+
+    float accY = 0.0f, accCb = 0.0f, accCr = 0.0f;
+    float sumWY = 0.0f, sumWC = 0.0f, wYmax = 0.0f, wCmax = 0.0f;
+    for (int dy = -R; dy <= R; ++dy) {
+        for (int dx = -R; dx <= R; ++dx) {
+            if (dx == 0 && dy == 0)
+                continue;
+            const float3 ts = sampleTmp(tmp, W, H, x + dx, y + dy).xyz;
+            float dY2 = 0.0f, dC2 = 0.0f;
+            int i = 0;
+            for (int qy = -1; qy <= 1; ++qy) {
+                for (int qx = -1; qx <= 1; ++qx, ++i) {
+                    const float3 tq = sampleTmp(tmp, W, H, x + dx + qx, y + dy + qy).xyz;
+                    const float3 e = pPatch[i] - tq;
+                    dY2 += e.x * e.x;
+                    dC2 += 0.5f * (e.y * e.y + e.z * e.z);
+                }
+            }
+            dY2 *= (1.0f / 9.0f);
+            dC2 *= (1.0f / 9.0f);
+            dY2 = fmax(0.0f, dY2 - biasY);
+            dC2 = fmax(0.0f, dC2 - biasC);
+            const float wY = exp(-dY2 * invHY2);
+            const float wC = exp(-dC2 * invHC2) * exp(-dY2 * invHY2 * 0.25f);
+            accY  += wY * ts.x;
+            accCb += wC * ts.y;
+            accCr += wC * ts.z;
+            sumWY += wY;
+            sumWC += wC;
+            wYmax = fmax(wYmax, wY);
+            wCmax = fmax(wCmax, wC);
+        }
+    }
+    const float wYc = fmax(wYmax, 1e-4f);
+    const float wCc = fmax(wCmax, 1e-4f);
+    const float Yf  = (accY  + wYc * tc.x) / (sumWY + wYc);
+    const float Cbf = (accCb + wCc * tc.y) / (sumWC + wCc);
+    const float Crf = (accCr + wCc * tc.z) / (sumWC + wCc);
+    dst[y * W + x] = (float4)(tc.x + clamp(Yf  - tc.x, -2.0f * sigY, 2.0f * sigY),
+                              tc.y + clamp(Cbf - tc.y, -2.0f * sigC, 2.0f * sigC),
+                              tc.z + clamp(Crf - tc.z, -2.0f * sigC, 2.0f * sigC),
+                              tc.w);
+}
+
 // v3.3 A2: the fine-band NLM loop reads (2R+1)^2 x 10 samples per pixel with
 // near-total overlap between neighbouring threads — each workgroup stages
 // its tile of tmp (side + 2(R+1) square: R window + 1 px patch ring) into
@@ -1130,9 +1219,13 @@ inline float3 tileAt(__local const float* tile, int tileW, int lx, int ly)
     return (float3)(tile[i], tile[i + 1], tile[i + 2]);
 }
 
+// tmp is the working buffer (the Deep Clean output when that pass ran);
+// tmpTrue is the TRUE temporal result for the After Temporal view and the
+// motion scope. Without Deep Clean the host binds the same buffer to both.
 __kernel void SpatialNLMKernel(NRParams p, int W, int H,
                                __global const float4* tmp, __global const float4* curr,
                                __global const uint* stats, __global float4* dst,
+                               __global const float4* tmpTrue,
                                __local float* tile)
 {
     const int x = get_global_id(0);
@@ -1484,7 +1577,8 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
     } else if (p.viewMode == 2) {
         o.xyz = c.xyz;
     } else if (p.viewMode == 3) {
-        o.xyz = ycc2rgb(tc.xyz);
+        // the TRUE temporal result, even when Deep Clean rewrote tmp
+        o.xyz = ycc2rgb(tmpTrue[y * W + x].xyz);
     } else if (p.viewMode == 4) {
         // noise removed: noise-adaptive gain + soft knee — see nr_core.h
         const float nrGain = 0.08f / clamp(sy, 0.004f, 0.08f);
@@ -1561,7 +1655,7 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
                                  p.enableSpatial, &sco))
                     drew = 1;
             }
-            if (wantMo && motionScopePixel(x, y, W, H, tmp, curr, &sco))
+            if (wantMo && motionScopePixel(x, y, W, H, tmpTrue, curr, &sco))
                 drew = 1;
             if (wantHud) {
                 if (hudPixel(x, y, W, H, sy, sc, ryG, rcG, enmed,
@@ -1623,8 +1717,10 @@ struct QueueResources
     cl_kernel temp = nullptr;
     cl_kernel est2 = nullptr;
     cl_kernel fin2 = nullptr;
+    cl_kernel deep = nullptr;
     cl_kernel nlm = nullptr;
     cl_mem tmp = nullptr;
+    cl_mem tmp2 = nullptr;   // v3.3 Deep Clean output (lazy — only when used)
     cl_mem stats = nullptr;
     int w = 0, h = 0;
     size_t nlmWG = 16;   // v3.3 A2: NLM workgroup side (16, or 8 on capped devices)
@@ -1672,6 +1768,7 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
             r.temp = clCreateKernel(program, "TemporalKernel", &error);
             r.est2 = clCreateKernel(program, "ResidualEstKernel", &error);
             r.fin2 = clCreateKernel(program, "FinalizeResidualKernel", &error);
+            r.deep = clCreateKernel(program, "DeepCleanKernel", &error);
             r.nlm  = clCreateKernel(program, "SpatialNLMKernel", &error);
             CheckError(error, "Unable to create kernels");
 
@@ -1696,6 +1793,7 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
         {
             if (r.tmp)   clReleaseMemObject(r.tmp);
             if (r.stats) clReleaseMemObject(r.stats);
+            if (r.tmp2)  { clReleaseMemObject(r.tmp2); r.tmp2 = nullptr; }   // re-created lazily
             r.tmp = clCreateBuffer(clContext, CL_MEM_READ_WRITE,
                                    static_cast<size_t>(p_Width) * p_Height * 4 * sizeof(float), NULL, &error);
             r.stats = clCreateBuffer(clContext, CL_MEM_READ_WRITE,
@@ -1703,6 +1801,15 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
             CheckError(error, "Unable to create buffers");
             r.w = p_Width;
             r.h = p_Height;
+        }
+        // v3.3 Deep Clean writes a second frame-sized buffer; allocate it
+        // only once the pass is actually used
+        if ((p_Params.deepClean != 0) && (p_Params.enableSpatial != 0) &&
+            (p_Params.master > 0.0f) && !r.tmp2)
+        {
+            r.tmp2 = clCreateBuffer(clContext, CL_MEM_READ_WRITE,
+                                    static_cast<size_t>(p_Width) * p_Height * 4 * sizeof(float), NULL, &error);
+            CheckError(error, "Unable to create deep-clean buffer");
         }
         res = r;
     }
@@ -1794,15 +1901,67 @@ void RunOpenCLNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Para
         CheckError(error, "fin2 enqueue");
     }
 
+    // v3.3 Deep Clean: fine pre-pass on the PASS-1 residual, then re-zero
+    // the residual histogram slots (NOT the sigma/gain slots between them)
+    // and re-measure on the cleaned buffer (see nr_core.h).
+    const bool deep = (params.deepClean != 0) && (params.enableSpatial != 0) &&
+                      (params.master > 0.0f) && res.tmp2;
+    cl_mem working = deep ? res.tmp2 : res.tmp;
+    if (deep)
+    {
+        int c = 0;
+        error  = clSetKernelArg(res.deep, c++, sizeof(NRParams), &params);
+        error |= clSetKernelArg(res.deep, c++, sizeof(int), &W);
+        error |= clSetKernelArg(res.deep, c++, sizeof(int), &H);
+        error |= clSetKernelArg(res.deep, c++, sizeof(cl_mem), &res.tmp);
+        error |= clSetKernelArg(res.deep, c++, sizeof(cl_mem), &res.stats);
+        error |= clSetKernelArg(res.deep, c++, sizeof(cl_mem), &res.tmp2);
+        CheckError(error, "deep args");
+        error = clEnqueueNDRangeKernel(cmdQ, res.deep, 2, NULL, global, NULL, 0, NULL, NULL);
+        CheckError(error, "deep enqueue");
+
+        if (residualLive)
+        {
+            const cl_uint zero = 0;
+            error = clEnqueueFillBuffer(cmdQ, res.stats, &zero, sizeof(cl_uint),
+                                        NR_STATS_HIST_YR * sizeof(cl_uint),
+                                        (NR_STATS_SIGMA_SY - NR_STATS_HIST_YR) * sizeof(cl_uint),
+                                        0, NULL, NULL);
+            error |= clEnqueueFillBuffer(cmdQ, res.stats, &zero, sizeof(cl_uint),
+                                         NR_STATS_HIST_YR2 * sizeof(cl_uint),
+                                         (NR_STATS_UINTS - NR_STATS_HIST_YR2) * sizeof(cl_uint),
+                                         0, NULL, NULL);
+            CheckError(error, "Unable to re-zero residual stats");
+
+            int c2 = 0;
+            error  = clSetKernelArg(res.est2, c2++, sizeof(NRParams), &params);
+            error |= clSetKernelArg(res.est2, c2++, sizeof(int), &W);
+            error |= clSetKernelArg(res.est2, c2++, sizeof(int), &H);
+            error |= clSetKernelArg(res.est2, c2++, sizeof(cl_mem), &res.tmp2);
+            error |= clSetKernelArg(res.est2, c2++, sizeof(cl_mem), &res.stats);
+            CheckError(error, "est2b args");
+            error = clEnqueueNDRangeKernel(cmdQ, res.est2, 2, NULL, globalH, NULL, 0, NULL, NULL);
+            CheckError(error, "est2b enqueue");
+
+            c2 = 0;
+            error  = clSetKernelArg(res.fin2, c2++, sizeof(NRParams), &params);
+            error |= clSetKernelArg(res.fin2, c2++, sizeof(cl_mem), &res.stats);
+            CheckError(error, "fin2b args");
+            error = clEnqueueNDRangeKernel(cmdQ, res.fin2, 2, NULL, one, NULL, 0, NULL, NULL);
+            CheckError(error, "fin2b enqueue");
+        }
+    }
+
     {
         int c = 0;
         error  = clSetKernelArg(res.nlm, c++, sizeof(NRParams), &params);
         error |= clSetKernelArg(res.nlm, c++, sizeof(int), &W);
         error |= clSetKernelArg(res.nlm, c++, sizeof(int), &H);
-        error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &res.tmp);
+        error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &working);
         error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &p_Srcs[2]);
         error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &res.stats);
         error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &p_Dst);
+        error |= clSetKernelArg(res.nlm, c++, sizeof(cl_mem), &res.tmp);   // the TRUE temporal result
         // v3.3 A2: local-memory tile for the fine-band loop — sized for the
         // actual radius and the chosen workgroup (same formula as the kernel)
         const int Rsp = params.spatialRadius < 1 ? 1 : (params.spatialRadius > 10 ? 10 : params.spatialRadius);

@@ -95,6 +95,7 @@ static void toCpuParams(const NRParams& gp, nrcore::Params& cp)
     cp.scopeEq        = gp.scopeEq;
     cp.ghostGuard     = gp.ghostGuard;
     cp.globalBlend    = gp.globalBlend;
+    cp.deepClean      = gp.deepClean;
 }
 
 // sparseOK: cases that exercise the v3 shift-search selection. Picking the
@@ -350,6 +351,23 @@ int main()
 
     NRParams y6 = y5; y6.temporalFrames = 3; y6.ghostGuard = 0;
     failures += compareRun(queue, y6, "v3.3 tracking 5px, 3f, no guard", true, false, false, 5.0f);
+
+    // B3 Deep Clean: pre-pass + residual re-measure + dual-buffer views
+    NRParams z1 = p; z1.deepClean = 1;
+    failures += compareRun(queue, z1, "v3.3 deep clean, defaults");
+
+    NRParams z2 = z1; z2.viewMode = 3;
+    failures += compareRun(queue, z2, "v3.3 deep clean, after-temporal view");
+
+    NRParams z3 = z1; z3.profileSource = 2; z3.sigmaY = 0.04f; z3.sigmaC = 0.03f;
+    failures += compareRun(queue, z3, "v3.3 deep clean, manual profile");
+
+    NRParams z4 = v6; z4.deepClean = 1;
+    failures += compareRun(queue, z4, "v3.3 deep clean + locked fast path");
+
+    NRParams z5 = z1; z5.spatialLuma = 1.5f; z5.eqFine = 3.0f; z5.detailRescue = 0.8f;
+    z5.spatialRadius = 8; z5.scopeMotion = 1;
+    failures += compareRun(queue, z5, "v3.3 deep clean, crank + motion scope", false, false, true);
 
     printf(failures == 0 ? "ALL GPU PARITY CHECKS PASSED\n" : "%d GPU PARITY CHECK(S) FAILED\n", failures);
     return failures == 0 ? 0 : 1;

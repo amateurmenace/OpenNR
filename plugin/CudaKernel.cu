@@ -1088,6 +1088,98 @@ __device__ inline bool motionScopePixel(int x, int y, int W, int H,
 }
 
 // ---------------------------------------------------------------------------
+// Stage 3b — v3.3 "Deep Clean": fine-NLM pre-pass at 0.6h over the temporal
+// result into a second buffer; corrections clamped to noise size. The
+// residual is re-measured on the output. See nr_core.h.
+// ---------------------------------------------------------------------------
+__global__ void DeepCleanKernel(NRParams p, int W, int H,
+                                const float4* tmp, const unsigned int* stats,
+                                float4* dst)
+{
+    const int x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= W || y >= H)
+        return;
+
+    const bool manual = (p.profileSource == 2) && (p.profileLocked == 0);
+    const bool locked = (p.profileLocked != 0);
+    const float ryG = manual ? clampf(p.sigmaY, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_RY]);
+    const float rcG = manual ? clampf(p.sigmaC, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_RC]);
+
+    const int R = 2;
+    const float4 tc = tmp[y * W + x];
+    const int lb = clampi((int)(tc.x * kLumaBins), 0, kLumaBins - 1);
+    const float gainYv = locked ? clampf(p.lockGainY[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : __uint_as_float(stats[S_GY + lb]);
+    const float gainCv = locked ? clampf(p.lockGainC[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : __uint_as_float(stats[S_GC + lb]);
+    const float sigY = clampf(ryG * gainYv, 1e-5f, 1.0f);
+    const float sigC = clampf(rcG * gainCv, 1e-5f, 1.0f);
+    const float hY = 0.6f * kNlmHLuma * sigY;
+    const float hC = 0.6f * kNlmHChroma * sigC;
+    const float invHY2 = 1.0f / fmaxf(hY * hY, 1e-12f);
+    const float invHC2 = 1.0f / fmaxf(hC * hC, 1e-12f);
+    const float biasY = 2.0f * sigY * sigY;
+    const float biasC = 2.0f * sigC * sigC;
+
+    float pY[9], pCb[9], pCr[9];
+    {
+        int i = 0;
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx, ++i) {
+                const float4 v = sampleTmp(tmp, W, H, x + dx, y + dy);
+                pY[i] = v.x; pCb[i] = v.y; pCr[i] = v.z;
+            }
+    }
+
+    float accY = 0.0f, accCb = 0.0f, accCr = 0.0f;
+    float sumWY = 0.0f, sumWC = 0.0f, wYmax = 0.0f, wCmax = 0.0f;
+    for (int dy = -R; dy <= R; ++dy) {
+        for (int dx = -R; dx <= R; ++dx) {
+            if (dx == 0 && dy == 0)
+                continue;
+            const float4 ts4 = sampleTmp(tmp, W, H, x + dx, y + dy);
+            float dY2 = 0.0f, dC2 = 0.0f;
+            int i = 0;
+            for (int qy = -1; qy <= 1; ++qy) {
+                for (int qx = -1; qx <= 1; ++qx, ++i) {
+                    const float4 tq = sampleTmp(tmp, W, H, x + dx + qx, y + dy + qy);
+                    const float eY = pY[i] - tq.x;
+                    const float eCb = pCb[i] - tq.y;
+                    const float eCr = pCr[i] - tq.z;
+                    dY2 += eY * eY;
+                    dC2 += 0.5f * (eCb * eCb + eCr * eCr);
+                }
+            }
+            dY2 *= (1.0f / 9.0f);
+            dC2 *= (1.0f / 9.0f);
+            dY2 = fmaxf(0.0f, dY2 - biasY);
+            dC2 = fmaxf(0.0f, dC2 - biasC);
+            const float wY = expf(-dY2 * invHY2);
+            const float wC = expf(-dC2 * invHC2) * expf(-dY2 * invHY2 * 0.25f);
+            accY  += wY * ts4.x;
+            accCb += wC * ts4.y;
+            accCr += wC * ts4.z;
+            sumWY += wY;
+            sumWC += wC;
+            wYmax = fmaxf(wYmax, wY);
+            wCmax = fmaxf(wCmax, wC);
+        }
+    }
+    const float wYc = fmaxf(wYmax, 1e-4f);
+    const float wCc = fmaxf(wCmax, 1e-4f);
+    const float Yf  = (accY  + wYc * tc.x) / (sumWY + wYc);
+    const float Cbf = (accCb + wCc * tc.y) / (sumWC + wCc);
+    const float Crf = (accCr + wCc * tc.z) / (sumWC + wCc);
+    float4 o;
+    o.x = tc.x + clampf(Yf  - tc.x, -2.0f * sigY, 2.0f * sigY);
+    o.y = tc.y + clampf(Cbf - tc.y, -2.0f * sigC, 2.0f * sigC);
+    o.z = tc.z + clampf(Crf - tc.z, -2.0f * sigC, 2.0f * sigC);
+    o.w = tc.w;
+    dst[y * W + x] = o;
+}
+
+// ---------------------------------------------------------------------------
 // v3.3 A2: the fine-band NLM loop reads (2R+1)^2 x 10 samples per pixel with
 // near-total overlap between neighbouring threads — each 16x16 block stages
 // its tile of tmp (16 + 2(R+1) square: R window + 1 px patch ring) into
@@ -1101,9 +1193,13 @@ __device__ inline void tileAt(const float* tile, int tileW, int lx, int ly,
     Y = tile[i]; Cb = tile[i + 1]; Cr = tile[i + 2];
 }
 
+// tmp is the working buffer (the Deep Clean output when that pass ran);
+// tmpTrue is the TRUE temporal result for the After Temporal view and the
+// motion scope. Without Deep Clean the host binds the same buffer to both.
 __global__ void SpatialNLMKernel(NRParams p, int W, int H,
                                  const float4* tmp, const float4* curr,
-                                 const unsigned int* stats, float4* dst)
+                                 const unsigned int* stats, float4* dst,
+                                 const float4* tmpTrue)
 {
     extern __shared__ float tile[];
     const int x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -1470,8 +1566,10 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
     } else if (p.viewMode == 2) {
         o.x = c.x; o.y = c.y; o.z = c.z;
     } else if (p.viewMode == 3) {
+        // the TRUE temporal result, even when Deep Clean rewrote tmp
+        const float4 tt = tmpTrue[y * W + x];
         float rr, gg, bb;
-        ycc2rgb(tc.x, tc.y, tc.z, rr, gg, bb);
+        ycc2rgb(tt.x, tt.y, tt.z, rr, gg, bb);
         o.x = rr; o.y = gg; o.z = bb;
     } else if (p.viewMode == 4) {
         // noise removed: noise-adaptive gain + soft knee — see nr_core.h
@@ -1557,7 +1655,7 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
                                  p.enableSpatial, rr, gg, bb))
                     drew = true;
             }
-            if (wantMo && motionScopePixel(x, y, W, H, tmp, curr, rr, gg, bb))
+            if (wantMo && motionScopePixel(x, y, W, H, tmpTrue, curr, rr, gg, bb))
                 drew = true;
             if (wantHud) {
                 if (hudPixel(x, y, W, H, sy, sc, ryG, rcG, enmed,
@@ -1605,6 +1703,7 @@ public:
 struct StreamResources
 {
     float4* tmp = nullptr;
+    float4* tmp2 = nullptr;   // v3.3 Deep Clean output (lazy — only when used)
     unsigned int* stats = nullptr;
     int w = 0, h = 0;
 };
@@ -1629,9 +1728,16 @@ void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Para
             if (r.stats) cudaFree(r.stats);
             cudaMalloc(&r.tmp, static_cast<size_t>(p_Width) * p_Height * sizeof(float4));
             cudaMalloc(&r.stats, NR_STATS_UINTS * sizeof(unsigned int));
+            if (r.tmp2) { cudaFree(r.tmp2); r.tmp2 = nullptr; }   // re-created lazily
             r.w = p_Width;
             r.h = p_Height;
         }
+        // v3.3 Deep Clean writes a second frame-sized buffer; allocate it
+        // only once the pass is actually used
+        const bool wantDeep = (p_Params.deepClean != 0) && (p_Params.enableSpatial != 0) &&
+                              (p_Params.master > 0.0f);
+        if (wantDeep && !r.tmp2)
+            cudaMalloc(&r.tmp2, static_cast<size_t>(p_Width) * p_Height * sizeof(float4));
         res = r;
     }
     s_locker.Unlock();
@@ -1688,11 +1794,33 @@ void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Para
         FinalizeResidualKernel<<<1, 1, 0, stream>>>(params, res.stats);
     }
 
+    // v3.3 Deep Clean: fine pre-pass on the PASS-1 residual, then re-zero
+    // the residual histogram slots (NOT the sigma/gain slots between them)
+    // and re-measure on the cleaned buffer (see nr_core.h).
+    const bool deep = (params.deepClean != 0) && (params.enableSpatial != 0) &&
+                      (params.master > 0.0f) && res.tmp2;
+    const float4* working = deep ? res.tmp2 : res.tmp;
+    if (deep)
+    {
+        DeepCleanKernel<<<blocks, threads, 0, stream>>>(params, p_Width, p_Height,
+                                                        res.tmp, res.stats, res.tmp2);
+        if (residualLive)
+        {
+            cudaMemsetAsync(res.stats + NR_STATS_HIST_YR, 0,
+                            (NR_STATS_SIGMA_SY - NR_STATS_HIST_YR) * sizeof(unsigned int), stream);
+            cudaMemsetAsync(res.stats + NR_STATS_HIST_YR2, 0,
+                            (NR_STATS_UINTS - NR_STATS_HIST_YR2) * sizeof(unsigned int), stream);
+            ResidualEstKernel<<<blocksHalf, threads, 0, stream>>>(params, p_Width, p_Height, res.tmp2, res.stats);
+            FinalizeResidualKernel<<<1, 1, 0, stream>>>(params, res.stats);
+        }
+    }
+
     // v3.3 A2: shared-memory tile for the fine-band loop — sized for the
     // actual radius (same formula as the kernel; 17.3 KB at R=10 max)
     const int Rsp = params.spatialRadius < 1 ? 1 : (params.spatialRadius > 10 ? 10 : params.spatialRadius);
     const int tileW = 16 + 2 * (Rsp + 1);
     const size_t tileBytes = 3 * sizeof(float) * tileW * tileW;
     SpatialNLMKernel<<<blocks, threads, tileBytes, stream>>>(params, p_Width, p_Height,
-                                                             res.tmp, srcs[2], res.stats, dst);
+                                                             working, srcs[2], res.stats, dst,
+                                                             res.tmp);
 }

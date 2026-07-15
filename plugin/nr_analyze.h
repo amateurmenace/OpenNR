@@ -171,6 +171,7 @@ struct AutoSettings {
     float spatialChroma   = 100.0f;
     float preserveDetail  = 35.0f;
     float detailRescue    = 0.0f;   // v3.1
+    int   deepClean       = 0;      // v3.3: fine pre-pass, severe class only
     float chromaBlotch    = 25.0f;
     float eqFine          = 100.0f;
     float eqMedium        = 0.0f;
@@ -231,6 +232,11 @@ inline AutoSettings mapAnalysisToSettings(const ClipAggregate& a)
     // cautious) motion threshold. The base stays cautious even for noisy
     // classes — sweeps show a wide gate buys almost nothing on static
     // footage but visibly costs quality the moment anything moves.
+    // v3.3: the Deep Clean pre-pass earns its render cost only when there
+    // is serious noise to decorrelate
+    if (s.noiseClass >= 3)
+        s.deepClean = 1;
+
     const float mNorm = std::min(a.motion / 0.4f, 1.0f);
     s.motionThresh = clampfLocal(26.0f + 4.0f * c - 18.0f * mNorm, 12.0f, 40.0f);
     if (a.motion > 0.15f)
