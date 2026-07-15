@@ -1,0 +1,15 @@
+# build outputs
+plugin/*.o
+plugin/OpenNR.ofx
+plugin/OpenNR.ofx.bundle/
+release/
+
+# test binaries and outputs
+test/test_denoise
+test/test_metal
+test/bench_metal
+test/*.ppm
+test/*.png
+test/*.air
+
+.DS_Store

@@ -1,0 +1,36 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run algorithm tests
+        run: |
+          cd test
+          c++ -O2 -std=c++14 -I../plugin test_denoise.cpp -o test_denoise
+          ./test_denoise
+          c++ -O2 -std=c++14 -I../plugin test_metal.mm ../plugin/MetalKernel.mm \
+              -framework Metal -framework Foundation -o test_metal
+          ./test_metal
+
+      - name: Build plugin (universal)
+        run: make -C plugin
+
+      - name: Package
+        run: ./build_release.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenNR-macOS
+          path: |
+            release/*.pkg
+            release/*.zip
