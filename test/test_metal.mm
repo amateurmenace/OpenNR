@@ -114,13 +114,20 @@ static void toCpuParams(const NRParams& gp, nrcore::Params& cp)
 // mean and a tiny absolute count instead of a strict max.
 static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char* label,
                       bool sparseOK = false, bool injectImpulses = false, bool hudOK = false,
-                      float panPx = 2.0f)
+                      float panPx = 2.0f, float expStep = 0.0f)
 {
     // 7 frames, centre 3; seeds keyed to the offset so the middle five are
     // bit-identical to the 5-frame era's
     std::vector<std::vector<float>> frames(7);
     for (int k = 0; k < 7; ++k)
         makeFrame(frames[k], k - 3, 100 + (k - 3) + 2, panPx);
+    if (expStep != 0.0f)   // v3.5 P1: abrupt exposure step after the centre
+        for (int k = 4; k < 7; ++k)
+            for (size_t i = 0; i < frames[k].size(); i += 4) {
+                frames[k][i] += expStep;
+                frames[k][i + 1] += expStep;
+                frames[k][i + 2] += expStep;
+            }
     if (injectImpulses) {
         std::mt19937 rng(7);
         std::uniform_int_distribution<int> RX(8, W - 9), RY(8, H - 9);
@@ -375,6 +382,13 @@ int main()
     NRParams z5 = z1; z5.spatialLuma = 1.5f; z5.eqFine = 3.0f; z5.detailRescue = 0.8f;
     z5.spatialRadius = 8; z5.scopeMotion = 1;
     failures += compareRun(queue, z5, "v3.3 deep clean, crank + motion scope", false, false, true);
+
+    // v3.5 P1: exposure step exercises the offset estimation + compensation
+    NRParams e1 = p; e1.temporalFrames = 7;
+    failures += compareRun(queue, e1, "v3.5 exposure step +3%", false, false, false, 2.0f, 0.03f);
+
+    NRParams e2 = p; e2.motionTracking = 1;
+    failures += compareRun(queue, e2, "v3.5 exposure step + tracking", true, false, false, 2.0f, 0.03f);
 
     // B2: 7-frame stack
     NRParams s7 = p; s7.temporalFrames = 7;

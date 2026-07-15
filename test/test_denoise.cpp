@@ -1500,6 +1500,53 @@ int main()
     }
 
     // =====================================================================
+    // v3.5 P1 — exposure match: a step or flicker must not gate the stack out
+    // =====================================================================
+    {
+        // abrupt +3% auto-exposure step after the centre frame, sigma 1.5%:
+        // uncompensated this cost 2.38 dB (48.58 vs the 50.96 clean ceiling)
+        std::vector<std::vector<float>> frames;
+        makeCaseFrames(0.015f, 0.0f, 0.0f, NOISE_IID, frames);
+        for (int k = 4; k < 7; ++k)
+            for (size_t i = 0; i < frames[k].size(); i += 4) {
+                frames[k][i] += 0.03f; frames[k][i + 1] += 0.03f; frames[k][i + 2] += 0.03f;
+            }
+        std::vector<float> clean;
+        renderScene(clean, 0, 0);
+        const float* fptr[7] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                                 frames[3].data(), frames[4].data(), frames[5].data(),
+                                 frames[6].data() };
+        std::vector<float> out(clean.size()), scratch;
+        nrcore::Params pe = p;
+        nrcore::denoiseFrame(fptr, W, H, pe, out.data(), scratch);
+        const double stepFull = psnr(out, clean);
+        nrcore::Params ps = pe; ps.enableTemporal = 0;
+        nrcore::denoiseFrame(fptr, W, H, ps, out.data(), scratch);
+        const double stepSp = psnr(out, clean);
+        printf("v3.5 exposure step +3%%: full %5.2f dB, spatial-only %5.2f dB\n", stepFull, stepSp);
+        check(stepFull >= 50.5, "exposure step: compensation recovers the stack (>= 50.5 dB)");
+        check(stepFull >= stepSp + 5.5, "exposure step: temporal still beats spatial-only by >= 5.5 dB");
+
+        // slow ramp (0.4%/frame): sits mostly inside the knee; the deadzone
+        // hands the small offsets to the knee and the rest is compensated
+        std::vector<std::vector<float>> rframes;
+        makeCaseFrames(0.05f, 0.0f, 0.0f, NOISE_IID, rframes);
+        for (int k = 0; k < 7; ++k) {
+            const float off = 0.004f * (k - 3);
+            for (size_t i = 0; i < rframes[k].size(); i += 4) {
+                rframes[k][i] += off; rframes[k][i + 1] += off; rframes[k][i + 2] += off;
+            }
+        }
+        const float* rptr[7] = { rframes[0].data(), rframes[1].data(), rframes[2].data(),
+                                 rframes[3].data(), rframes[4].data(), rframes[5].data(),
+                                 rframes[6].data() };
+        nrcore::denoiseFrame(rptr, W, H, pe, out.data(), scratch);
+        const double rampFull = psnr(out, clean);
+        printf("v3.5 exposure ramp 0.4%%/frame: full %5.2f dB\n", rampFull);
+        check(rampFull >= 40.85, "exposure ramp: holds the static number");
+    }
+
+    // =====================================================================
     // v3.3 B2 — 7-frame stack: more repeats, more averaging on static noise
     // =====================================================================
     {

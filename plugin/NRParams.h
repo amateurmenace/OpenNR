@@ -120,6 +120,10 @@ typedef struct NRParams
 #define NR_STATS_FINE_Y     5996     // v3.1: per-band estimates for the EQ
 #define NR_STATS_FINE_C     5997     //       scope (float bits; Cb/Cr mean)
 #define NR_STATS_COARSE_Y   5998
-#define NR_STATS_UINTS      5999
+#define NR_STATS_HIST_EXP   5999     // v3.5 P1: 6 x 128-bin signed-diff
+                                     // histograms (one per temporal
+                                     // neighbour; slot = k<3 ? k : k-1)
+#define NR_STATS_EXP_OFF    6767     // 6 float-bit exposure offsets
+#define NR_STATS_UINTS      6773
 
 #endif // OPENNR_NRPARAMS_H

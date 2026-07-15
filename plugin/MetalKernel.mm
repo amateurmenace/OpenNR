@@ -94,6 +94,10 @@ constant float kLumaSubScaleY = 128.0f;
 constant float kLumaSubScaleC = 256.0f;
 constant float kSigmaMin    = 1e-4f;
 constant float kSigmaMax    = 0.25f;
+// v3.5 P1 exposure match — see nr_core.h
+constant int   kExpBins  = 128;
+constant float kExpScale = 256.0f;
+constant float kExpDead  = 0.006f;
 
 #define H_YF    0
 #define H_CFB   256
@@ -130,6 +134,8 @@ constant float kSigmaMax    = 0.25f;
 #define S_FINEY 5996
 #define S_FINEC 5997
 #define S_CRSY  5998
+#define H_EXP   5999
+#define S_EXPOFF 6767
 
 inline float smooth01(float t)
 {
@@ -231,8 +237,9 @@ constant int kRefY[8] = { 0,  0, 1, -1, 1,  1, -1, -1 };
 // Mean |3x3 patch difference| of neighbour frame f shifted by (ox,oy) against
 // the current frame's patch; also returns the SIGNED mean luma difference
 // (v3.2 Ghost Guard) and the shifted centre sample.
+// expOff (v3.5 P1) — see nr_core.h: the neighbour's global exposure offset
 inline void patchDiff(const device float4* f, int W, int H, int x, int y,
-                      int ox, int oy, thread const float3* c9,
+                      int ox, int oy, float expOff, thread const float3* c9,
                       thread float& dY, thread float& dCb, thread float& dCr,
                       thread float& sdY, thread float3& fc)
 {
@@ -240,7 +247,8 @@ inline void patchDiff(const device float4* f, int W, int H, int x, int y,
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx, ++i) {
-            const float3 v = sampleYCC(f, W, H, x + ox + dx, y + oy + dy);
+            float3 v = sampleYCC(f, W, H, x + ox + dx, y + oy + dy);
+            v.x -= expOff;
             if (i == 4) fc = v;
             dY += fabs(v.x - c9[i].x);
             sdY += (v.x - c9[i].x);
@@ -259,13 +267,13 @@ inline void patchDiff(const device float4* f, int W, int H, int x, int y,
 // |2x2-block-mean luma difference| of a 3x3 stride-2 block patch (6x6 px
 // support); see nr_core.h.
 inline float coarseDiff(const device float4* f, int W, int H, int x, int y,
-                        int ox, int oy, thread const float* cb9)
+                        int ox, int oy, float expOff, thread const float* cb9)
 {
     float d = 0.0f;
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy)
         for (int dx = -1; dx <= 1; ++dx, ++i)
-            d += fabs(blockMeanYCC(f, W, H, x + ox + dx * 2, y + oy + dy * 2).x - cb9[i]);
+            d += fabs(blockMeanYCC(f, W, H, x + ox + dx * 2, y + oy + dy * 2).x - expOff - cb9[i]);
     return d * (1.0f / 9.0f);
 }
 
@@ -515,6 +523,66 @@ kernel void FinalizeStatsKernel(constant NRParams& p [[buffer(0)]],
 // ---------------------------------------------------------------------------
 // Stage 2 — motion-adaptive temporal merge (hard-knee gate)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// v3.5 P1 — per-neighbour exposure offset: histogram of signed luma diffs on
+// a stride-4 grid (one dispatch per neighbour), then a single-thread median
+// with the deadzone. See nr_core.h.
+// ---------------------------------------------------------------------------
+kernel void ExposureEstKernel(constant NRParams& p [[buffer(0)]],
+                              constant int& W [[buffer(1)]],
+                              constant int& H [[buffer(2)]],
+                              const device float4* f0 [[buffer(3)]],
+                              const device float4* f1 [[buffer(4)]],
+                              const device float4* f2 [[buffer(5)]],
+                              const device float4* f3 [[buffer(6)]],
+                              const device float4* f4 [[buffer(7)]],
+                              const device float4* f5 [[buffer(8)]],
+                              const device float4* f6 [[buffer(9)]],
+                              device atomic_uint* stats [[buffer(10)]],
+                              uint2 id [[thread_position_in_grid]])
+{
+    const int x = 1 + int(id.x) * 4;
+    const int y = 1 + int(id.y) * 4;
+    if (x >= W - 1 || y >= H - 1)
+        return;
+    const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 7) ? 3 : (p.temporalFrames >= 5) ? 2 : 1);
+    const device float4* frames[7] = { f0, f1, f2, f3, f4, f5, f6 };
+    const float cyv = sampleYCC(f3, W, H, x, y).x;
+    for (int k = 3 - reach; k <= 3 + reach; ++k) {
+        if (k == 3)
+            continue;
+        const float nyv = sampleYCC(frames[k], W, H, x, y).x;
+        atomic_fetch_add_explicit(&stats[H_EXP + (k < 3 ? k : k - 1) * kExpBins +
+            clamp(int((nyv - cyv + 0.25f) * kExpScale), 0, kExpBins - 1)], 1u, memory_order_relaxed);
+    }
+}
+
+kernel void FinalizeExposureKernel(device uint* stats [[buffer(0)]],
+                                   uint tid [[thread_position_in_grid]])
+{
+    if (tid != 0)
+        return;
+    for (int s2 = 0; s2 < 6; ++s2) {
+        uint etotal = 0;
+        for (int b = 0; b < kExpBins; ++b)
+            etotal += stats[H_EXP + s2 * kExpBins + b];
+        float o = 0.0f;
+        if (etotal >= 64) {
+            uint cum = 0;
+            const uint target = (etotal + 1) / 2;
+            int mbin = kExpBins - 1;
+            for (int b = 0; b < kExpBins; ++b) {
+                cum += stats[H_EXP + s2 * kExpBins + b];
+                if (cum >= target) { mbin = b; break; }
+            }
+            const float v = (float(mbin) + 0.5f) / kExpScale - 0.25f;
+            if (fabs(v) >= kExpDead)
+                o = v;
+        }
+        stats[S_EXPOFF + s2] = as_type<uint>(o);
+    }
+}
+
 inline void loadSigmasIn(constant NRParams& p, const device uint* stats,
                          thread float& sy, thread float& scb, thread float& scr,
                          thread float& ty, thread float& tcb, thread float& tcr)
@@ -605,8 +673,10 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
 
     // v3 firefly zapper — see nr_core.h for the three-test rationale
     if (zap) {
-        const float3 pv = sampleYCC(f2, W, H, x, y);
-        const float3 nv = sampleYCC(f4, W, H, x, y);
+        float3 pv = sampleYCC(f2, W, H, x, y);
+        float3 nv = sampleYCC(f4, W, H, x, y);
+        pv.x -= as_type<float>(stats[S_EXPOFF + 2]);   // v3.5 P1: cross-frame
+        nv.x -= as_type<float>(stats[S_EXPOFF + 3]);   // tests exposure-matched
         float lum9[9];
         for (int j = 0; j < 9; ++j) lum9[j] = c9[j].x;
         if (fabs(pv.x - nv.x) < 0.5f * zapY &&
@@ -651,9 +721,10 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
             continue;
         const device float4* f = frames[k];
 
+        const float oK = as_type<float>(stats[S_EXPOFF + (k < 3 ? k : k - 1)]);   // v3.5 P1
         float dY, dCb, dCr, sdY;
         float3 fc;
-        patchDiff(f, W, H, x, y, 0, 0, c9, dY, dCb, dCr, sdY, fc);
+        patchDiff(f, W, H, x, y, 0, 0, oK, c9, dY, dCb, dCr, sdY, fc);
 
         // v3.3 B1 hierarchical shift search — see nr_core.h for the grid,
         // the margins and the drift-bias rationale
@@ -673,16 +744,16 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
                     haveCb9 = true;
                 }
                 // coarse level: best step-4 node on block means
-                float bestC = coarseDiff(f, W, H, x, y, kCoarseX[0], kCoarseY[0], cb9);
+                float bestC = coarseDiff(f, W, H, x, y, kCoarseX[0], kCoarseY[0], oK, cb9);
                 int bestOx = kCoarseX[0], bestOy = kCoarseY[0];
                 for (int c = 1; c < 16; ++c) {
-                    const float d = coarseDiff(f, W, H, x, y, kCoarseX[c], kCoarseY[c], cb9);
+                    const float d = coarseDiff(f, W, H, x, y, kCoarseX[c], kCoarseY[c], oK, cb9);
                     if (d < bestC) { bestC = d; bestOx = kCoarseX[c]; bestOy = kCoarseY[c]; }
                 }
                 // the coarse winner must survive the real patch metric by 10%
                 float dY2, dCb2, dCr2, sd2;
                 float3 fc2;
-                patchDiff(f, W, H, x, y, bestOx, bestOy, c9, dY2, dCb2, dCr2, sd2, fc2);
+                patchDiff(f, W, H, x, y, bestOx, bestOy, oK, c9, dY2, dCb2, dCr2, sd2, fc2);
                 if (dY2 < dY * 0.90f) {
                     dY = dY2; dCb = dCb2; dCr = dCr2; sdY = sd2; fc = fc2;
                     wx = bestOx; wy = bestOy;
@@ -696,7 +767,7 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
                     const int tx = wx + kRefX[c], ty = wy + kRefY[c];
                     float dY2, dCb2, dCr2, sd2;
                     float3 fc2;
-                    patchDiff(f, W, H, x, y, tx, ty, c9, dY2, dCb2, dCr2, sd2, fc2);
+                    patchDiff(f, W, H, x, y, tx, ty, oK, c9, dY2, dCb2, dCr2, sd2, fc2);
                     if (dY2 < dY * 0.99f) {
                         dY = dY2; dCb = dCb2; dCr = dCr2; sdY = sd2; fc = fc2;
                         nwx = tx; nwy = ty;
@@ -1831,6 +1902,8 @@ struct QueueResources
     id<MTLComputePipelineState> est2 = nil;
     id<MTLComputePipelineState> fin2 = nil;
     id<MTLComputePipelineState> deep = nil;
+    id<MTLComputePipelineState> expE = nil;   // v3.5 P1
+    id<MTLComputePipelineState> expF = nil;
     id<MTLComputePipelineState> nlm  = nil;
     id<MTLBuffer> tmp   = nil;
     id<MTLBuffer> tmp2  = nil;   // v3.3 Deep Clean output (lazy — only when used)
@@ -1891,8 +1964,11 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
             r.est2 = makePipeline(device, lib, @"ResidualEstKernel");
             r.fin2 = makePipeline(device, lib, @"FinalizeResidualKernel");
             r.deep = makePipeline(device, lib, @"DeepCleanKernel");
+            r.expE = makePipeline(device, lib, @"ExposureEstKernel");
+            r.expF = makePipeline(device, lib, @"FinalizeExposureKernel");
             r.nlm  = makePipeline(device, lib, @"SpatialNLMKernel");
-            if (!r.est || !r.fin || !r.temp || !r.est2 || !r.fin2 || !r.deep || !r.nlm)
+            if (!r.est || !r.fin || !r.temp || !r.est2 || !r.fin2 || !r.deep ||
+                !r.expE || !r.expF || !r.nlm)
                 return;
         }
 
@@ -1943,9 +2019,20 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
     const bool residualLive = (params.profileSource != 2) || (params.profileLocked != 0);
     const bool inputLive = residualLive && ((params.profileLocked == 0) || wantLiveStats);
 
-    if (residualLive) {
+    // v3.5 P1: the exposure histograms accumulate per frame and live past
+    // the full-buffer zero's gate, so their range zeroes whenever the
+    // temporal stack runs (manual profiles skip everything else)
+    const int reachHost = (params.enableTemporal == 0) ? 0
+                        : ((params.temporalFrames >= 7) ? 3 : (params.temporalFrames >= 5) ? 2 : 1);
+    if (residualLive || reachHost >= 1) {
         id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
-        [blit fillBuffer:res.stats range:NSMakeRange(0, NR_STATS_UINTS * sizeof(uint32_t)) value:0];
+        if (residualLive)
+            [blit fillBuffer:res.stats range:NSMakeRange(0, NR_STATS_UINTS * sizeof(uint32_t)) value:0];
+        else
+            [blit fillBuffer:res.stats
+                       range:NSMakeRange(NR_STATS_HIST_EXP * sizeof(uint32_t),
+                                         (NR_STATS_UINTS - NR_STATS_HIST_EXP) * sizeof(uint32_t))
+                       value:0];
         [blit endEncoding];
     }
 
@@ -1971,6 +2058,26 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         [enc setComputePipelineState:res.fin];
         [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
         [enc setBuffer:res.stats offset:0 atIndex:1];
+        [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+
+    // v3.5 P1: per-neighbour exposure offsets (one small dispatch each,
+    // then the single-thread medians) — the temporal kernel reads them
+    if (reachHost >= 1) {
+        const MTLSize gridQ = MTLSizeMake((p_Width / 4 + tg.width) / tg.width,
+                                          (p_Height / 4 + tg.height) / tg.height, 1);
+        [enc setComputePipelineState:res.expE];
+        [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
+        [enc setBytes:&W length:sizeof(int) atIndex:1];
+        [enc setBytes:&H length:sizeof(int) atIndex:2];
+        for (int i = 0; i < 7; ++i)
+            [enc setBuffer:src[i] offset:0 atIndex:(3 + i)];
+        [enc setBuffer:res.stats offset:0 atIndex:10];
+        [enc dispatchThreadgroups:gridQ threadsPerThreadgroup:tg];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [enc setComputePipelineState:res.expF];
+        [enc setBuffer:res.stats offset:0 atIndex:0];
         [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }

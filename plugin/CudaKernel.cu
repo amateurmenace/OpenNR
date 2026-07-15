@@ -30,6 +30,10 @@ namespace {
 #define kLumaSub     64
 #define kLumaSubScaleY 128.0f
 #define kLumaSubScaleC 256.0f
+// v3.5 P1 exposure match — see nr_core.h
+#define kExpBins     128
+#define kExpScale    256.0f
+#define kExpDead     0.006f
 #define kSigmaMin    1e-4f
 #define kSigmaMax    0.25f
 
@@ -68,6 +72,8 @@ namespace {
 #define S_FINEY NR_STATS_FINE_Y
 #define S_FINEC NR_STATS_FINE_C
 #define S_CRSY  NR_STATS_COARSE_Y
+#define H_EXP   NR_STATS_HIST_EXP
+#define S_EXPOFF NR_STATS_EXP_OFF
 
 __device__ inline float clampf(float v, float lo, float hi) { return fminf(fmaxf(v, lo), hi); }
 __device__ inline int   clampi(int v, int lo, int hi)       { return v < lo ? lo : (v > hi ? hi : v); }
@@ -183,8 +189,9 @@ __device__ const int kRefY[8] = { 0,  0, 1, -1, 1,  1, -1, -1 };
 
 // Mean |3x3 patch difference| of neighbour frame f shifted by (ox,oy) against
 // the current frame's patch; also returns the shifted centre sample.
+// expOff (v3.5 P1) — see nr_core.h
 __device__ inline void patchDiff(const float4* f, int W, int H, int x, int y,
-                                 int ox, int oy,
+                                 int ox, int oy, float expOff,
                                  const float* cy9, const float* ccb9, const float* ccr9,
                                  float& dY, float& dCb, float& dCr, float& sdY,
                                  float& fy, float& fcb, float& fcr)
@@ -195,6 +202,7 @@ __device__ inline void patchDiff(const float4* f, int W, int H, int x, int y,
         for (int dx = -1; dx <= 1; ++dx, ++i) {
             float vy, vcb, vcr;
             sampleYCC(f, W, H, x + ox + dx, y + oy + dy, vy, vcb, vcr);
+            vy -= expOff;
             if (i == 4) { fy = vy; fcb = vcb; fcr = vcr; }
             dY += fabsf(vy - cy9[i]);
             sdY += (vy - cy9[i]);
@@ -213,7 +221,7 @@ __device__ inline void patchDiff(const float4* f, int W, int H, int x, int y,
 // |2x2-block-mean luma difference| of a 3x3 stride-2 block patch (6x6 px
 // support); see nr_core.h.
 __device__ inline float coarseDiff(const float4* f, int W, int H, int x, int y,
-                                   int ox, int oy, const float* cb9)
+                                   int ox, int oy, float expOff, const float* cb9)
 {
     float d = 0.0f;
     int i = 0;
@@ -221,7 +229,7 @@ __device__ inline float coarseDiff(const float4* f, int W, int H, int x, int y,
         for (int dx = -1; dx <= 1; ++dx, ++i) {
             float bY, bCb, bCr;
             blockMeanYCC(f, W, H, x + ox + dx * 2, y + oy + dy * 2, bY, bCb, bCr);
-            d += fabsf(bY - cb9[i]);
+            d += fabsf(bY - expOff - cb9[i]);
         }
     return d * (1.0f / 9.0f);
 }
@@ -459,6 +467,56 @@ __global__ void FinalizeStatsKernel(NRParams p, unsigned int* stats)
 }
 
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// v3.5 P1 — per-neighbour exposure offset — see nr_core.h / MetalKernel.mm
+// ---------------------------------------------------------------------------
+__global__ void ExposureEstKernel(NRParams p, int W, int H,
+                                  const float4* f0, const float4* f1, const float4* f2,
+                                  const float4* f3, const float4* f4, const float4* f5,
+                                  const float4* f6, unsigned int* stats)
+{
+    const int x = 1 + (blockIdx.x * blockDim.x + threadIdx.x) * 4;
+    const int y = 1 + (blockIdx.y * blockDim.y + threadIdx.y) * 4;
+    if (x >= W - 1 || y >= H - 1)
+        return;
+    const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 7) ? 3 : (p.temporalFrames >= 5) ? 2 : 1);
+    const float4* frames[7] = { f0, f1, f2, f3, f4, f5, f6 };
+    float cyv, cbv, crv, nyv;
+    sampleYCC(f3, W, H, x, y, cyv, cbv, crv);
+    for (int k = 3 - reach; k <= 3 + reach; ++k) {
+        if (k == 3)
+            continue;
+        sampleYCC(frames[k], W, H, x, y, nyv, cbv, crv);
+        atomicAdd(&stats[H_EXP + ((k < 3) ? k : k - 1) * kExpBins +
+            clampi((int)((nyv - cyv + 0.25f) * kExpScale), 0, kExpBins - 1)], 1u);
+    }
+}
+
+__global__ void FinalizeExposureKernel(unsigned int* stats)
+{
+    if (blockIdx.x != 0 || threadIdx.x != 0)
+        return;
+    for (int s2 = 0; s2 < 6; ++s2) {
+        unsigned int etotal = 0;
+        for (int b = 0; b < kExpBins; ++b)
+            etotal += stats[H_EXP + s2 * kExpBins + b];
+        float o = 0.0f;
+        if (etotal >= 64) {
+            unsigned int cum = 0;
+            const unsigned int target = (etotal + 1) / 2;
+            int mbin = kExpBins - 1;
+            for (int b = 0; b < kExpBins; ++b) {
+                cum += stats[H_EXP + s2 * kExpBins + b];
+                if (cum >= target) { mbin = b; break; }
+            }
+            const float v = ((float)mbin + 0.5f) / kExpScale - 0.25f;
+            if (fabsf(v) >= kExpDead)
+                o = v;
+        }
+        stats[S_EXPOFF + s2] = __float_as_uint(o);
+    }
+}
+
 __device__ inline void loadSigmasIn(const NRParams& p, const unsigned int* stats,
                                     float& sy, float& scb, float& scr,
                                     float& ty, float& tcb, float& tcr)
@@ -545,6 +603,8 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
         float pY, pCb, pCr, nY, nCb, nCr;
         sampleYCC(f2, W, H, x, y, pY, pCb, pCr);
         sampleYCC(f4, W, H, x, y, nY, nCb, nCr);
+        pY -= __uint_as_float(stats[S_EXPOFF + 2]);   // v3.5 P1
+        nY -= __uint_as_float(stats[S_EXPOFF + 3]);
         if (fabsf(pY - nY) < 0.5f * zapY &&
             0.5f * (fabsf(pCb - nCb) + fabsf(pCr - nCr)) < 0.5f * zapC &&
             fabsf(cy9[4] - med9(cy9)) > 0.5f * zapY) {
@@ -587,8 +647,9 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
             continue;
         const float4* f = frames[k];
 
+        const float oK = __uint_as_float(stats[S_EXPOFF + (k < 3 ? k : k - 1)]);   // v3.5 P1
         float dY, dCb, dCr, sdY, fyc, fcbc, fcrc;
-        patchDiff(f, W, H, x, y, 0, 0, cy9, ccb9, ccr9, dY, dCb, dCr, sdY, fyc, fcbc, fcrc);
+        patchDiff(f, W, H, x, y, 0, 0, oK, cy9, ccb9, ccr9, dY, dCb, dCr, sdY, fyc, fcbc, fcrc);
 
         // v3.3 B1 hierarchical shift search — see nr_core.h for the grid,
         // the margins and the drift-bias rationale
@@ -610,15 +671,15 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
                     haveCb9 = true;
                 }
                 // coarse level: best step-4 node on block means
-                float bestC = coarseDiff(f, W, H, x, y, kCoarseX[0], kCoarseY[0], cb9);
+                float bestC = coarseDiff(f, W, H, x, y, kCoarseX[0], kCoarseY[0], oK, cb9);
                 int bestOx = kCoarseX[0], bestOy = kCoarseY[0];
                 for (int c = 1; c < 16; ++c) {
-                    const float d = coarseDiff(f, W, H, x, y, kCoarseX[c], kCoarseY[c], cb9);
+                    const float d = coarseDiff(f, W, H, x, y, kCoarseX[c], kCoarseY[c], oK, cb9);
                     if (d < bestC) { bestC = d; bestOx = kCoarseX[c]; bestOy = kCoarseY[c]; }
                 }
                 // the coarse winner must survive the real patch metric by 10%
                 float dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2;
-                patchDiff(f, W, H, x, y, bestOx, bestOy,
+                patchDiff(f, W, H, x, y, bestOx, bestOy, oK,
                           cy9, ccb9, ccr9, dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2);
                 if (dY2 < dY * 0.90f) {
                     dY = dY2; dCb = dCb2; dCr = dCr2; sdY = sd2;
@@ -633,7 +694,7 @@ __global__ void TemporalKernel(NRParams p, int W, int H,
                 for (int c = 0; c < 8; ++c) {
                     const int tx = wx + kRefX[c], ty = wy + kRefY[c];
                     float dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2;
-                    patchDiff(f, W, H, x, y, tx, ty,
+                    patchDiff(f, W, H, x, y, tx, ty, oK,
                               cy9, ccb9, ccr9, dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2);
                     if (dY2 < dY * 0.99f) {
                         dY = dY2; dCb = dCb2; dCr = dCr2; sdY = sd2;
@@ -1880,6 +1941,24 @@ void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Para
     {
         NoiseEstKernel<<<blocksHalf, threads, 0, stream>>>(params, p_Width, p_Height, srcs[3], partner, res.stats);
         FinalizeStatsKernel<<<1, 1, 0, stream>>>(params, res.stats);
+    }
+
+    // v3.5 P1: per-neighbour exposure offsets (see nr_core.h). The exposure
+    // block zeroes whenever the temporal stack runs — manual profiles skip
+    // every other stats write, so it cannot ride the residualLive fill.
+    const int reachHost = (params.enableTemporal == 0) ? 0
+                        : ((params.temporalFrames >= 7) ? 3 : (params.temporalFrames >= 5) ? 2 : 1);
+    if (reachHost >= 1)
+    {
+        if (!residualLive)
+            cudaMemsetAsync(res.stats + NR_STATS_HIST_EXP, 0,
+                            (NR_STATS_UINTS - NR_STATS_HIST_EXP) * sizeof(unsigned int), stream);
+        const dim3 blocksQ((p_Width / 4 + threads.x) / threads.x,
+                           (p_Height / 4 + threads.y) / threads.y, 1);
+        ExposureEstKernel<<<blocksQ, threads, 0, stream>>>(params, p_Width, p_Height,
+                                                           srcs[0], srcs[1], srcs[2], srcs[3],
+                                                           srcs[4], srcs[5], srcs[6], res.stats);
+        FinalizeExposureKernel<<<1, 1, 0, stream>>>(res.stats);
     }
 
     TemporalKernel<<<blocks, threads, 0, stream>>>(params, p_Width, p_Height,

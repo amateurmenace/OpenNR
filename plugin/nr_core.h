@@ -196,6 +196,14 @@ static const float kLumaSubScaleY = 128.0f;  // |lap| in [0, 0.5) over 64 bins
 static const float kLumaSubScaleC = 256.0f;  // |lap| in [0, 0.25)
 static const float kSigmaMin    = 1e-4f;
 static const float kSigmaMax    = 0.25f;
+// v3.5 P1 exposure match: per-neighbour global luma offset, estimated as the
+// median of signed diffs over a stride-4 grid (128 bins across +/-0.25).
+// Offsets inside the deadzone snap to EXACTLY zero, so flicker-free footage
+// is bit-exact with the uncompensated path; 1.5 bins covers the half-bin
+// decode bias plus estimator noise.
+static const int   kExpBins  = 128;
+static const float kExpScale = 256.0f;
+static const float kExpDead  = 0.006f;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -330,8 +338,11 @@ static const int kRefY[8] = { 0,  0, 1, -1, 1,  1, -1, -1 };
 // luma difference (v3.2 Ghost Guard: noise diffs cancel when averaged signed,
 // coherent motion/lighting change does not) and the shifted centre sample for
 // blending. At (0,0) the magnitude term is exactly the v2.1 matching term.
+// expOff (v3.5 P1) is the neighbour's global exposure offset: subtracted
+// from its luma everywhere — diffs, signed mean AND the returned sample —
+// so a matched patch under flicker reads (and blends) like a static one.
 static inline void patchDiff(const float* f, int W, int H, int x, int y,
-                             int ox, int oy,
+                             int ox, int oy, float expOff,
                              const float* cy9, const float* ccb9, const float* ccr9,
                              float& dY, float& dCb, float& dCr, float& sdY,
                              float& fy, float& fcb, float& fcr)
@@ -342,6 +353,7 @@ static inline void patchDiff(const float* f, int W, int H, int x, int y,
         for (int dx = -1; dx <= 1; ++dx, ++i) {
             float vy, vcb, vcr;
             sampleYCC(f, W, H, x + ox + dx, y + oy + dy, vy, vcb, vcr);
+            vy -= expOff;
             if (i == 4) { fy = vy; fcb = vcb; fcr = vcr; }
             dY += std::fabs(vy - cy9[i]);
             sdY += (vy - cy9[i]);
@@ -363,7 +375,7 @@ static inline void patchDiff(const float* f, int W, int H, int x, int y,
 // own block patch cb9. Luma only: selection follows the luma match exactly
 // like the refine level.
 static inline float coarseDiff(const float* f, int W, int H, int x, int y,
-                               int ox, int oy, const float* cb9)
+                               int ox, int oy, float expOff, const float* cb9)
 {
     float d = 0.0f;
     int i = 0;
@@ -371,7 +383,7 @@ static inline float coarseDiff(const float* f, int W, int H, int x, int y,
         for (int dx = -1; dx <= 1; ++dx, ++i) {
             float bY, bCb, bCr;
             blockMeanYCC(f, W, H, x + ox + dx * 2, y + oy + dy * 2, bY, bCb, bCr);
-            d += std::fabs(bY - cb9[i]);
+            d += std::fabs(bY - expOff - cb9[i]);
         }
     return d * (1.0f / 9.0f);
 }
@@ -684,6 +696,42 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
     const float zapY = 6.0f * s.ty;
     const float zapC = 6.0f * s.tc;
 
+    // v3.5 P1: per-neighbour global exposure offsets. An auto-exposure step
+    // or light flicker shifts EVERY diff at once and gates whole frames out
+    // of the stack (measured: a +3% step cost 2.4 dB at sigma 1.5%). The
+    // median of signed luma diffs over a stride-4 grid reads the offset
+    // robustly (motion is the minority and largely sign-symmetric); the
+    // deadzone keeps flicker-free footage bit-exact. Duplicate frames at
+    // clip edges read a half-bin median and snap to zero the same way.
+    float expOff[7] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+    for (int k = 3 - reach; k <= 3 + reach; ++k) {
+        if (k == 3)
+            continue;
+        uint32_t eh[kExpBins];
+        for (int b = 0; b < kExpBins; ++b) eh[b] = 0;
+        uint32_t etotal = 0;
+        for (int ey = 1; ey < H - 1; ey += 4)
+            for (int ex = 1; ex < W - 1; ex += 4) {
+                float cyv, cbv, crv, nyv;
+                sampleYCC(frames[3], W, H, ex, ey, cyv, cbv, crv);
+                sampleYCC(frames[k], W, H, ex, ey, nyv, cbv, crv);
+                eh[clampi(static_cast<int>((nyv - cyv + 0.25f) * kExpScale), 0, kExpBins - 1)]++;
+                etotal++;
+            }
+        if (etotal >= 64) {
+            uint32_t cum = 0;
+            const uint32_t target = (etotal + 1) / 2;
+            int mbin = kExpBins - 1;
+            for (int b = 0; b < kExpBins; ++b) {
+                cum += eh[b];
+                if (cum >= target) { mbin = b; break; }
+            }
+            const float o = (static_cast<float>(mbin) + 0.5f) / kExpScale - 0.25f;
+            if (std::fabs(o) >= kExpDead)
+                expOff[k] = o;
+        }
+    }
+
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
             float cy9[9], ccb9[9], ccr9[9];
@@ -705,6 +753,8 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                 float pY, pCb, pCr, nY, nCb, nCr;
                 sampleYCC(frames[2], W, H, x, y, pY, pCb, pCr);
                 sampleYCC(frames[4], W, H, x, y, nY, nCb, nCr);
+                pY -= expOff[2];   // v3.5 P1: the zapper's cross-frame tests
+                nY -= expOff[4];   // compare exposure-matched values too
                 if (std::fabs(pY - nY) < 0.5f * zapY &&
                     0.5f * (std::fabs(pCb - nCb) + std::fabs(pCr - nCr)) < 0.5f * zapC &&
                     std::fabs(cy9[4] - med9(cy9)) > 0.5f * zapY) {
@@ -748,8 +798,9 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                     continue;
                 const float* f = frames[k];
 
+                const float oK = expOff[k];   // v3.5 P1
                 float dY, dCb, dCr, sdY, fy9c, fcb9c, fcr9c;
-                patchDiff(f, W, H, x, y, 0, 0, cy9, ccb9, ccr9,
+                patchDiff(f, W, H, x, y, 0, 0, oK, cy9, ccb9, ccr9,
                           dY, dCb, dCr, sdY, fy9c, fcb9c, fcr9c);
 
                 // v3.3 B1 hierarchical shift search (see kCoarseX above).
@@ -785,10 +836,10 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                             haveCb9 = true;
                         }
                         // coarse level: best step-4 node on block means
-                        float bestC = coarseDiff(f, W, H, x, y, kCoarseX[0], kCoarseY[0], cb9);
+                        float bestC = coarseDiff(f, W, H, x, y, kCoarseX[0], kCoarseY[0], oK, cb9);
                         int bestOx = kCoarseX[0], bestOy = kCoarseY[0];
                         for (int c = 1; c < 16; ++c) {
-                            const float d = coarseDiff(f, W, H, x, y, kCoarseX[c], kCoarseY[c], cb9);
+                            const float d = coarseDiff(f, W, H, x, y, kCoarseX[c], kCoarseY[c], oK, cb9);
                             if (d < bestC) { bestC = d; bestOx = kCoarseX[c]; bestOy = kCoarseY[c]; }
                         }
                         // The coarse winner must survive the real patch
@@ -802,7 +853,7 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                         // still 0.06 dB to exactly these jumps; 10% keeps
                         // the v3.2 number with the pan gains untouched.
                         float dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2;
-                        patchDiff(f, W, H, x, y, bestOx, bestOy,
+                        patchDiff(f, W, H, x, y, bestOx, bestOy, oK,
                                   cy9, ccb9, ccr9, dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2);
                         if (dY2 < dY * 0.90f) {
                             dY = dY2; dCb = dCb2; dCr = dCr2; sdY = sd2;
@@ -818,7 +869,7 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                         for (int c = 0; c < 8; ++c) {
                             const int tx = wx + kRefX[c], ty = wy + kRefY[c];
                             float dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2;
-                            patchDiff(f, W, H, x, y, tx, ty,
+                            patchDiff(f, W, H, x, y, tx, ty, oK,
                                       cy9, ccb9, ccr9, dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2);
                             if (dY2 < dY * 0.99f) {
                                 dY = dY2; dCb = dCb2; dCr = dCr2; sdY = sd2;
