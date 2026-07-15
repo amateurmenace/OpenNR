@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hush — Open NR · free noise reduction for DaVinci Resolve</title>
+<meta name="description" content="Hush Open NR is a free, open-source noise reduction suite for DaVinci Resolve — temporal + spatial NR, automatic noise profiling, film grain, and full transparency into the math. A Weird Machine project.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --cream: #F5F3EE;
+    --card: #FFFFFF;
+    --border: #E0DED9;
+    --border-lt: #D4D2CD;
+    --green: #3D5A47;
+    --green-lt: #4A6B52;
+    --green-br: #5B8C65;
+    --sage: #A3C0B0;
+    --sage-lt: #C5D6CC;
+    --text-med: #5A6B5E;
+    --text-lt: #8A9A8E;
+    --amber: #E5A835;
+    --amber-bg: #FEF6E6;
+    --orange: #E89D6B;
+    --dark: #2D3A2E;
+    --r-sm: 8px; --r-md: 12px; --r-lg: 20px;
+    --mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { background: var(--cream); color: var(--green); font: 17px/1.65 "DM Sans", -apple-system, sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+  h1, h2, h3, .display { font-family: "Space Grotesk", "DM Sans", sans-serif; }
+
+  /* ---------- test-card chrome ---------- */
+  .reg { position: relative; }
+  .reg::before, .reg::after {
+    content: "+"; position: absolute; color: var(--sage); font: 700 18px var(--mono);
+  }
+  .reg::before { top: 6px; left: 10px; }
+  .reg::after  { bottom: 6px; right: 10px; }
+  .bars { display: flex; height: 10px; border-radius: 5px; overflow: hidden; margin: 0; }
+  .bars span { flex: 1; }
+
+  /* ---------- header ---------- */
+  header { padding: 30px 0 0; }
+  .topline { display: flex; justify-content: space-between; align-items: center; font: 500 13px var(--mono); letter-spacing: .12em; color: var(--text-lt); text-transform: uppercase; }
+  .topline a { color: var(--green-br); text-decoration: none; }
+
+  .hero { display: grid; grid-template-columns: 1.05fr 1fr; gap: 44px; align-items: center; padding: 56px 0 64px; }
+  @media (max-width: 860px) { .hero { grid-template-columns: 1fr; } }
+  .hero h1 { font-size: clamp(52px, 8vw, 88px); line-height: .95; letter-spacing: -0.03em; color: var(--green); }
+  .hero h1 .dot { color: var(--amber); }
+  .hero .tag { font: 500 15px var(--mono); color: var(--green-br); margin: 4px 0 16px; letter-spacing: .06em; }
+  .hero p.lead { font-size: 19px; color: var(--text-med); max-width: 46ch; }
+  .squiggle { display: block; margin: 18px 0 26px; }
+  .cta { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .btn { display: inline-block; padding: 14px 26px; border-radius: 999px; font: 700 16px "DM Sans", sans-serif; text-decoration: none; transition: transform .15s ease, box-shadow .15s ease; }
+  .btn-green { background: var(--green); color: var(--cream); box-shadow: 0 4px 14px rgba(61,90,71,.25); }
+  .btn-green:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(61,90,71,.3); }
+  .btn-line { border: 2px solid var(--border-lt); color: var(--green); }
+  .btn-line:hover { border-color: var(--sage); }
+  .meta { font: 500 12.5px var(--mono); color: var(--text-lt); margin-top: 16px; letter-spacing: .04em; }
+
+  /* ---------- live demo panel ---------- */
+  .demo { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 18px; box-shadow: 0 10px 30px rgba(45,58,46,.08); }
+  .demo .head { display: flex; justify-content: space-between; align-items: baseline; font: 700 12px var(--mono); letter-spacing: .1em; color: var(--text-lt); padding: 0 4px 10px; text-transform: uppercase; }
+  .demo .head b { color: var(--amber); }
+  #testcard { width: 100%; border-radius: var(--r-sm); display: block; cursor: crosshair; border: 1px solid var(--border); }
+  .demo .row { display: flex; align-items: center; gap: 12px; padding: 14px 4px 4px; }
+  .demo label { font: 700 12px var(--mono); color: var(--text-med); letter-spacing: .06em; white-space: nowrap; }
+  .demo input[type=range] { flex: 1; accent-color: var(--green-br); }
+  .demo .hushbtn { border: none; background: var(--amber); color: #4A3A10; font: 700 13px "DM Sans"; padding: 9px 18px; border-radius: 999px; cursor: pointer; transition: transform .1s ease; }
+  .demo .hushbtn:hover { transform: scale(1.04); }
+  .demo .hushbtn.on { background: var(--green-br); color: var(--cream); }
+  .readout { display: flex; gap: 16px; font: 500 12.5px var(--mono); color: var(--text-med); padding: 8px 4px 0; flex-wrap: wrap; }
+  .readout b { color: var(--green); }
+  .readout .live { color: var(--green-br); }
+
+  /* ---------- sections ---------- */
+  section { padding: 68px 0; }
+  section.alt { background: #EFEDE6; }
+  section.dark { background: var(--dark); color: var(--sage-lt); }
+  section.dark h2 { color: #fff; }
+  .kicker { font: 700 12px var(--mono); letter-spacing: .16em; text-transform: uppercase; color: var(--amber); margin-bottom: 10px; }
+  h2 { font-size: clamp(28px, 4vw, 40px); letter-spacing: -0.02em; margin-bottom: 18px; }
+  p { color: var(--text-med); margin-bottom: 14px; max-width: 68ch; }
+  section.dark p { color: var(--sage); }
+  .lede { font-size: 20px; color: var(--green-lt); }
+  section.dark .lede { color: var(--sage-lt); }
+
+  /* wipe slider */
+  .wipe { position: relative; border-radius: var(--r-md); overflow: hidden; border: 1px solid var(--border); user-select: none; touch-action: none; margin: 26px 0 8px; }
+  .wipe > img { width: 100%; display: block; pointer-events: none; }
+  .wipe .top { position: absolute; top: 0; left: 0; bottom: 0; overflow: hidden; width: 50%; }
+  .wipe .top img { position: absolute; top: 0; left: 0; height: 100%; max-width: none; pointer-events: none; }
+  .wipe .handle { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--amber); cursor: ew-resize; }
+  .wipe .handle::after { content: "◂ ▸"; position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); background: var(--amber); color: #4A3A10; font: 700 11px var(--mono); padding: 6px 8px; border-radius: 999px; white-space: nowrap; }
+  .wipe .lab { position: absolute; top: 10px; font: 700 11px var(--mono); letter-spacing: .1em; padding: 4px 10px; border-radius: 999px; background: rgba(255,255,255,.85); color: var(--green); }
+  .cap { font: 500 13px var(--mono); color: var(--text-lt); }
+
+  /* pipeline */
+  .pipe { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-top: 26px; }
+  @media (max-width: 860px) { .pipe { grid-template-columns: 1fr 1fr; } }
+  .step { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); padding: 16px 14px; cursor: pointer; transition: transform .15s ease, border-color .15s ease; }
+  .step:hover, .step.on { transform: translateY(-3px); border-color: var(--green-br); }
+  .step .n { display: inline-flex; width: 26px; height: 26px; border-radius: 50%; background: var(--amber-bg); color: var(--amber); border: 1.5px solid var(--amber); font: 700 13px var(--mono); align-items: center; justify-content: center; margin-bottom: 8px; }
+  .step b { display: block; font-family: "Space Grotesk"; font-size: 15px; color: var(--green); }
+  .step small { color: var(--text-lt); font-size: 12.5px; line-height: 1.4; display: block; margin-top: 4px; }
+  .pipedetail { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); padding: 20px 22px; margin-top: 12px; min-height: 96px; }
+  .pipedetail p { margin: 0; font-size: 15.5px; }
+
+  /* chart */
+  .chart { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 26px; margin-top: 26px; }
+  .chart h3 { font-size: 17px; margin-bottom: 4px; }
+  .chart .sub { font: 500 12.5px var(--mono); color: var(--text-lt); margin-bottom: 20px; }
+  .cbar { margin: 14px 0; }
+  .cbar .lab { display: flex; justify-content: space-between; font: 500 13px var(--mono); color: var(--text-med); margin-bottom: 5px; }
+  .cbar .lab b { color: var(--green); }
+  .track { height: 16px; background: #EFEDE6; border-radius: 8px; position: relative; overflow: hidden; }
+  .track .before { position: absolute; top: 0; bottom: 0; left: 0; background: var(--sage-lt); border-radius: 8px; }
+  .track .after { position: absolute; top: 0; bottom: 0; left: 0; background: linear-gradient(90deg, var(--green-br), var(--green)); border-radius: 8px; width: 0; transition: width 1.2s cubic-bezier(.2,.7,.2,1); }
+
+  /* gallery */
+  .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 26px; }
+  @media (max-width: 700px) { .g2 { grid-template-columns: 1fr; } }
+  .shot { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-md); overflow: hidden; }
+  .shot img { width: 100%; display: block; }
+  .shot figcaption { padding: 12px 16px; font-size: 14px; color: var(--text-med); }
+  .shot figcaption b { color: var(--green); font-family: "Space Grotesk"; }
+
+  /* tech */
+  .formula { font-family: var(--mono); font-size: 14px; background: #24301F; color: #CFE8D6; border-radius: var(--r-sm); padding: 14px 18px; margin: 14px 0; overflow-x: auto; white-space: pre; line-height: 1.7; }
+  section.dark .formula { border: 1px solid #3A4A3B; }
+  h3 { font-size: 20px; margin: 30px 0 8px; }
+  section.dark h3 { color: var(--sage-lt); }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 15px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #3A4A3B; }
+  th { color: var(--sage); font: 700 12px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+  td { color: var(--sage-lt); }
+
+  /* install */
+  ol.install { list-style: none; counter-reset: st; margin-top: 20px; }
+  ol.install li { counter-increment: st; position: relative; padding: 0 0 20px 56px; }
+  ol.install li::before { content: counter(st); position: absolute; left: 0; top: -2px; width: 36px; height: 36px; border-radius: 50%; background: var(--card); border: 2px solid var(--green-br); color: var(--green); font: 700 16px var(--mono); display: flex; align-items: center; justify-content: center; }
+  a { color: var(--green-br); }
+
+  footer { padding: 54px 0 70px; }
+  footer .credit { font-family: "Space Grotesk"; font-size: 19px; color: var(--green); }
+  footer .credit .wm { color: var(--orange); }
+  footer p { font-size: 14px; color: var(--text-lt); margin-top: 8px; }
+</style>
+</head>
+<body>
+
+<header class="wrap">
+  <div class="topline">
+    <span>A Weird Machine Project</span>
+    <span><a href="https://github.com/amateurmenace/OpenNR">source ↗</a></span>
+  </div>
+
+  <div class="hero">
+    <div>
+      <h1>Hush<span class="dot">.</span></h1>
+      <div class="tag">OPEN NR · FOR DAVINCI RESOLVE</div>
+      <p class="lead">Free, open-source noise reduction that works in the <b>free</b> version of
+      Resolve — and shows you every measurement it makes.</p>
+      <svg class="squiggle" width="180" height="14" viewBox="0 0 180 14" fill="none">
+        <path d="M2 8 Q 12 2, 22 8 T 42 8 T 62 8 T 82 8 T 102 8 T 122 8 T 142 8 T 162 8 T 178 8" stroke="#E5A835" stroke-width="3" stroke-linecap="round"/>
+      </svg>
+      <div class="cta">
+        <a class="btn btn-green" href="https://github.com/amateurmenace/OpenNR/releases/latest">Download for macOS</a>
+        <a class="btn btn-line" href="https://github.com/amateurmenace/OpenNR">GitHub</a>
+      </div>
+      <div class="meta">v2.1 · Resolve 17+ free &amp; Studio · macOS 11+ (universal) · MIT · Win/Linux build from source</div>
+    </div>
+
+    <div class="demo reg">
+      <div class="head"><span>LIVE TEST CARD</span><b>REAL ESTIMATOR, IN YOUR BROWSER</b></div>
+      <canvas id="testcard" width="640" height="400"></canvas>
+      <div class="row">
+        <label>NOISE σ</label>
+        <input type="range" id="noise" min="0" max="10" step="0.25" value="4">
+        <button class="hushbtn" id="hush">HUSH IT</button>
+      </div>
+      <div class="readout">
+        <span>true σ <b id="true">4.00%</b></span>
+        <span class="live">measured σ <b id="meas">—</b></span>
+        <span id="verdict"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="bars">
+    <span style="background:#3D5A47"></span><span style="background:#5B8C65"></span>
+    <span style="background:#A3C0B0"></span><span style="background:#E5A835"></span>
+    <span style="background:#E89D6B"></span><span style="background:#C5D6CC"></span>
+    <span style="background:#2D3A2E"></span>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <div class="kicker">Why this exists</div>
+    <h2>Noise reduction is the paywall that hurts.</h2>
+    <p class="lede">Of everything DaVinci Resolve locks behind the Studio license, noise
+    reduction hits filmmakers hardest.</p>
+    <p>You can edit in the free version. You can grade in it. But shoot in low light — which
+    is to say, make an independent film — and you hit the wall: the NR palette is Studio-only.
+    And noise isn't cosmetic. <b>Color correction and VFX need a clean foundation</b> — every
+    contrast move amplifies grain, every key edges against it, every composite inherits it.</p>
+    <p>Here's the thing: <b>you don't need AI for this.</b> Good noise reduction is robust
+    statistics, careful signal processing, and honest engineering — plus the will to not
+    charge for it. Hush gets you Studio-class results, free, with something even the paid
+    tools don't offer: <b>total transparency into what it's measuring and doing.</b></p>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="kicker">Before / After</div>
+    <h2>Drag the line.</h2>
+    <div class="wipe" id="wipe">
+      <img src="%%B64_AFTER%%" alt="denoised">
+      <div class="top" id="wipeTop"><img src="%%B64_BEFORE%%" alt="noisy"></div>
+      <div class="handle" id="wipeHandle"></div>
+      <span class="lab" style="left:10px">NOISY IN</span>
+      <span class="lab" style="right:10px">HUSHED</span>
+    </div>
+    <div class="cap">Validation scene, 5% injected noise → +14.9 dB PSNR at defaults. Fine texture and 2-px lines survive.</div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="kicker">How it works</div>
+    <h2>Five steps. Click each one.</h2>
+    <div class="pipe" id="pipe">
+      <div class="step on" data-d="Three estimators measure the noise of every frame: median frame-to-frame difference (immune to the correlated, blotchy noise compression creates), plus fine and coarse Laplacian statistics — with a separate estimate for every brightness band, because shadows are noisier than highlights. Robust medians keep edges, texture and motion out of the measurement."><span class="n">1</span><b>Measure</b><small>3 estimators × 16 brightness bands</small></div>
+      <div class="step" data-d="Each pixel is compared patch-wise against up to two frames either side. Below the expected pure-noise difference, frames average freely; past the motion threshold the gate closes to exactly zero — mismatched pixels can't bleed in, so motion can't ghost, by construction. Chroma is slaved to the luma gate."><span class="n">2</span><b>Temporal</b><small>hard-knee gate, zero ghosting</small></div>
+      <div class="step" data-d="The noise that actually survived temporal merging is measured again from the merged image — no assumptions — and non-local means filters against that residual: patches only average with patches that genuinely match. A second large-radius pass reaches the big soft chroma stains 4:2:0 leaves behind."><span class="n">3</span><b>Spatial</b><small>self-truing NLM + blotch pass</small></div>
+      <div class="step" data-d="Finishing moves: desaturate the deepest shadows (where color noise hides), re-inject a little of the original brightness texture, or lay down synthesized film grain — midtone-weighted like real stock, animated, with size and color controls."><span class="n">4</span><b>Refine</b><small>sat curve · texture · film grain</small></div>
+      <div class="step" data-d="Follow the image through the pipeline: Input, After Temporal, Noise Removed, a live Noise Analysis HUD (input and residual measurements, SNR gain, noise-vs-brightness curve), a Temporal Activity map, and a per-pixel SNR heat map. The scope is rendered by the same kernels that filter — it can't disagree with what's happening."><span class="n">5</span><b>Inspect</b><small>the viewer becomes the scope</small></div>
+    </div>
+    <div class="pipedetail"><p id="pipeText">Three estimators measure the noise of every frame: median frame-to-frame difference (immune to the correlated, blotchy noise compression creates), plus fine and coarse Laplacian statistics — with a separate estimate for every brightness band, because shadows are noisier than highlights. Robust medians keep edges, texture and motion out of the measurement.</p></div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="kicker">Measured, not promised</div>
+    <h2>The numbers.</h2>
+    <p>Every build must pass a synthetic-truth test suite before release: scenes with
+    precisely known injected noise, so improvement is measured, not eyeballed.</p>
+    <div class="chart" id="chart">
+      <h3>PSNR before → after (dB, higher is better)</h3>
+      <div class="sub">640×360 validation scenes · σ = 5% · defaults · v2</div>
+      <div class="cbar"><div class="lab"><span>Static shot</span><b>26.0 → 40.9 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="82%"></div></div></div>
+      <div class="cbar"><div class="lab"><span>Correlated (compressed) noise</span><b>26.0 → 35.4 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="71%"></div></div></div>
+      <div class="cbar"><div class="lab"><span>Slow drift (the ghosting regime)</span><b>26.0 → 37.9 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="76%"></div></div></div>
+      <div class="cbar"><div class="lab"><span>Fast motion</span><b>26.0 → 36.3 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="73%"></div></div></div>
+    </div>
+    <p class="cap" style="margin-top:10px">Plus: GPU output verified against the CPU reference across 16 configurations to ~10⁻⁶ · 114 fps HD / 29 fps UHD max quality on an M1 Max.</p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="kicker">Transparency is the feature</div>
+    <h2>See what it sees.</h2>
+    <p>Resolve's built-in NR is a black box: sliders in, pixels out. Hush renders its
+    measurements into the viewer — because a tool this consequential to your image
+    shouldn't require faith.</p>
+    <div class="g2">
+      <figure class="shot"><img src="%%B64_HUD%%" alt="Noise Analysis HUD"><figcaption><b>Noise Analysis.</b> Input noise (blue) and post-temporal residual (amber) for luma and chroma, effective frames averaged, SNR gain, the noise-vs-brightness curve, the histogram with its median — and the draggable sampling region.</figcaption></figure>
+      <figure class="shot"><img src="%%B64_SNR%%" alt="SNR heat map"><figcaption><b>SNR Map.</b> Signal-to-noise per pixel: magenta where noise dominates (where NR matters most), green where the image wins. The whole pipeline is inspectable — Input, After Temporal, Noise Removed, Temporal Activity.</figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<section class="dark">
+  <div class="wrap">
+    <div class="kicker" style="color:var(--amber)">For the technically curious</div>
+    <h2>The math, briefly.</h2>
+
+    <h3>Measuring noise without a chart</h3>
+    <p>Everything is calibrated in units of the noise standard deviation σ. The primary
+    estimator for video is the frame you just watched — on static pixels, frame difference
+    is pure noise with spread √2σ, regardless of spatial correlation:</p>
+    <div class="formula">σ_T = median(|I_t − I_t±1|) / (0.6745 · √2)</div>
+    <p>Motion robustness: the unbiased median and 20th-percentile estimates agree on static
+    footage; motion inflates the median first, so disagreement means "trust only the static
+    quantile." Spatially, Immerkær's operator (response std = 6σ, rejects gradients) runs at
+    two scales — and per brightness band, using a 35th percentile so a band full of real
+    texture can't fake a high reading:</p>
+    <div class="formula">σ_fine = median(|L ∗ I|) / (6 · 0.6745)     L = [1 −2 1; −2 4 −2; 1 −2 1]
+gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence)</div>
+
+    <h3>A temporal gate that cannot ghost</h3>
+    <div class="formula">w = 1 − smoothstep(1.13σ_T,  1.13σ_T + k·σ_T,  |Δpatch|)</div>
+    <p>Full weight while a difference is explainable by noise; <em>exactly zero</em> past the
+    knee. An earlier version used a Gaussian falloff — its fat tail blended pixels several σ
+    apart at 30–40% weight and turned slow pans into soup. The hard knee ended that
+    structurally, and a slow-drift regression test now makes ghosting a build failure.</p>
+
+    <h3>Spatial filtering that measures its own inheritance</h3>
+    <p>Compression correlates noise <em>across frames</em>, so temporal averaging removes less
+    than √N theory promises. Hush re-measures the residual on the merged image itself and
+    tunes non-local means to that measurement — filter strength h = 1.15σ_residual for luma,
+    2.2σ for chroma, patch distances bias-corrected by the 2σ² noise alone contributes, plus
+    a sparse 16-px luma-guided pass for chroma blotches.</p>
+
+    <h3>Engineering</h3>
+    <p>One reference implementation in C++; Metal, CUDA and OpenCL kernels are line-by-line
+    ports, and a parity harness drives the actual plugin GPU entry point — the one Resolve
+    calls — asserting agreement with the reference to ~10⁻⁶ across 16 configurations.
+    Even the film grain is bit-deterministic (integer-hash value noise). Honest limitations:
+    no motion-vector compensation and no neural net — that's what keeps it fast,
+    predictable, and free.</p>
+    <table>
+      <tr><th>Resolution</th><th>Best quality (NLM r3 · 5 frames · blotch)</th><th>Faster mode</th></tr>
+      <tr><td>HD 1920×1080</td><td>8.8 ms/frame — 114 fps</td><td>5.4 ms — 186 fps</td></tr>
+      <tr><td>UHD 3840×2160</td><td>34 ms/frame — 29 fps</td><td>20 ms — 49 fps</td></tr>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <div class="kicker">Get it</div>
+    <h2>Install in a minute.</h2>
+    <ol class="install">
+      <li>Download <b>the .pkg</b> from the <a href="https://github.com/amateurmenace/OpenNR/releases/latest">latest release</a> and double-click. Signed with an Apple developer ID — if Gatekeeper objects, right-click → Open.</li>
+      <li>Restart DaVinci Resolve.</li>
+      <li>Find it under <b>Effects → OpenFX → Filters → Hush → Hush Open NR</b>. Drag onto an early node on the Color page (or a clip on the Edit page).</li>
+      <li>Set <b>Strength</b>, check <b>Step 5 → Noise Analysis</b> to see the measurements, and — for tricky footage — drag the yellow sampling rectangle right in the viewer.</li>
+    </ol>
+    <p class="cap">Works in the free version of Resolve (third-party OpenFX has been supported there since v15). Windows &amp; Linux build from source today; prebuilt binaries are on the roadmap.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap reg">
+    <div class="bars" style="margin-bottom:28px"><span style="background:#3D5A47"></span><span style="background:#5B8C65"></span><span style="background:#A3C0B0"></span><span style="background:#E5A835"></span><span style="background:#E89D6B"></span><span style="background:#C5D6CC"></span><span style="background:#2D3A2E"></span></div>
+    <div class="credit">A <span class="wm">Weird Machine</span> project.</div>
+    <p>Produced by Stephen Walter with Claude Code. And math.<br>
+    MIT licensed — free for any use, forever. Source, issues and releases on
+    <a href="https://github.com/amateurmenace/OpenNR">GitHub</a>.</p>
+  </div>
+</footer>
+
+<script>
+/* ============ live test card: noise + the REAL estimator ============ */
+(function () {
+  const cv = document.getElementById('testcard');
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  const slider = document.getElementById('noise');
+  const hushBtn = document.getElementById('hush');
+  const elTrue = document.getElementById('true');
+  const elMeas = document.getElementById('meas');
+  const elVerdict = document.getElementById('verdict');
+  let hushed = false, frame = 0;
+
+  // civic-palette test card (spiritual sibling of the validation scene)
+  const base = document.createElement('canvas');
+  base.width = W; base.height = H;
+  const b = base.getContext('2d');
+  (function drawCard() {
+    const grad = b.createLinearGradient(0, 0, W, H);
+    grad.addColorStop(0, '#8FA898'); grad.addColorStop(1, '#5F7A6A');
+    b.fillStyle = grad; b.fillRect(0, 0, W, H);
+    b.fillStyle = '#D9D5CB'; b.fillRect(40, 40, 130, 100);
+    b.fillStyle = '#B96A45'; b.fillRect(40, 240, 130, 100);
+    b.fillStyle = '#EFE6CF'; b.beginPath(); b.arc(320, 120, 62, 0, 7); b.fill();
+    b.fillStyle = '#22301F'; b.beginPath(); b.arc(320, 288, 46, 0, 7); b.fill();
+    for (let y = 40; y < 160; y++)
+      for (let x = 440; x < 600; x++) {
+        const t = 18 * Math.sin(x * 0.9) * Math.sin(y * 0.8) | 0;
+        b.fillStyle = 'rgb(' + (128 + t) + ',' + (138 + t) + ',' + (128 + t) + ')';
+        b.fillRect(x, y, 1, 1);
+      }
+    b.fillStyle = '#22301F';
+    for (let x = 440; x < 600; x += 12) b.fillRect(x, 240, 3, 100);
+    b.strokeStyle = '#F5F3EE'; b.lineWidth = 1.5;
+    [[20,20],[W-20,20],[20,H-20],[W-20,H-20]].forEach(function (pt) {
+      b.beginPath(); b.moveTo(pt[0]-8, pt[1]); b.lineTo(pt[0]+8, pt[1]);
+      b.moveTo(pt[0], pt[1]-8); b.lineTo(pt[0], pt[1]+8); b.stroke();
+    });
+  })();
+  const clean = b.getImageData(0, 0, W, H);
+
+  function makeNoise(sigma, seed) {
+    const out = ctx.createImageData(W, H);
+    const src = clean.data, dst = out.data;
+    let s = seed >>> 0;
+    const rnd = function () { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return ((s >>> 0) / 4294967296 - 0.5); };
+    for (let i = 0; i < dst.length; i += 4) {
+      const n = (rnd() + rnd() + rnd()) * 2 * sigma * 255;
+      dst[i]   = Math.max(0, Math.min(255, src[i]   + n + rnd() * 2 * sigma * 90));
+      dst[i+1] = Math.max(0, Math.min(255, src[i+1] + n + rnd() * 2 * sigma * 90));
+      dst[i+2] = Math.max(0, Math.min(255, src[i+2] + n + rnd() * 2 * sigma * 90));
+      dst[i+3] = 255;
+    }
+    return out;
+  }
+
+  // THE REAL THING: median |Immerkaer Laplacian| / (6 * 0.6745), on luma
+  function estimateSigma(img) {
+    const d = img.data, hist = new Uint32Array(256);
+    let total = 0;
+    const luma = function (i) { return 0.2126 * d[i] + 0.7152 * d[i+1] + 0.0722 * d[i+2]; };
+    for (let y = 2; y < H - 2; y += 2)
+      for (let x = 2; x < W - 2; x += 2) {
+        const i = (y * W + x) * 4, r = W * 4;
+        const lap = 4 * luma(i) - 2 * (luma(i-4) + luma(i+4) + luma(i-r) + luma(i+r))
+                  + luma(i-r-4) + luma(i-r+4) + luma(i+r-4) + luma(i+r+4);
+        hist[Math.min(255, Math.abs(lap) / 2 | 0)]++; total++;
+      }
+    let cum = 0, med = 0;
+    for (let k = 0; k < 256; ++k) { cum += hist[k]; if (cum >= total / 2) { med = (k + 0.5) * 2; break; } }
+    return med / (6 * 0.6745) / 255;
+  }
+
+  // quick sigma-gated smoothing (an honest *preview* of the real NLM)
+  function hushPreview(img, sigma) {
+    const w4 = W * 4, s = img.data, out = new Uint8ClampedArray(s);
+    const thr = Math.max(6, sigma * 255 * 2.2);
+    for (let y = 2; y < H - 2; y++)
+      for (let x = 2; x < W - 2; x++) {
+        const i = (y * W + x) * 4;
+        for (let c = 0; c < 3; c++) {
+          let acc = s[i+c], wsum = 1;
+          for (let dy = -2; dy <= 2; dy++)
+            for (let dx = -2; dx <= 2; dx++) {
+              if (!dx && !dy) continue;
+              const j = i + dy * w4 + dx * 4;
+              const e = (s[j+c] - s[i+c]) / thr;
+              const wgt = Math.exp(-e * e);
+              acc += wgt * s[j+c]; wsum += wgt;
+            }
+          out[i+c] = acc / wsum;
+        }
+      }
+    const r = ctx.createImageData(W, H); r.data.set(out); return r;
+  }
+
+  function render() {
+    const sigma = parseFloat(slider.value) / 100;
+    elTrue.textContent = (sigma * 100).toFixed(2) + '%';
+    const noisy = makeNoise(sigma, 1234 + frame * 7919);
+    const measured = estimateSigma(noisy);
+    elMeas.textContent = (measured * 100).toFixed(2) + '%';
+    const err = sigma > 0.001 ? Math.abs(measured - sigma) / sigma : 0;
+    elVerdict.textContent = sigma <= 0.001 ? '' : (err < 0.12 ? '✓ blind estimate agrees' : '~ close');
+    ctx.putImageData(hushed ? hushPreview(noisy, measured) : noisy, 0, 0);
+    if (hushed) {
+      ctx.fillStyle = 'rgba(91,140,101,.9)'; ctx.fillRect(W - 96, 12, 84, 24);
+      ctx.fillStyle = '#F5F3EE'; ctx.font = '700 12px monospace'; ctx.fillText('HUSHED', W - 78, 28);
+    }
+  }
+  slider.addEventListener('input', render);
+  hushBtn.addEventListener('click', function () {
+    hushed = !hushed;
+    hushBtn.classList.toggle('on', hushed);
+    hushBtn.textContent = hushed ? 'UNHUSH' : 'HUSH IT';
+    render();
+  });
+  setInterval(function () { if (!hushed) { frame++; render(); } }, 340);
+  render();
+})();
+
+/* ============ before/after wipe ============ */
+(function () {
+  const wipe = document.getElementById('wipe');
+  const top = document.getElementById('wipeTop');
+  const handle = document.getElementById('wipeHandle');
+  function setP(p) {
+    p = Math.max(0.03, Math.min(0.97, p));
+    top.style.width = (p * 100) + '%';
+    handle.style.left = 'calc(' + (p * 100) + '% - 1.5px)';
+  }
+  function fit() { top.querySelector('img').style.width = wipe.clientWidth + 'px'; }
+  new ResizeObserver(fit).observe(wipe);
+  fit(); setP(0.5);
+  let dragging = false;
+  const move = function (e) {
+    if (!dragging) return;
+    const r = wipe.getBoundingClientRect();
+    const x = (e.touches ? e.touches[0].clientX : e.clientX) - r.left;
+    setP(x / r.width);
+  };
+  wipe.addEventListener('pointerdown', function (e) { dragging = true; move(e); });
+  window.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', function () { dragging = false; });
+})();
+
+/* ============ pipeline cards ============ */
+(function () {
+  const steps = document.querySelectorAll('#pipe .step');
+  const text = document.getElementById('pipeText');
+  steps.forEach(function (s) {
+    s.addEventListener('click', function () {
+      steps.forEach(function (o) { o.classList.remove('on'); });
+      s.classList.add('on');
+      text.textContent = s.dataset.d;
+    });
+  });
+})();
+
+/* ============ chart animation on scroll ============ */
+(function () {
+  const chart = document.getElementById('chart');
+  const io = new IntersectionObserver(function (es) {
+    es.forEach(function (e) {
+      if (e.isIntersecting) {
+        chart.querySelectorAll('.after').forEach(function (a) { a.style.width = a.dataset.w; });
+        io.disconnect();
+      }
+    });
+  }, { threshold: 0.4 });
+  io.observe(chart);
+})();
+</script>
+
+</body>
+</html>
