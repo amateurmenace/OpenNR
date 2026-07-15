@@ -63,11 +63,14 @@ c++ -O2 -std=c++14 -I../plugin bench_metal.mm ../plugin/MetalKernel.mm \
     -framework Metal -framework Foundation -o bench_metal && ./bench_metal
 ```
 
-CUDA (`CudaKernel.cu`) cannot be compiled or tested on this Mac — it is kept
-as a faithful textual port; treat it as unverified until it has run on real
-NVIDIA hardware (the user is testing this on Windows: local CMake build with
+CUDA (`CudaKernel.cu`) cannot be RUN on this Mac — it is kept as a faithful
+textual port; treat it as unverified until it has run on real NVIDIA
+hardware (the user is testing this on Windows: local CMake build with
 `-DHUSH_ENABLE_CUDA=ON`; flip the CI default only after parity-style
-verification there).
+verification there). It CAN be syntax/type-checked without a toolkit —
+`./test/check_cuda_syntax.sh` parses the whole file (kernel bodies included)
+via clang's host-only CUDA mode against `test/cuda_shim.cuh`; CI runs it on
+every push. Run it after any CudaKernel.cu edit.
 
 **Golden policy:** the CPU suite pins default-output goldens (PSNR/meanAbs).
 Changes that keep defaults bit-exact must not touch them. An intentional

@@ -21,6 +21,12 @@ jobs:
               -framework Metal -framework Foundation -o test_metal
           ./test_metal
 
+      # the CUDA kernel is a textual port that nothing else compiles until it
+      # reaches NVIDIA hardware — clang's host-only CUDA mode at least
+      # type-checks the whole file (kernel bodies included)
+      - name: CUDA syntax check (no toolkit)
+        run: ./test/check_cuda_syntax.sh
+
       - name: Build plugin (universal)
         run: make -C plugin
 
