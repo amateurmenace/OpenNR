@@ -695,9 +695,11 @@ private:
         const bool locked = m_LockProfile->getValueAtTime(t) && m_LockValid;
         p.profileLocked   = locked ? 1 : 0;
         p.lockSY = locked ? m_LockAgg.sy : 0.02f;
-        p.lockSC = locked ? m_LockAgg.sc : 0.02f;
+        p.lockSC = locked ? m_LockAgg.scb : 0.02f;   // v3.3 B5: Cb pair
         p.lockTY = locked ? m_LockAgg.ty : 0.02f;
-        p.lockTC = locked ? m_LockAgg.tc : 0.02f;
+        p.lockTC = locked ? m_LockAgg.tcb : 0.02f;
+        p.lockSCr = locked ? m_LockAgg.scr : 0.02f;  // and the Cr pair
+        p.lockTCr = locked ? m_LockAgg.tcr : 0.02f;
         for (int b = 0; b < 16; ++b)
         {
             p.lockGainY[b] = locked ? m_LockAgg.gainY[b] : 1.0f;
@@ -815,6 +817,8 @@ private:
         p.ghostGuard     = params.ghostGuard;
         p.globalBlend    = params.globalBlend;
         p.deepClean      = params.deepClean;
+        p.lockSCr        = params.lockSCr;
+        p.lockTCr        = params.lockTCr;
         p.profileLocked  = params.profileLocked;
         p.lockSY         = params.lockSY;
         p.lockSC         = params.lockSC;

@@ -74,39 +74,52 @@ typedef struct NRParams
     // ---- v3.3 ----
     int   deepClean;       // fine-NLM pre-pass at 0.6h before the main
                            // spatial stage (0/1)
+    float lockSCr;         // locked Cr sigmas (B5 per-channel chroma:
+    float lockTCr;         // lockSC/lockTC hold the Cb pair; old projects
+                           // load with Cr = Cb)
 } NRParams;
 
-// stats buffer layout (uint32 slots)
+// stats buffer layout (uint32 slots). v3.3 B5 re-layout: every chroma
+// histogram splits into a Cb/Cr pair (blue-channel night noise reads very
+// differently on the two axes), and ALL residual histograms are now
+// contiguous — [HIST_YR, SIGMA_SY) is one zeroable range for the Deep Clean
+// re-measure. Bump carefully: this table is re-declared inside the Metal and
+// OpenCL kernel sources (CUDA includes this header).
 #define NR_STATS_HIST_YF    0        // input fine luma |laplacian| (256)
-#define NR_STATS_HIST_CF    256
-#define NR_STATS_HIST_Y2    512      // coarse (256)
-#define NR_STATS_HIST_C2    768
-#define NR_STATS_HIST_YT    1024     // |temporal diff| (256)
-#define NR_STATS_HIST_CT    1280
-#define NR_STATS_LUMA_Y     1536     // 16 luma bins x 64 sub-bins of |lapY|
-#define NR_STATS_LUMA_C     2560     // same for chroma
-#define NR_STATS_HIST_YR    3584     // residual (on tmp) luma (256)
-#define NR_STATS_HIST_CR    3840
-#define NR_STATS_HIST_EFFN  4096     // effN histogram (64; v3.3 — was 32,
-                                     // which saturated at effN 4.875 and the
-                                     // 7-frame stack reaches ~6.7; everything
-                                     // below shifted +32)
-#define NR_STATS_HIST_YR2   4208     // v3.2: coarse residual (2x2 blocks, 256)
-#define NR_STATS_HIST_CR2   4464
-#define NR_STATS_SIGMA_SY   4160     // float bits from here on
-#define NR_STATS_SIGMA_SC   4161
-#define NR_STATS_SIGMA_TY   4162
-#define NR_STATS_SIGMA_TC   4163
-#define NR_STATS_SIGMA_RY   4164
-#define NR_STATS_SIGMA_RC   4165
-#define NR_STATS_MEDBIN_Y   4166
-#define NR_STATS_HISTMAX_Y  4167
-#define NR_STATS_GAINY      4168     // 16 float-bit gains
-#define NR_STATS_GAINC      4184     // 16 float-bit gains
-#define NR_STATS_EFFN_MED   4200
-#define NR_STATS_FINE_Y     4201     // v3.1: per-band estimates for the EQ
-#define NR_STATS_FINE_C     4202     //       scope (float bits)
-#define NR_STATS_COARSE_Y   4203
-#define NR_STATS_UINTS      4720     // v3.3: effN histogram grew 32 -> 64
+#define NR_STATS_HIST_CFB   256      // input fine |lap Cb| (256)
+#define NR_STATS_HIST_CFR   512      // input fine |lap Cr| (256)
+#define NR_STATS_HIST_Y2    768      // coarse luma (256)
+#define NR_STATS_HIST_C2B   1024     // coarse Cb / Cr
+#define NR_STATS_HIST_C2R   1280
+#define NR_STATS_HIST_YT    1536     // |temporal diff| luma (256)
+#define NR_STATS_HIST_CTB   1792     // |temporal diff| Cb / Cr
+#define NR_STATS_HIST_CTR   2048
+#define NR_STATS_LUMA_Y     2304     // 16 luma bins x 64 sub-bins of |lapY|
+#define NR_STATS_LUMA_C     3328     // same for chroma (both channels feed it)
+#define NR_STATS_HIST_YR    4352     // residual (on tmp) luma (256)
+#define NR_STATS_HIST_CRB   4608     // residual Cb / Cr
+#define NR_STATS_HIST_CRR   4864
+#define NR_STATS_HIST_EFFN  5120     // effN histogram (64)
+#define NR_STATS_HIST_YR2   5184     // v3.2: coarse residual (2x2 blocks, 256)
+#define NR_STATS_HIST_CR2B  5440     // coarse residual Cb / Cr
+#define NR_STATS_HIST_CR2R  5696
+#define NR_STATS_SIGMA_SY   5952     // float bits from here on
+#define NR_STATS_SIGMA_SCB  5953
+#define NR_STATS_SIGMA_SCR  5954
+#define NR_STATS_SIGMA_TY   5955
+#define NR_STATS_SIGMA_TCB  5956
+#define NR_STATS_SIGMA_TCR  5957
+#define NR_STATS_SIGMA_RY   5958
+#define NR_STATS_SIGMA_RCB  5959
+#define NR_STATS_SIGMA_RCR  5960
+#define NR_STATS_MEDBIN_Y   5961
+#define NR_STATS_HISTMAX_Y  5962
+#define NR_STATS_GAINY      5963     // 16 float-bit gains
+#define NR_STATS_GAINC      5979     // 16 float-bit gains
+#define NR_STATS_EFFN_MED   5995
+#define NR_STATS_FINE_Y     5996     // v3.1: per-band estimates for the EQ
+#define NR_STATS_FINE_C     5997     //       scope (float bits; Cb/Cr mean)
+#define NR_STATS_COARSE_Y   5998
+#define NR_STATS_UINTS      5999
 
 #endif // OPENNR_NRPARAMS_H

@@ -312,8 +312,8 @@ static nrcore::Params paramsFromAuto(const nranalyze::AutoSettings& as,
     q.eqCoarse       = as.eqCoarse / 100.0f;
     q.profileAdjust  = as.profileAdjust;
     q.profileLocked  = as.lockProfile;
-    q.lockSY = agg.sy; q.lockSC = agg.sc;
-    q.lockTY = agg.ty; q.lockTC = agg.tc;
+    q.lockSY = agg.sy; q.lockSC = agg.scb; q.lockSCr = agg.scr;
+    q.lockTY = agg.ty; q.lockTC = agg.tcb; q.lockTCr = agg.tcr;
     for (int b = 0; b < 16; ++b) {
         q.lockGainY[b] = agg.gainY[b];
         q.lockGainC[b] = agg.gainC[b];
@@ -825,7 +825,9 @@ int main()
     // =====================================================================
     {
         nranalyze::ClipAggregate a;
-        a.sy = 0.03127f; a.sc = 0.01693f; a.ty = 0.02944f; a.tc = 0.01512f;
+        a.sy = 0.03127f; a.ty = 0.02944f;
+        a.scb = 0.01693f; a.scr = 0.00871f;   // v3.3 B5: distinct channel pairs
+        a.tcb = 0.01512f; a.tcr = 0.00762f;
         for (int b = 0; b < 16; ++b) {
             a.gainY[b] = 0.6f + 0.09f * b;
             a.gainC[b] = 2.2f - 0.08f * b;
@@ -834,8 +836,10 @@ int main()
         nranalyze::ClipAggregate back;
         const bool ok = nranalyze::parseLockedProfile(ser, back);
         bool exact = ok &&
-            std::memcmp(&a.sy, &back.sy, 4) == 0 && std::memcmp(&a.sc, &back.sc, 4) == 0 &&
-            std::memcmp(&a.ty, &back.ty, 4) == 0 && std::memcmp(&a.tc, &back.tc, 4) == 0;
+            std::memcmp(&a.sy, &back.sy, 4) == 0 &&
+            std::memcmp(&a.scb, &back.scb, 4) == 0 && std::memcmp(&a.scr, &back.scr, 4) == 0 &&
+            std::memcmp(&a.ty, &back.ty, 4) == 0 &&
+            std::memcmp(&a.tcb, &back.tcb, 4) == 0 && std::memcmp(&a.tcr, &back.tcr, 4) == 0;
         for (int b = 0; exact && b < 16; ++b)
             exact = std::memcmp(&a.gainY[b], &back.gainY[b], 4) == 0 &&
                     std::memcmp(&a.gainC[b], &back.gainC[b], 4) == 0;
@@ -844,6 +848,27 @@ int main()
         check(!nranalyze::parseLockedProfile("HUSHLOCK1,zz", junk) &&
               !nranalyze::parseLockedProfile("nonsense", junk),
               "locked profile parser rejects corrupt data");
+        // v3.3 B5: an old HUSHLOCK1 string still parses, Cr loading as Cb
+        {
+            nranalyze::ClipAggregate v1in;
+            v1in.sy = 0.031f; v1in.scb = v1in.scr = 0.017f;
+            v1in.ty = 0.029f; v1in.tcb = v1in.tcr = 0.015f;
+            std::string v1 = nranalyze::formatLockedProfile(v1in);
+            v1.replace(0, 9, "HUSHLOCK1");            // v1 header...
+            // ...and v1 carried 4 sigmas, not 6: drop the two extra fields
+            size_t c1 = v1.find(',');                 // after sy
+            size_t c2 = v1.find(',', c1 + 1);         // after scb
+            size_t c3 = v1.find(',', c2 + 1);         // after scr
+            v1.erase(c2, c3 - c2);                    // remove scr
+            c1 = v1.find(',');  c2 = v1.find(',', c1 + 1); c3 = v1.find(',', c2 + 1);
+            size_t c4 = v1.find(',', c3 + 1);
+            v1.erase(c4, v1.find(',', c4 + 1) - c4);  // remove tcr
+            nranalyze::ClipAggregate v1out;
+            check(nranalyze::parseLockedProfile(v1, v1out) &&
+                  v1out.scb == v1out.scr && v1out.scb == 0.017f &&
+                  v1out.tcb == v1out.tcr && v1out.tcb == 0.015f,
+                  "old HUSHLOCK1 locks load with Cr = Cb");
+        }
 
         // locked values override the measurement; the histogram stays live
         // as long as something displays it (v3.3: the measurement pass is
@@ -856,11 +881,15 @@ int main()
         pl.profileLocked = 1;
         pl.scopeMeasure = 1;   // v3.3: a visible scope keeps the measurement live
         pl.lockSY = 0.0311f; pl.lockSC = 0.0177f; pl.lockTY = 0.0299f; pl.lockTC = 0.0155f;
+        pl.lockSCr = 0.0091f; pl.lockTCr = 0.0083f;   // v3.3 B5: distinct Cr pair
         for (int b = 0; b < 16; ++b) { pl.lockGainY[b] = 1.0f + 0.01f * b; pl.lockGainC[b] = 1.3f; }
         nrcore::Stats st;
         nrcore::estimateInput(noisy.data(), nullptr, W, H, pl, st);
-        check(st.sy == 0.0311f && st.sc == 0.0177f && st.ty == 0.0299f && st.tc == 0.0155f,
-              "locked sigmas override the measurement");
+        check(st.sy == 0.0311f && st.scb == 0.0177f && st.scr == 0.0091f &&
+              st.ty == 0.0299f && st.tcb == 0.0155f && st.tcr == 0.0083f,
+              "locked sigmas override the measurement (per channel)");
+        check(st.sc == 0.5f * (0.0177f + 0.0091f) && st.tc == 0.5f * (0.0155f + 0.0083f),
+              "combined chroma stays the pair mean under a lock");
         check(st.gainY[5] == 1.05f && st.gainC[9] == 1.3f, "locked gains override the measurement");
         check(st.histMax > 1, "locked profile keeps the HUD histogram live (scope on)");
 
@@ -1189,6 +1218,7 @@ int main()
         nrcore::Params pl = p;
         pl.profileLocked = 1;
         pl.lockSY = 0.020f; pl.lockSC = 0.015f; pl.lockTY = 0.019f; pl.lockTC = 0.014f;
+        pl.lockSCr = 0.015f; pl.lockTCr = 0.014f;   // v3.3 B5: Cr pair
         pl.profileAdjust = 2.0f;
         nrcore::Stats st;
         nrcore::estimateInput(noisy.data(), nullptr, W, H, pl, st);
@@ -1311,6 +1341,85 @@ int main()
         for (size_t i = 0; i < outId.size(); ++i)
             maxdId = std::max(maxdId, std::fabs(outId[i] - fid[3][i]));
         check(maxdId < 2e-5f, "master=0 stays identity with deep clean on");
+    }
+
+    // =====================================================================
+    // v3.3 B5 — per-channel chroma: blue-channel night noise
+    // =====================================================================
+    {
+        // noise injected straight into YCbCr with sigma_Cb = 3x sigma_Cr —
+        // the motivating case (night footage carries most chroma noise on
+        // the blue-difference axis). ycc2rgb is linear, so a YCC-space
+        // perturbation maps to an exact RGB perturbation.
+        std::vector<std::vector<float>> frames(7);
+        for (int k = 0; k < 7; ++k) {
+            renderScene(frames[k], 0.0f, 0.0f);
+            std::mt19937 rng(3000 + (k - 3) + 2);
+            std::normal_distribution<float> N(0.0f, 1.0f);
+            for (size_t i = 0; i < frames[k].size(); i += 4) {
+                const float dy = 0.015f * N(rng);
+                const float dcb = 0.045f * N(rng);   // Cb: 3x the Cr noise
+                const float dcr = 0.015f * N(rng);
+                float dr, dg, db;
+                nrcore::ycc2rgb(dy, dcb, dcr, dr, dg, db);
+                frames[k][i]     += dr;
+                frames[k][i + 1] += dg;
+                frames[k][i + 2] += db;
+            }
+        }
+        const float* fptr[7] = { frames[0].data(), frames[1].data(), frames[2].data(),
+                                 frames[3].data(), frames[4].data(), frames[5].data(),
+                                 frames[6].data() };
+        std::vector<float> clean;
+        renderScene(clean, 0, 0);
+
+        // the estimator must separate the channels
+        nrcore::Params bp = p;
+        nrcore::Stats st;
+        nrcore::estimateInput(frames[3].data(), frames[2].data(), W, H, bp, st);
+        printf("v3.3 per-channel chroma: scb %.4f scr %.4f (ratio %.2f, truth 3.0)\n",
+               st.scb, st.scr, st.scb / std::max(st.scr, 1e-6f));
+        check(st.scb > 2.0f * st.scr, "estimator separates the channel sigmas (>= 2x on 3x noise)");
+
+        // the split pipeline vs a forced-equal profile (the v3.2-style
+        // combined treatment, emulated through a locked profile whose Cb and
+        // Cr both carry the pair mean)
+        std::vector<float> outSplit(clean.size()), outEq(clean.size()), scratch;
+        nrcore::Params pSplit = p;
+        const nrcore::Stats sSplit = nrcore::denoiseFrame(fptr, W, H, pSplit, outSplit.data(), scratch);
+        nrcore::Params pEq = p;
+        pEq.profileLocked = 1;
+        pEq.lockSY = sSplit.sy;
+        pEq.lockSC = pEq.lockSCr = sSplit.sc;   // both channels forced to the mean
+        pEq.lockTY = sSplit.ty;
+        pEq.lockTC = pEq.lockTCr = sSplit.tc;
+        nrcore::denoiseFrame(fptr, W, H, pEq, outEq.data(), scratch);
+
+        const double psnrSplit = psnr(outSplit, clean);
+        const double psnrEq = psnr(outEq, clean);
+        // per-plane chroma error: the NOISY channel (Cb) is where the split
+        // must win — its h finally matches its sigma. (The clean Cr plane's
+        // whole-frame error barely moves: flats dominate it, and there the
+        // forced-equal oversmoothing is error-neutral; Cr's protection shows
+        // up in the total PSNR instead.)
+        double cbErrSplit = 0.0, cbErrEq = 0.0;
+        int nPix = 0;
+        for (int y = 8; y < H - 8; ++y)
+            for (int x = 8; x < W - 8; ++x) {
+                const size_t i = (static_cast<size_t>(y) * W + x) * 4;
+                float ycl, cbcl, crcl, ys, cbs, crs, ye, cbe, cre;
+                nrcore::rgb2ycc(clean[i], clean[i+1], clean[i+2], ycl, cbcl, crcl);
+                nrcore::rgb2ycc(outSplit[i], outSplit[i+1], outSplit[i+2], ys, cbs, crs);
+                nrcore::rgb2ycc(outEq[i], outEq[i+1], outEq[i+2], ye, cbe, cre);
+                cbErrSplit += std::fabs(cbs - cbcl);
+                cbErrEq    += std::fabs(cbe - cbcl);
+                ++nPix;
+            }
+        cbErrSplit /= nPix; cbErrEq /= nPix;
+        printf("v3.3 per-channel chroma: split %5.2f dB vs forced-equal %5.2f dB; Cb err %.5f vs %.5f\n",
+               psnrSplit, psnrEq, cbErrSplit, cbErrEq);
+        check(psnrSplit >= psnrEq + 0.5, "split beats the combined treatment by >= 0.5 dB");
+        check(cbErrSplit < cbErrEq, "the noisy Cb channel gets the cleaning its sigma calls for");
     }
 
     // =====================================================================

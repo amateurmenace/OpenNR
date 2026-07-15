@@ -145,6 +145,9 @@ struct Params {
     // ---- v3.3 ----
     int   deepClean      = 0;      // fine-NLM pre-pass at 0.6h before the
                                    // main spatial stage (see deepCleanPass)
+    float lockSCr        = 0.02f;  // B5 per-channel chroma: lockSC/lockTC
+    float lockTCr        = 0.02f;  // hold Cb, these hold Cr (old locks load
+                                   // with Cr = Cb)
 };
 
 // Sigmas and everything the analysis HUD displays.
@@ -152,6 +155,11 @@ struct Stats {
     float sy = 0.02f, sc = 0.02f;      // input spatial-family sigmas
     float ty = 0.02f, tc = 0.02f;      // temporal-gating sigmas
     float ry = 0.02f, rc = 0.02f;      // measured residual after temporal
+    // v3.3 B5: the chroma sigmas above are the Cb/Cr pair MEANS (display,
+    // band normalizers, zapper); the gates and NLM h use the split pairs.
+    float scb = 0.02f, scr = 0.02f;    // input chroma, per channel
+    float tcb = 0.02f, tcr = 0.02f;    // temporal chroma, per channel
+    float rcb = 0.02f, rcr = 0.02f;    // residual chroma, per channel
     float gainY[16];                   // brightness-dependent sigma gains
     float gainC[16];
     float effNMed = 1.0f;              // median effective sample count
@@ -325,10 +333,10 @@ static const int kRefY[8] = { 0,  0, 1, -1, 1,  1, -1, -1 };
 static inline void patchDiff(const float* f, int W, int H, int x, int y,
                              int ox, int oy,
                              const float* cy9, const float* ccb9, const float* ccr9,
-                             float& dY, float& dC, float& sdY,
+                             float& dY, float& dCb, float& dCr, float& sdY,
                              float& fy, float& fcb, float& fcr)
 {
-    dY = 0.0f; dC = 0.0f; sdY = 0.0f; fy = 0.0f; fcb = 0.0f; fcr = 0.0f;
+    dY = 0.0f; dCb = 0.0f; dCr = 0.0f; sdY = 0.0f; fy = 0.0f; fcb = 0.0f; fcr = 0.0f;
     int i = 0;
     for (int dy = -1; dy <= 1; ++dy) {
         for (int dx = -1; dx <= 1; ++dx, ++i) {
@@ -337,11 +345,15 @@ static inline void patchDiff(const float* f, int W, int H, int x, int y,
             if (i == 4) { fy = vy; fcb = vcb; fcr = vcr; }
             dY += std::fabs(vy - cy9[i]);
             sdY += (vy - cy9[i]);
-            dC += 0.5f * (std::fabs(vcb - ccb9[i]) + std::fabs(vcr - ccr9[i]));
+            // v3.3 B5: per-channel chroma diffs — each channel gets its own
+            // knee, so heavy Cb noise cannot blow the gate for a clean Cr
+            dCb += std::fabs(vcb - ccb9[i]);
+            dCr += std::fabs(vcr - ccr9[i]);
         }
     }
     dY *= (1.0f / 9.0f);
-    dC *= (1.0f / 9.0f);
+    dCb *= (1.0f / 9.0f);
+    dCr *= (1.0f / 9.0f);
     sdY *= (1.0f / 9.0f);
 }
 
@@ -401,9 +413,13 @@ static inline void applyLockedProfile(const Params& p, Stats& out)
         return;
     const float adjL = clampf(p.profileAdjust, 0.25f, 6.0f);
     out.sy = clampf(p.lockSY * adjL, kSigmaMin, kSigmaMax);
-    out.sc = clampf(p.lockSC * adjL, kSigmaMin, kSigmaMax);
+    out.scb = clampf(p.lockSC * adjL, kSigmaMin, kSigmaMax);
+    out.scr = clampf(p.lockSCr * adjL, kSigmaMin, kSigmaMax);
     out.ty = clampf(p.lockTY * adjL, kSigmaMin, kSigmaMax);
-    out.tc = clampf(p.lockTC * adjL, kSigmaMin, kSigmaMax);
+    out.tcb = clampf(p.lockTC * adjL, kSigmaMin, kSigmaMax);
+    out.tcr = clampf(p.lockTCr * adjL, kSigmaMin, kSigmaMax);
+    out.sc = 0.5f * (out.scb + out.scr);
+    out.tc = 0.5f * (out.tcb + out.tcr);
     for (int b = 0; b < kLumaBins; ++b) {
         out.gainY[b] = clampf(p.lockGainY[b], 0.6f, 2.2f);
         out.gainC[b] = clampf(p.lockGainC[b], 0.6f, 2.2f);
@@ -415,6 +431,7 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
 {
     out.sy = out.ty = out.ry = clampf(p.sigmaY, kSigmaMin, kSigmaMax);
     out.sc = out.tc = out.rc = clampf(p.sigmaC, kSigmaMin, kSigmaMax);
+    out.scb = out.scr = out.tcb = out.tcr = out.rcb = out.rcr = out.sc;
     out.fineY = out.coarseY = out.sy;   // per-band components default to the
     out.fineC = out.sc;                 // base sigmas (manual mode: flat EQ)
     if (p.profileSource == 2 && p.profileLocked == 0) {  // manual: sigmas literal, gains flat
@@ -433,9 +450,12 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
         return;
     }
 
-    std::vector<uint32_t> hYf(kHistBins, 0), hCf(kHistBins, 0);
-    std::vector<uint32_t> hY2(kHistBins, 0), hC2(kHistBins, 0);
-    std::vector<uint32_t> hYt(kHistBins, 0), hCt(kHistBins, 0);
+    // v3.3 B5: chroma histograms are per channel — blue-channel night noise
+    // puts several times more energy on Cb than Cr, and a combined median
+    // splits the difference badly for both
+    std::vector<uint32_t> hYf(kHistBins, 0), hCfb(kHistBins, 0), hCfr(kHistBins, 0);
+    std::vector<uint32_t> hY2(kHistBins, 0), hC2b(kHistBins, 0), hC2r(kHistBins, 0);
+    std::vector<uint32_t> hYt(kHistBins, 0), hCtb(kHistBins, 0), hCtr(kHistBins, 0);
     std::vector<uint32_t> lumY(kLumaBins * kLumaSub, 0), lumC(kLumaBins * kLumaSub, 0);
 
     int x0 = 1, x1 = W - 1, y0 = 1, y1 = H - 1;
@@ -471,8 +491,8 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
                 continue;
 
             hYf[clampi(static_cast<int>(std::fabs(lapY)  * kHistScaleY), 0, kHistBins - 1)]++;
-            hCf[clampi(static_cast<int>(std::fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)]++;
-            hCf[clampi(static_cast<int>(std::fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)]++;
+            hCfb[clampi(static_cast<int>(std::fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)]++;
+            hCfr[clampi(static_cast<int>(std::fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)]++;
             totalF++;
 
             // brightness-dependent profile
@@ -485,8 +505,8 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
                 float py, pcb, pcr;
                 sampleYCC(diffPartner, W, H, x, y, py, pcb, pcr);
                 hYt[clampi(static_cast<int>(std::fabs(py - Y[4])   * kHistScaleY), 0, kHistBins - 1)]++;
-                hCt[clampi(static_cast<int>(std::fabs(pcb - Cb[4]) * kHistScaleC), 0, kHistBins - 1)]++;
-                hCt[clampi(static_cast<int>(std::fabs(pcr - Cr[4]) * kHistScaleC), 0, kHistBins - 1)]++;
+                hCtb[clampi(static_cast<int>(std::fabs(pcb - Cb[4]) * kHistScaleC), 0, kHistBins - 1)]++;
+                hCtr[clampi(static_cast<int>(std::fabs(pcr - Cr[4]) * kHistScaleC), 0, kHistBins - 1)]++;
                 totalT++;
             }
 
@@ -501,8 +521,8 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
                 const float lCr = 4.0f * bCr[4] - 2.0f * (bCr[1] + bCr[3] + bCr[5] + bCr[7]) + (bCr[0] + bCr[2] + bCr[6] + bCr[8]);
                 if (lY != 0.0f || lCb != 0.0f || lCr != 0.0f) {  // v3.1 flat-sample skip
                     hY2[clampi(static_cast<int>(std::fabs(lY)  * kHistScaleY), 0, kHistBins - 1)]++;
-                    hC2[clampi(static_cast<int>(std::fabs(lCb) * kHistScaleC), 0, kHistBins - 1)]++;
-                    hC2[clampi(static_cast<int>(std::fabs(lCr) * kHistScaleC), 0, kHistBins - 1)]++;
+                    hC2b[clampi(static_cast<int>(std::fabs(lCb) * kHistScaleC), 0, kHistBins - 1)]++;
+                    hC2r[clampi(static_cast<int>(std::fabs(lCr) * kHistScaleC), 0, kHistBins - 1)]++;
                     total2++;
                 }
             }
@@ -529,27 +549,34 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
 
     const QR mYf = histQuantile(hYf.data(), kHistBins, totalF, kHistScaleY, 1, 2);
     const float syFine = mYf.value * kMedianCal;
-    const float scFine = histQuantile(hCf.data(), kHistBins, totalF * 2, kHistScaleC, 1, 2).value * kMedianCal;
+    const float scbFine = histQuantile(hCfb.data(), kHistBins, totalF, kHistScaleC, 1, 2).value * kMedianCal;
+    const float scrFine = histQuantile(hCfr.data(), kHistBins, totalF, kHistScaleC, 1, 2).value * kMedianCal;
     const float syCoarse = 2.0f * histQuantile(hY2.data(), kHistBins, total2, kHistScaleY, 1, 2).value * kMedianCal;
-    const float scCoarse = 2.0f * histQuantile(hC2.data(), kHistBins, total2 * 2, kHistScaleC, 1, 2).value * kMedianCal;
+    const float scbCoarse = 2.0f * histQuantile(hC2b.data(), kHistBins, total2, kHistScaleC, 1, 2).value * kMedianCal;
+    const float scrCoarse = 2.0f * histQuantile(hC2r.data(), kHistBins, total2, kHistScaleC, 1, 2).value * kMedianCal;
 
     const float lapSY = std::max(syFine, 0.9f * syCoarse);
-    const float lapSC = std::max(scFine, 0.9f * scCoarse);
+    const float lapSCb = std::max(scbFine, 0.9f * scbCoarse);
+    const float lapSCr = std::max(scrFine, 0.9f * scrCoarse);
 
-    // v3: raw components for the clip analyzer
-    out.fineY = syFine;   out.fineC = scFine;
-    out.coarseY = syCoarse; out.coarseC = scCoarse;
+    // v3: raw components for the clip analyzer (chroma: pair mean)
+    out.fineY = syFine;   out.fineC = 0.5f * (scbFine + scrFine);
+    out.coarseY = syCoarse; out.coarseC = 0.5f * (scbCoarse + scrCoarse);
 
-    float ty = lapSY, tc = lapSC;
+    float ty = lapSY, tcb = lapSCb, tcr = lapSCr;
     if (diffPartner && totalT >= 64) {
         const float medTY = histQuantile(hYt.data(), kHistBins, totalT, kHistScaleY, 1, 2).value * kMedianCalT;
         const float q20TY = histQuantile(hYt.data(), kHistBins, totalT, kHistScaleY, 1, 5).value * kQ20CalT;
-        const float medTC = histQuantile(hCt.data(), kHistBins, totalT * 2, kHistScaleC, 1, 2).value * kMedianCalT;
-        const float q20TC = histQuantile(hCt.data(), kHistBins, totalT * 2, kHistScaleC, 1, 5).value * kQ20CalT;
+        const float medTCb = histQuantile(hCtb.data(), kHistBins, totalT, kHistScaleC, 1, 2).value * kMedianCalT;
+        const float q20TCb = histQuantile(hCtb.data(), kHistBins, totalT, kHistScaleC, 1, 5).value * kQ20CalT;
+        const float medTCr = histQuantile(hCtr.data(), kHistBins, totalT, kHistScaleC, 1, 2).value * kMedianCalT;
+        const float q20TCr = histQuantile(hCtr.data(), kHistBins, totalT, kHistScaleC, 1, 5).value * kQ20CalT;
         const float candY = (medTY <= 1.4f * q20TY) ? medTY : q20TY;
-        const float candC = (medTC <= 1.4f * q20TC) ? medTC : q20TC;
+        const float candCb = (medTCb <= 1.4f * q20TCb) ? medTCb : q20TCb;
+        const float candCr = (medTCr <= 1.4f * q20TCr) ? medTCr : q20TCr;
         if (candY > 0.0015f && candY <= 3.5f * lapSY) ty = candY;
-        if (candC > 0.0015f && candC <= 3.5f * lapSC) tc = candC;
+        if (candCb > 0.0015f && candCb <= 3.5f * lapSCb) tcb = candCb;
+        if (candCr > 0.0015f && candCr <= 3.5f * lapSCr) tcr = candCr;
         out.hadTemporal = 1;
         // v3: both are calibrated sigma estimates, so the ratio is ~1 on
         // static noise and rises with motion (motion inflates the median
@@ -559,16 +586,23 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
 
     const float adj = clampf(p.profileAdjust, 0.25f, 6.0f);
     out.sy = clampf(std::max(lapSY, 0.85f * ty) * adj, kSigmaMin, kSigmaMax);
-    out.sc = clampf(std::max(lapSC, 0.85f * tc) * adj, kSigmaMin, kSigmaMax);
+    out.scb = clampf(std::max(lapSCb, 0.85f * tcb) * adj, kSigmaMin, kSigmaMax);
+    out.scr = clampf(std::max(lapSCr, 0.85f * tcr) * adj, kSigmaMin, kSigmaMax);
     out.ty = clampf(ty * adj, kSigmaMin, kSigmaMax);
-    out.tc = clampf(tc * adj, kSigmaMin, kSigmaMax);
+    out.tcb = clampf(tcb * adj, kSigmaMin, kSigmaMax);
+    out.tcr = clampf(tcr * adj, kSigmaMin, kSigmaMax);
+    out.sc = 0.5f * (out.scb + out.scr);
+    out.tc = 0.5f * (out.tcb + out.tcr);
 
     // Brightness-dependent gains, relative to the global fine medians.
     // Per-bin we use the 35th percentile rather than the median: a luma bin
     // can be dominated by legitimate texture, and Q35 stays anchored to the
     // flat (noise-set) pixels as long as they are at least ~a third of the bin.
     const float q35RefY = histQuantile(hYf.data(), kHistBins, totalF, kHistScaleY, 7, 20).value * kQ35Cal;
-    const float q35RefC = histQuantile(hCf.data(), kHistBins, totalF * 2, kHistScaleC, 7, 20).value * kQ35Cal;
+    // the brightness-gain curve stays combined (one curve for both chroma
+    // channels); its reference is the mean of the per-channel quantiles
+    const float q35RefC = 0.5f * (histQuantile(hCfb.data(), kHistBins, totalF, kHistScaleC, 7, 20).value +
+                                  histQuantile(hCfr.data(), kHistBins, totalF, kHistScaleC, 7, 20).value) * kQ35Cal;
     float gy[kLumaBins], gc[kLumaBins];
     for (int b = 0; b < kLumaBins; ++b) {
         uint64_t cy = 0, cc = 0;
@@ -622,9 +656,11 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
     const int reach = (p.enableTemporal == 0) ? 0
                     : ((p.temporalFrames >= 7) ? 3 : (p.temporalFrames >= 5) ? 2 : 1);
     const float loY = kAbsDiffBias * s.ty, hiY = loY + thrMul * s.ty;
-    const float loC = kAbsDiffBias * s.tc, hiC = loC + thrMul * s.tc;
+    const float loCb = kAbsDiffBias * s.tcb, hiCb = loCb + thrMul * s.tcb;
+    const float loCr = kAbsDiffBias * s.tcr, hiCr = loCr + thrMul * s.tcr;
     const float invSpanY = 1.0f / (hiY - loY);
-    const float invSpanC = 1.0f / (hiC - loC);
+    const float invSpanCb = 1.0f / (hiCb - loCb);
+    const float invSpanCr = 1.0f / (hiCr - loCr);
     // v3 shift search engages only once the unshifted match is well into the
     // gate. Below this the gate keeps most of its weight anyway, and pure
     // noise reaches here so rarely that the selection bias of picking the
@@ -683,7 +719,7 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
             }
 
             float accY = cy9[4], accCb = ccb9[4], accCr = ccr9[4];
-            float sumWY = 1.0f, sumWY2 = 1.0f, sumWC = 1.0f;
+            float sumWY = 1.0f, sumWY2 = 1.0f, sumWCb = 1.0f, sumWCr = 1.0f;
 
             // v3.3 B1: the centre's coarse block patch for the hierarchical
             // search — built lazily once per pixel, shared by all neighbours
@@ -695,9 +731,9 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                     continue;
                 const float* f = frames[k];
 
-                float dY, dC, sdY, fy9c, fcb9c, fcr9c;
+                float dY, dCb, dCr, sdY, fy9c, fcb9c, fcr9c;
                 patchDiff(f, W, H, x, y, 0, 0, cy9, ccb9, ccr9,
-                          dY, dC, sdY, fy9c, fcb9c, fcr9c);
+                          dY, dCb, dCr, sdY, fy9c, fcb9c, fcr9c);
 
                 // v3.3 B1 hierarchical shift search (see kCoarseX above).
                 // Every acceptance needs the 1% margin so the unshifted
@@ -748,11 +784,11 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                         // on the drift regression: 1% lost 0.07 dB and 3%
                         // still 0.06 dB to exactly these jumps; 10% keeps
                         // the v3.2 number with the pan gains untouched.
-                        float dY2, dC2, sd2, fy2, fcb2, fcr2;
+                        float dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2;
                         patchDiff(f, W, H, x, y, bestOx, bestOy,
-                                  cy9, ccb9, ccr9, dY2, dC2, sd2, fy2, fcb2, fcr2);
+                                  cy9, ccb9, ccr9, dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2);
                         if (dY2 < dY * 0.90f) {
-                            dY = dY2; dC = dC2; sdY = sd2;
+                            dY = dY2; dCb = dCb2; dCr = dCr2; sdY = sd2;
                             fy9c = fy2; fcb9c = fcb2; fcr9c = fcr2;
                             wx = bestOx; wy = bestOy;
                             shiftTight = 1.0f / 0.6f;
@@ -764,11 +800,11 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                         int nwx = wx, nwy = wy;
                         for (int c = 0; c < 8; ++c) {
                             const int tx = wx + kRefX[c], ty = wy + kRefY[c];
-                            float dY2, dC2, sd2, fy2, fcb2, fcr2;
+                            float dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2;
                             patchDiff(f, W, H, x, y, tx, ty,
-                                      cy9, ccb9, ccr9, dY2, dC2, sd2, fy2, fcb2, fcr2);
+                                      cy9, ccb9, ccr9, dY2, dCb2, dCr2, sd2, fy2, fcb2, fcr2);
                             if (dY2 < dY * 0.99f) {
-                                dY = dY2; dC = dC2; sdY = sd2;
+                                dY = dY2; dCb = dCb2; dCr = dCr2; sdY = sd2;
                                 fy9c = fy2; fcb9c = fcb2; fcr9c = fcr2;
                                 nwx = tx; nwy = ty;
                                 shiftTight = 1.0f / 0.6f;
@@ -783,22 +819,27 @@ inline void temporalMerge(const float* const frames[7], int W, int H,
                 float gY = 1.0f - smooth01((dY - loY) * invSpanY * shiftTight);
                 if (guard)
                     gY *= 1.0f - smooth01((std::fabs(sdY) - loS) * invSpanS * shiftTight);
-                const float gC = 1.0f - smooth01((dC - loC) * invSpanC * shiftTight);
+                // v3.3 B5: each chroma channel gets its own gate against its
+                // own knee (both still slaved to the luma gate)
+                const float gCb = 1.0f - smooth01((dCb - loCb) * invSpanCb * shiftTight);
+                const float gCr = 1.0f - smooth01((dCr - loCr) * invSpanCr * shiftTight);
                 const float wY = tL * gY;
-                const float wC = tC * gC * gY;   // chroma slaved to the luma gate
+                const float wCb = tC * gCb * gY;
+                const float wCr = tC * gCr * gY;
 
                 accY  += wY * fy9c;
-                accCb += wC * fcb9c;
-                accCr += wC * fcr9c;
+                accCb += wCb * fcb9c;
+                accCr += wCr * fcr9c;
                 sumWY  += wY;
                 sumWY2 += wY * wY;
-                sumWC  += wC;
+                sumWCb += wCb;
+                sumWCr += wCr;
             }
 
             float* t = tmp + (static_cast<size_t>(y) * W + x) * 4;
             t[0] = accY / sumWY;
-            t[1] = accCb / sumWC;
-            t[2] = accCr / sumWC;
+            t[1] = accCb / sumWCb;
+            t[2] = accCr / sumWCr;
             t[3] = (sumWY * sumWY) / sumWY2;
         }
     }
@@ -815,12 +856,13 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
     if (p.profileSource == 2 && p.profileLocked == 0) {
         s.ry = clampf(p.sigmaY, kSigmaMin, kSigmaMax);
         s.rc = clampf(p.sigmaC, kSigmaMin, kSigmaMax);
+        s.rcb = s.rcr = s.rc;
         s.effNMed = 1.0f;
         return;
     }
 
-    std::vector<uint32_t> hYr(kHistBins, 0), hCr(kHistBins, 0), hN(64, 0);
-    std::vector<uint32_t> hY2r(kHistBins, 0), hC2r(kHistBins, 0);
+    std::vector<uint32_t> hYr(kHistBins, 0), hCrb(kHistBins, 0), hCrr(kHistBins, 0), hN(64, 0);
+    std::vector<uint32_t> hY2r(kHistBins, 0), hC2rb(kHistBins, 0), hC2rr(kHistBins, 0);
     uint64_t total = 0, total2 = 0;
     for (int y = 1; y < H - 1; y += 2) {
         for (int x = 1; x < W - 1; x += 2) {
@@ -837,8 +879,8 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
             if (lapY == 0.0f && lapCb == 0.0f && lapCr == 0.0f)  // v3.1 flat-sample skip
                 continue;
             hYr[clampi(static_cast<int>(std::fabs(lapY)  * kHistScaleY), 0, kHistBins - 1)]++;
-            hCr[clampi(static_cast<int>(std::fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)]++;
-            hCr[clampi(static_cast<int>(std::fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)]++;
+            hCrb[clampi(static_cast<int>(std::fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)]++;
+            hCrr[clampi(static_cast<int>(std::fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)]++;
             const float effN = tmpAt(tmp, W, H, x, y)[3];
             // v3.3 B2: 64 bins — the 5-frame era's 32 saturated at effN
             // 4.875; the x8 scale is untouched so old bins decode identically
@@ -864,15 +906,15 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
                 const float lCr = 4.0f * bCr[4] - 2.0f * (bCr[1] + bCr[3] + bCr[5] + bCr[7]) + (bCr[0] + bCr[2] + bCr[6] + bCr[8]);
                 if (lY != 0.0f || lCb != 0.0f || lCr != 0.0f) {
                     hY2r[clampi(static_cast<int>(std::fabs(lY)  * kHistScaleY), 0, kHistBins - 1)]++;
-                    hC2r[clampi(static_cast<int>(std::fabs(lCb) * kHistScaleC), 0, kHistBins - 1)]++;
-                    hC2r[clampi(static_cast<int>(std::fabs(lCr) * kHistScaleC), 0, kHistBins - 1)]++;
+                    hC2rb[clampi(static_cast<int>(std::fabs(lCb) * kHistScaleC), 0, kHistBins - 1)]++;
+                    hC2rr[clampi(static_cast<int>(std::fabs(lCr) * kHistScaleC), 0, kHistBins - 1)]++;
                     total2++;
                 }
             }
         }
     }
     if (total < 64) {
-        s.ry = s.sy; s.rc = s.sc; s.effNMed = 1.0f;
+        s.ry = s.sy; s.rc = s.sc; s.rcb = s.scb; s.rcr = s.scr; s.effNMed = 1.0f;
         return;
     }
 
@@ -889,23 +931,29 @@ inline void estimateResidual(const float* tmp, int W, int H, const Params& p, St
 
     const float adj = clampf(p.profileAdjust, 0.25f, 6.0f);
     float ry = med(hYr, total, kHistScaleY) * kMedianCal * adj;
-    float rc = med(hCr, total * 2, kHistScaleC) * kMedianCal * adj;
+    float rcb = med(hCrb, total, kHistScaleC) * kMedianCal * adj;
+    float rcr = med(hCrr, total, kHistScaleC) * kMedianCal * adj;
     // v3.2: filter against whichever scale still carries noise (0.9 factor
     // and 2x block calibration exactly as the input estimator)
     if (total2 >= 64) {
         const float ryC = 2.0f * med(hY2r, total2, kHistScaleY) * kMedianCal * adj;
-        const float rcC = 2.0f * med(hC2r, total2 * 2, kHistScaleC) * kMedianCal * adj;
+        const float rcbC = 2.0f * med(hC2rb, total2, kHistScaleC) * kMedianCal * adj;
+        const float rcrC = 2.0f * med(hC2rr, total2, kHistScaleC) * kMedianCal * adj;
         ry = std::max(ry, 0.9f * ryC);
-        rc = std::max(rc, 0.9f * rcC);
+        rcb = std::max(rcb, 0.9f * rcbC);
+        rcr = std::max(rcr, 0.9f * rcrC);
     }
     s.effNMed = 1.0f + med(hN, total, 8.0f);
 
     // Floors: the residual cannot be less than the theoretical reduction, and
     // never exceeds the input estimate.
     const float floorY = 0.5f * s.sy / std::sqrt(std::max(1.0f, s.effNMed));
-    const float floorC = 0.5f * s.sc / std::sqrt(std::max(1.0f, s.effNMed));
+    const float floorCb = 0.5f * s.scb / std::sqrt(std::max(1.0f, s.effNMed));
+    const float floorCr = 0.5f * s.scr / std::sqrt(std::max(1.0f, s.effNMed));
     s.ry = clampf(std::max(ry, floorY), kSigmaMin, s.sy > kSigmaMin ? s.sy : kSigmaMax);
-    s.rc = clampf(std::max(rc, floorC), kSigmaMin, s.sc > kSigmaMin ? s.sc : kSigmaMax);
+    s.rcb = clampf(std::max(rcb, floorCb), kSigmaMin, s.scb > kSigmaMin ? s.scb : kSigmaMax);
+    s.rcr = clampf(std::max(rcr, floorCr), kSigmaMin, s.scr > kSigmaMin ? s.scr : kSigmaMax);
+    s.rc = 0.5f * (s.rcb + s.rcr);
 }
 
 // ---------------------------------------------------------------------------
@@ -935,13 +983,18 @@ inline void deepCleanPass(const float* tmp, int W, int H,
             const float* tc = tmp + idx;
             const int lb = clampi(static_cast<int>(tc[0] * kLumaBins), 0, kLumaBins - 1);
             const float sigY = clampf(s.ry * s.gainY[lb], 1e-5f, 1.0f);
-            const float sigC = clampf(s.rc * s.gainC[lb], 1e-5f, 1.0f);
+            // v3.3 B5: per-channel chroma h — see spatialNLM
+            const float sigCb = clampf(s.rcb * s.gainC[lb], 1e-5f, 1.0f);
+            const float sigCr = clampf(s.rcr * s.gainC[lb], 1e-5f, 1.0f);
             const float hY = 0.6f * kNlmHLuma * sigY;
-            const float hC = 0.6f * kNlmHChroma * sigC;
+            // v3.3 B5: pooled-normalized chroma weight — see spatialNLM
             const float invHY2 = 1.0f / std::max(hY * hY, 1e-12f);
-            const float invHC2 = 1.0f / std::max(hC * hC, 1e-12f);
+            const float invHC2 = 1.0f / std::max(0.36f * kNlmHChroma * kNlmHChroma, 1e-12f);
+            const float invSCb2 = 1.0f / std::max(sigCb * sigCb, 1e-12f);
+            const float invSCr2 = 1.0f / std::max(sigCr * sigCr, 1e-12f);
             const float biasY = 2.0f * sigY * sigY;
-            const float biasC = 2.0f * sigC * sigC;
+            const float biasCb = 2.0f * sigCb * sigCb;
+            const float biasCr = 2.0f * sigCr * sigCr;
 
             float accY = 0.0f, accCb = 0.0f, accCr = 0.0f;
             float sumWY = 0.0f, sumWC = 0.0f, wYmax = 0.0f, wCmax = 0.0f;
@@ -950,7 +1003,7 @@ inline void deepCleanPass(const float* tmp, int W, int H,
                     if (dx == 0 && dy == 0)
                         continue;
                     const float* ts = tmpAt(tmp, W, H, x + dx, y + dy);
-                    float dY2 = 0.0f, dC2 = 0.0f;
+                    float dY2 = 0.0f, dCb2 = 0.0f, dCr2 = 0.0f;
                     for (int qy = -1; qy <= 1; ++qy) {
                         for (int qx = -1; qx <= 1; ++qx) {
                             const float* tp = tmpAt(tmp, W, H, x + qx, y + qy);
@@ -959,15 +1012,18 @@ inline void deepCleanPass(const float* tmp, int W, int H,
                             const float eCb = tp[1] - tq[1];
                             const float eCr = tp[2] - tq[2];
                             dY2 += eY * eY;
-                            dC2 += 0.5f * (eCb * eCb + eCr * eCr);
+                            dCb2 += eCb * eCb;
+                            dCr2 += eCr * eCr;
                         }
                     }
                     dY2 *= (1.0f / 9.0f);
-                    dC2 *= (1.0f / 9.0f);
+                    dCb2 *= (1.0f / 9.0f);
+                    dCr2 *= (1.0f / 9.0f);
                     dY2 = std::max(0.0f, dY2 - biasY);
-                    dC2 = std::max(0.0f, dC2 - biasC);
+                    const float dC2n = 0.5f * (std::max(0.0f, dCb2 - biasCb) * invSCb2 +
+                                               std::max(0.0f, dCr2 - biasCr) * invSCr2);
                     const float wY = std::exp(-dY2 * invHY2);
-                    const float wC = std::exp(-dC2 * invHC2) * std::exp(-dY2 * invHY2 * 0.25f);
+                    const float wC = std::exp(-dC2n * invHC2) * std::exp(-dY2 * invHY2 * 0.25f);
                     accY  += wY * ts[0];
                     accCb += wC * ts[1];
                     accCr += wC * ts[2];
@@ -984,8 +1040,8 @@ inline void deepCleanPass(const float* tmp, int W, int H,
             const float Crf = (accCr + wCc * tc[2]) / (sumWC + wCc);
             float* o = out + idx;
             o[0] = tc[0] + clampf(Yf  - tc[0], -2.0f * sigY, 2.0f * sigY);
-            o[1] = tc[1] + clampf(Cbf - tc[1], -2.0f * sigC, 2.0f * sigC);
-            o[2] = tc[2] + clampf(Crf - tc[2], -2.0f * sigC, 2.0f * sigC);
+            o[1] = tc[1] + clampf(Cbf - tc[1], -2.0f * sigCb, 2.0f * sigCb);
+            o[2] = tc[2] + clampf(Crf - tc[2], -2.0f * sigCr, 2.0f * sigCr);
             o[3] = tc[3];
         }
     }
@@ -1476,7 +1532,13 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
 
             const int lb = clampi(static_cast<int>(tc[0] * kLumaBins), 0, kLumaBins - 1);
             const float sigY = clampf(s.ry * s.gainY[lb], 1e-5f, 1.0f);
-            const float sigC = clampf(s.rc * s.gainC[lb], 1e-5f, 1.0f);
+            // v3.3 B5: the fine band works per chroma channel (blue-channel
+            // night noise wants a wide Cb h and a tight Cr h); the medium/
+            // coarse/deband bands keep the combined colour-distance metric
+            // and use the pair mean below.
+            const float sigCb = clampf(s.rcb * s.gainC[lb], 1e-5f, 1.0f);
+            const float sigCr = clampf(s.rcr * s.gainC[lb], 1e-5f, 1.0f);
+            const float sigC = 0.5f * (sigCb + sigCr);
 
             float Yo = tc[0], Cbo = tc[1], Cro = tc[2];
 
@@ -1492,11 +1554,24 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
                 const float edginess = clampf(std::sqrt(std::max(var - sigY * sigY, 0.0f)) / (3.0f * sigY), 0.0f, 1.0f);
 
                 const float hY = kNlmHLuma   * sigY * hMulY * (1.0f - pd * 0.85f * edginess);
-                const float hC = kNlmHChroma * sigC * hMulC * (1.0f - pd * 0.50f * edginess);
+                // v3.3 B5: per-channel h via normalization inside a POOLED
+                // chroma weight. Each channel's patch distance is bias-
+                // subtracted and scaled by ITS OWN sigma (a wide h for a
+                // noisy Cb, a tight one for a clean Cr — the night-noise
+                // case), then the two pool into one acceptance, keeping the
+                // v2.1 cross-channel edge protection and the variance
+                // reduction of pooling. At equal sigmas this is numerically
+                // the v2.1 formula (fully independent per-channel weights
+                // were tried first and lost 0.2 dB on the blotch golden to
+                // doubled weight noise).
+                const float mC = hMulC * (1.0f - pd * 0.50f * edginess);
                 const float invHY2  = 1.0f / std::max(hY * hY, 1e-12f);
-                const float invHC2  = 1.0f / std::max(hC * hC, 1e-12f);
+                const float invHC2  = 1.0f / std::max(kNlmHChroma * kNlmHChroma * mC * mC, 1e-12f);
+                const float invSCb2 = 1.0f / std::max(sigCb * sigCb, 1e-12f);
+                const float invSCr2 = 1.0f / std::max(sigCr * sigCr, 1e-12f);
                 const float biasY = 2.0f * sigY * sigY;
-                const float biasC = 2.0f * sigC * sigC;
+                const float biasCb = 2.0f * sigCb * sigCb;
+                const float biasCr = 2.0f * sigCr * sigCr;
 
                 float accY = 0.0f, accCb = 0.0f, accCr = 0.0f;
                 float sumWY = 0.0f, sumWC = 0.0f, wYmax = 0.0f, wCmax = 0.0f;
@@ -1507,9 +1582,9 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
                             continue;
                         const float* ts = tmpAt(tmp, W, H, x + dx, y + dy);
 
-                        float dY2, dC2;
+                        float dY2, dCb2, dCr2;
                         if (nlm) {
-                            dY2 = 0.0f; dC2 = 0.0f;
+                            dY2 = 0.0f; dCb2 = 0.0f; dCr2 = 0.0f;
                             for (int qy = -1; qy <= 1; ++qy) {
                                 for (int qx = -1; qx <= 1; ++qx) {
                                     const float* tp = tmpAt(tmp, W, H, x + qx, y + qy);
@@ -1518,24 +1593,28 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
                                     const float eCb = tp[1] - tq[1];
                                     const float eCr = tp[2] - tq[2];
                                     dY2 += eY * eY;
-                                    dC2 += 0.5f * (eCb * eCb + eCr * eCr);
+                                    dCb2 += eCb * eCb;
+                                    dCr2 += eCr * eCr;
                                 }
                             }
                             dY2 *= (1.0f / 9.0f);
-                            dC2 *= (1.0f / 9.0f);
+                            dCb2 *= (1.0f / 9.0f);
+                            dCr2 *= (1.0f / 9.0f);
                         } else {
                             const float eY = tc[0] - ts[0];
                             const float eCb = tc[1] - ts[1];
                             const float eCr = tc[2] - ts[2];
                             dY2 = eY * eY;
-                            dC2 = 0.5f * (eCb * eCb + eCr * eCr);
+                            dCb2 = eCb * eCb;
+                            dCr2 = eCr * eCr;
                         }
 
                         dY2 = std::max(0.0f, dY2 - biasY);
-                        dC2 = std::max(0.0f, dC2 - biasC);
+                        const float dC2n = 0.5f * (std::max(0.0f, dCb2 - biasCb) * invSCb2 +
+                                                   std::max(0.0f, dCr2 - biasCr) * invSCr2);
 
                         float wY = std::exp(-dY2 * invHY2);
-                        float wC = std::exp(-dC2 * invHC2) * std::exp(-dY2 * invHY2 * 0.25f);
+                        float wC = std::exp(-dC2n * invHC2) * std::exp(-dY2 * invHY2 * 0.25f);
                         if (!nlm) {
                             const float fall = std::exp(-static_cast<float>(dx * dx + dy * dy) * invSpatial2);
                             wY *= fall;
@@ -1565,10 +1644,11 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
                 // smoothing cannot become blur. 0 = off, the exact v3.0 blend.
                 if (rescue > 0.0f) {
                     const float kY = sigY * (2.0f + 6.0f * (1.0f - rescue));
-                    const float kC = sigC * (3.0f + 9.0f * (1.0f - rescue));
+                    const float kCb = sigCb * (3.0f + 9.0f * (1.0f - rescue));
+                    const float kCr = sigCr * (3.0f + 9.0f * (1.0f - rescue));
                     Yo  = tc[0] - aY * clampf(tc[0] - Yf,  -kY, kY);
-                    Cbo = tc[1] - aC * clampf(tc[1] - Cbf, -kC, kC);
-                    Cro = tc[2] - aC * clampf(tc[2] - Crf, -kC, kC);
+                    Cbo = tc[1] - aC * clampf(tc[1] - Cbf, -kCb, kCb);
+                    Cro = tc[2] - aC * clampf(tc[2] - Crf, -kCr, kCr);
                 } else {
                     Yo  = tc[0] + aY * (Yf  - tc[0]);
                     Cbo = tc[1] + aC * (Cbf - tc[1]);

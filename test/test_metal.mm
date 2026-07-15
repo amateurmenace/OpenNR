@@ -96,6 +96,8 @@ static void toCpuParams(const NRParams& gp, nrcore::Params& cp)
     cp.ghostGuard     = gp.ghostGuard;
     cp.globalBlend    = gp.globalBlend;
     cp.deepClean      = gp.deepClean;
+    cp.lockSCr        = gp.lockSCr;
+    cp.lockTCr        = gp.lockTCr;
 }
 
 // sparseOK: cases that exercise the v3 shift-search selection. Picking the
@@ -213,6 +215,7 @@ int main()
     p.profileLocked = 0;
     p.ghostGuard = 1; p.globalBlend = 1.0f;   // v3.2 defaults
     p.lockSY = 0.02f; p.lockSC = 0.02f; p.lockTY = 0.02f; p.lockTC = 0.02f;
+    p.lockSCr = 0.02f; p.lockTCr = 0.02f;     // v3.3 B5
     for (int b = 0; b < 16; ++b) { p.lockGainY[b] = 1.0f; p.lockGainC[b] = 1.0f; }
 
     failures += compareRun(queue, p, "defaults (auto, 5f, NLM, blotch)");
@@ -281,6 +284,7 @@ int main()
 
     NRParams v6 = p; v6.profileLocked = 1;
     v6.lockSY = 0.031f; v6.lockSC = 0.017f; v6.lockTY = 0.029f; v6.lockTC = 0.015f;
+    v6.lockSCr = 0.009f; v6.lockTCr = 0.008f;   // v3.3 B5: distinct Cr pair
     for (int b = 0; b < 16; ++b) { v6.lockGainY[b] = 0.8f + 0.05f * b; v6.lockGainC[b] = 1.4f; }
     failures += compareRun(queue, v6, "v3 locked profile");
 

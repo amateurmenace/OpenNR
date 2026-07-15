@@ -32,6 +32,9 @@ namespace nranalyze {
 struct ClipAggregate {
     float sy = 0.02f, sc = 0.02f;      // median input sigmas (spatial family)
     float ty = 0.02f, tc = 0.02f;      // median temporal-gating sigmas
+    // v3.3 B5: per-channel chroma pairs (sc/tc above stay the pair means)
+    float scb = 0.02f, scr = 0.02f;
+    float tcb = 0.02f, tcr = 0.02f;
     float gainY[16];                   // averaged brightness gains
     float gainC[16];
     float motion = 0.0f;               // mean motion energy, >= 0 (0 = static)
@@ -60,6 +63,7 @@ inline ClipAggregate aggregateClipStats(const std::vector<nrcore::Stats>& all)
         return a;
 
     std::vector<float> sy, sc, ty, tc, cr;
+    std::vector<float> scb, scr, tcb, tcr;
     float motionSum = 0.0f;
     int motionN = 0;
     for (size_t i = 0; i < all.size(); ++i) {
@@ -68,6 +72,10 @@ inline ClipAggregate aggregateClipStats(const std::vector<nrcore::Stats>& all)
         sc.push_back(s.sc);
         ty.push_back(s.ty);
         tc.push_back(s.tc);
+        scb.push_back(s.scb);
+        scr.push_back(s.scr);
+        tcb.push_back(s.tcb);
+        tcr.push_back(s.tcr);
         cr.push_back(s.coarseY / std::max(s.fineY, 1e-6f));
         if (s.hadTemporal) {
             motionSum += std::max(0.0f, s.motionRatio - 1.0f);
@@ -87,6 +95,10 @@ inline ClipAggregate aggregateClipStats(const std::vector<nrcore::Stats>& all)
     a.sc = medianOf(sc);
     a.ty = medianOf(ty);
     a.tc = medianOf(tc);
+    a.scb = medianOf(scb);
+    a.scr = medianOf(scr);
+    a.tcb = medianOf(tcb);
+    a.tcr = medianOf(tcr);
     a.coarseRatioY = medianOf(cr);
     a.motion = (motionN > 0) ? motionSum / static_cast<float>(motionN) : 0.0f;
     a.chromaRatio = a.tc / std::max(a.ty, 1e-6f);
@@ -98,10 +110,12 @@ inline ClipAggregate aggregateClipStats(const std::vector<nrcore::Stats>& all)
 // ---------------------------------------------------------------------------
 inline std::string formatLockedProfile(const ClipAggregate& a)
 {
-    std::string s = "HUSHLOCK1";
+    // v3.3 B5: HUSHLOCK2 carries the split chroma pairs; parseLockedProfile
+    // still reads HUSHLOCK1 (Cr loads as Cb) so old projects keep working
+    std::string s = "HUSHLOCK2";
     char buf[16];
-    const float vals[4] = { a.sy, a.sc, a.ty, a.tc };
-    for (int i = 0; i < 4; ++i) {
+    const float vals[6] = { a.sy, a.scb, a.scr, a.ty, a.tcb, a.tcr };
+    for (int i = 0; i < 6; ++i) {
         uint32_t u;
         std::memcpy(&u, &vals[i], 4);
         snprintf(buf, sizeof(buf), ",%08x", u);
@@ -119,11 +133,13 @@ inline std::string formatLockedProfile(const ClipAggregate& a)
 
 inline bool parseLockedProfile(const std::string& s, ClipAggregate& out)
 {
-    if (s.compare(0, 9, "HUSHLOCK1") != 0)
+    const bool v2 = (s.compare(0, 9, "HUSHLOCK2") == 0);
+    if (!v2 && s.compare(0, 9, "HUSHLOCK1") != 0)
         return false;
-    float vals[36];
+    const int nSig = v2 ? 6 : 4;
+    float vals[38];
     size_t pos = 9;
-    for (int i = 0; i < 36; ++i) {
+    for (int i = 0; i < nSig + 32; ++i) {
         if (pos >= s.size() || s[pos] != ',')
             return false;
         char* end = nullptr;
@@ -134,13 +150,25 @@ inline bool parseLockedProfile(const std::string& s, ClipAggregate& out)
         std::memcpy(&vals[i], &u32, 4);
         pos = static_cast<size_t>(end - s.c_str());
     }
-    out.sy = vals[0];
-    out.sc = vals[1];
-    out.ty = vals[2];
-    out.tc = vals[3];
+    if (v2) {
+        out.sy = vals[0];
+        out.scb = vals[1];
+        out.scr = vals[2];
+        out.ty = vals[3];
+        out.tcb = vals[4];
+        out.tcr = vals[5];
+    } else {
+        // v1: combined chroma — both channels load the combined value
+        out.sy = vals[0];
+        out.scb = out.scr = vals[1];
+        out.ty = vals[2];
+        out.tcb = out.tcr = vals[3];
+    }
+    out.sc = 0.5f * (out.scb + out.scr);
+    out.tc = 0.5f * (out.tcb + out.tcr);
     for (int b = 0; b < 16; ++b) {
-        out.gainY[b] = vals[4 + b];
-        out.gainC[b] = vals[20 + b];
+        out.gainY[b] = vals[nSig + b];
+        out.gainC[b] = vals[nSig + 16 + b];
     }
     return true;
 }
