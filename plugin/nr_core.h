@@ -386,6 +386,18 @@ inline void estimateInput(const float* rgba, const float* diffPartner,
     if (p.profileSource == 2 && p.profileLocked == 0) {  // manual: sigmas literal, gains flat
         return;
     }
+    // v3.3 lock fast path: with the profile locked and nothing on screen
+    // showing the live measurement (Measurements scope, EQ scope, Analysis
+    // view), this whole pass is output-inert — every value the filters use
+    // is either locked (a pure function of the params) or re-measured from
+    // the merged image by estimateResidual, which still runs. Skip it; the
+    // GPU hosts skip the NoiseEst/FinalizeStats dispatches under the same
+    // condition, and their kernels compute the locked values from the params
+    // with exactly applyLockedProfile's arithmetic.
+    if (p.profileLocked != 0 && p.scopeMeasure == 0 && p.scopeEq == 0 && p.viewMode != 5) {
+        applyLockedProfile(p, out);
+        return;
+    }
 
     std::vector<uint32_t> hYf(kHistBins, 0), hCf(kHistBins, 0);
     std::vector<uint32_t> hY2(kHistBins, 0), hC2(kHistBins, 0);

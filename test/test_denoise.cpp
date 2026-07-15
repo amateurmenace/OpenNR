@@ -813,13 +813,16 @@ int main()
               !nranalyze::parseLockedProfile("nonsense", junk),
               "locked profile parser rejects corrupt data");
 
-        // locked values override the measurement; histogram stays live
+        // locked values override the measurement; the histogram stays live
+        // as long as something displays it (v3.3: the measurement pass is
+        // skipped when locked AND no scope/analysis view is watching)
         std::vector<float> clean, noisy;
         renderScene(clean, 0, 0);
         noisy = clean;
         addNoise(noisy, 0.05f, 31);
         nrcore::Params pl = p;
         pl.profileLocked = 1;
+        pl.scopeMeasure = 1;   // v3.3: a visible scope keeps the measurement live
         pl.lockSY = 0.0311f; pl.lockSC = 0.0177f; pl.lockTY = 0.0299f; pl.lockTC = 0.0155f;
         for (int b = 0; b < 16; ++b) { pl.lockGainY[b] = 1.0f + 0.01f * b; pl.lockGainC[b] = 1.3f; }
         nrcore::Stats st;
@@ -827,7 +830,53 @@ int main()
         check(st.sy == 0.0311f && st.sc == 0.0177f && st.ty == 0.0299f && st.tc == 0.0155f,
               "locked sigmas override the measurement");
         check(st.gainY[5] == 1.05f && st.gainC[9] == 1.3f, "locked gains override the measurement");
-        check(st.histMax > 1, "locked profile keeps the HUD histogram live");
+        check(st.histMax > 1, "locked profile keeps the HUD histogram live (scope on)");
+
+        // v3.3 lock fast path: no scope watching -> the measurement pass is
+        // skipped entirely; the locked values still come through identically
+        nrcore::Params plF = pl;
+        plF.scopeMeasure = 0;
+        nrcore::Stats stF;
+        nrcore::estimateInput(noisy.data(), nullptr, W, H, plF, stF);
+        check(stF.sy == st.sy && stF.sc == st.sc && stF.ty == st.ty && stF.tc == st.tc &&
+              stF.gainY[5] == st.gainY[5] && stF.gainC[9] == st.gainC[9],
+              "lock fast path yields the same locked values");
+        check(stF.histMax == 1, "lock fast path skips the measurement (empty histogram)");
+
+        // and the fast path must not change the rendered OUTPUT: full
+        // pipeline with scopes off vs measurement forced live (viewMode 5
+        // draws a panel, so force liveness via the EQ scope's flag but
+        // compare only the pixels outside panels — simpler: scopeMeasure
+        // affects the output only by drawing a panel, so compare the fast
+        // path against a build-equivalent: same params, lock values, scope
+        // off, which BEFORE v3.3 ran the full measurement. The stats it
+        // consumed were the locked ones either way, so the two must agree
+        // to the last bit; assert against a hand-run of the stages.
+        {
+            std::vector<std::vector<float>> fr;
+            makeCaseFrames(0.04f, 0.0f, 0.0f, NOISE_IID, fr);
+            const float* fp[5] = { fr[0].data(), fr[1].data(), fr[2].data(),
+                                   fr[3].data(), fr[4].data() };
+            std::vector<float> outFast(fr[2].size()), scratchF;
+            nrcore::Params pRun = plF;
+            nrcore::denoiseFrame(fp, W, H, pRun, outFast.data(), scratchF);
+
+            // reference: run the stages with the measurement forced live but
+            // NO panel drawn (scopeMeasure off there too — liveness forced by
+            // calling estimateInput with a scope flag, then reusing the stats)
+            nrcore::Params pRef = plF;
+            pRef.scopeMeasure = 1;
+            nrcore::Stats sRef;
+            nrcore::estimateInput(fr[2].data(), fr[1].data(), W, H, pRef, sRef);
+            std::vector<float> tmpRef(fr[2].size()), outRef(fr[2].size());
+            nrcore::temporalMerge(fp, W, H, plF, sRef, tmpRef.data());
+            nrcore::estimateResidual(tmpRef.data(), W, H, plF, sRef);
+            nrcore::spatialNLM(tmpRef.data(), fr[2].data(), W, H, plF, sRef, outRef.data());
+            float maxd = 0.0f;
+            for (size_t i = 0; i < outFast.size(); ++i)
+                maxd = std::max(maxd, std::fabs(outFast[i] - outRef[i]));
+            check(maxd == 0.0f, "lock fast path output is bit-exact vs live measurement");
+        }
     }
 
     // =====================================================================

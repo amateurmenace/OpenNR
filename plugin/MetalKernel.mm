@@ -468,7 +468,18 @@ kernel void FinalizeStatsKernel(constant NRParams& p [[buffer(0)]],
 // ---------------------------------------------------------------------------
 inline float4 loadSigmasIn(constant NRParams& p, const device uint* stats)
 {
-    if (p.profileSource != 2 || p.profileLocked != 0)
+    // v3.3 lock fast path: locked sigmas are a pure function of the params —
+    // computed here with exactly FinalizeStats' arithmetic (bit-identical),
+    // so the host can skip the NoiseEst/FinalizeStats dispatches when no
+    // scope/analysis view is showing the live measurement.
+    if (p.profileLocked != 0) {
+        const float adjL = clamp(p.profileAdjust, 0.25f, 6.0f);
+        return float4(clamp(p.lockSY * adjL, kSigmaMin, kSigmaMax),
+                      clamp(p.lockSC * adjL, kSigmaMin, kSigmaMax),
+                      clamp(p.lockTY * adjL, kSigmaMin, kSigmaMax),
+                      clamp(p.lockTC * adjL, kSigmaMin, kSigmaMax));
+    }
+    if (p.profileSource != 2)
         return float4(as_type<float>(stats[S_SY]), as_type<float>(stats[S_SC]),
                       as_type<float>(stats[S_TY]), as_type<float>(stats[S_TC]));
     const float sy = clamp(p.sigmaY, kSigmaMin, kSigmaMax);
@@ -658,8 +669,16 @@ kernel void FinalizeResidualKernel(constant NRParams& p [[buffer(0)]],
         total2 += stats[H_YR2 + b];
     }
 
-    const float sy = as_type<float>(stats[S_SY]);
-    const float sc = as_type<float>(stats[S_SC]);
+    // v3.3 lock fast path: under a lock the input-stat slots may not have
+    // been written this frame — compute the locked values from the params
+    // (bit-identical to what FinalizeStats writes when it does run).
+    float sy = as_type<float>(stats[S_SY]);
+    float sc = as_type<float>(stats[S_SC]);
+    if (p.profileLocked != 0) {
+        const float adjL = clamp(p.profileAdjust, 0.25f, 6.0f);
+        sy = clamp(p.lockSY * adjL, kSigmaMin, kSigmaMax);
+        sc = clamp(p.lockSC * adjL, kSigmaMin, kSigmaMax);
+    }
     float ry = sy, rc = sc, enmed = 1.0f;
 
     if (total >= 64) {
@@ -1081,10 +1100,19 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
         return;
 
     const bool manual = (p.profileSource == 2) && (p.profileLocked == 0);
-    const float sy = manual ? clamp(p.sigmaY, kSigmaMin, kSigmaMax) : as_type<float>(stats[S_SY]);
-    const float sc = manual ? clamp(p.sigmaC, kSigmaMin, kSigmaMax) : as_type<float>(stats[S_SC]);
-    const float tyG = manual ? sy : as_type<float>(stats[S_TY]);
-    const float tcG = manual ? sc : as_type<float>(stats[S_TC]);
+    // v3.3 lock fast path: locked input sigmas/gains come straight from the
+    // params (see loadSigmasIn); the residual pair still comes from the
+    // stats buffer — the residual passes always run under a lock.
+    const bool locked = (p.profileLocked != 0);
+    const float adjL = clamp(p.profileAdjust, 0.25f, 6.0f);
+    const float sy = locked ? clamp(p.lockSY * adjL, kSigmaMin, kSigmaMax)
+                   : manual ? clamp(p.sigmaY, kSigmaMin, kSigmaMax) : as_type<float>(stats[S_SY]);
+    const float sc = locked ? clamp(p.lockSC * adjL, kSigmaMin, kSigmaMax)
+                   : manual ? clamp(p.sigmaC, kSigmaMin, kSigmaMax) : as_type<float>(stats[S_SC]);
+    const float tyG = locked ? clamp(p.lockTY * adjL, kSigmaMin, kSigmaMax)
+                    : manual ? sy : as_type<float>(stats[S_TY]);
+    const float tcG = locked ? clamp(p.lockTC * adjL, kSigmaMin, kSigmaMax)
+                    : manual ? sc : as_type<float>(stats[S_TC]);
     const float ryG = manual ? sy : as_type<float>(stats[S_RY]);
     const float rcG = manual ? sc : as_type<float>(stats[S_RC]);
     const float enmed = manual ? 1.0f : as_type<float>(stats[S_ENMED]);
@@ -1148,8 +1176,10 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
 
     const float4 tc = tmp[y * W + x];
     const int lb = clamp(int(tc.x * kLumaBins), 0, kLumaBins - 1);
-    const float gainYv = manual ? 1.0f : as_type<float>(stats[S_GY + lb]);
-    const float gainCv = manual ? 1.0f : as_type<float>(stats[S_GC + lb]);
+    const float gainYv = locked ? clamp(p.lockGainY[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : as_type<float>(stats[S_GY + lb]);
+    const float gainCv = locked ? clamp(p.lockGainC[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : as_type<float>(stats[S_GC + lb]);
     const float sigY = clamp(ryG * gainYv, 1e-5f, 1.0f);
     const float sigC = clamp(rcG * gainCv, 1e-5f, 1.0f);
 
@@ -1595,11 +1625,18 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
     id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
     cmdBuf.label = @"OpenNR";
 
-    // a locked profile still runs estimation (live HUD) — FinalizeStats
-    // overrides the sigma/gain slots with the locked values
-    const bool autoProfile = (params.profileSource != 2) || (params.profileLocked != 0);
+    // v3.3 lock fast path: a locked profile still runs input estimation when
+    // a scope/analysis view is showing the live measurement; otherwise the
+    // estimation is output-inert — the kernels compute the locked values
+    // straight from the params — and the NoiseEst/FinalizeStats dispatches
+    // are skipped entirely. The residual passes always run under a lock (the
+    // residual depends on what the temporal stage removed from THIS frame).
+    const bool wantLiveStats = (params.scopeMeasure != 0) || (params.scopeEq != 0) ||
+                               (params.viewMode == 5);
+    const bool residualLive = (params.profileSource != 2) || (params.profileLocked != 0);
+    const bool inputLive = residualLive && ((params.profileLocked == 0) || wantLiveStats);
 
-    if (autoProfile) {
+    if (residualLive) {
         id<MTLBlitCommandEncoder> blit = [cmdBuf blitCommandEncoder];
         [blit fillBuffer:res.stats range:NSMakeRange(0, NR_STATS_UINTS * sizeof(uint32_t)) value:0];
         [blit endEncoding];
@@ -1613,7 +1650,7 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
     const MTLSize gridHalf = MTLSizeMake((p_Width / 2 + tg.width - 1) / tg.width,
                                          (p_Height / 2 + tg.height - 1) / tg.height, 1);
 
-    if (autoProfile) {
+    if (inputLive) {
         [enc setComputePipelineState:res.est];
         [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
         [enc setBytes:&W length:sizeof(int) atIndex:1];
@@ -1644,7 +1681,7 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
 
-    if (autoProfile) {
+    if (residualLive) {
         [enc setComputePipelineState:res.est2];
         [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
         [enc setBytes:&W length:sizeof(int) atIndex:1];

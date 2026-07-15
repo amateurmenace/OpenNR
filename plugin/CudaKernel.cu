@@ -413,7 +413,17 @@ __global__ void FinalizeStatsKernel(NRParams p, unsigned int* stats)
 __device__ inline void loadSigmasIn(const NRParams& p, const unsigned int* stats,
                                     float& sy, float& sc, float& ty, float& tc)
 {
-    if (p.profileSource != 2 || p.profileLocked != 0) {
+    // v3.3 lock fast path: locked sigmas are a pure function of the params —
+    // computed here with exactly FinalizeStats' arithmetic (bit-identical),
+    // so the host can skip the NoiseEst/FinalizeStats dispatches when no
+    // scope/analysis view is showing the live measurement.
+    if (p.profileLocked != 0) {
+        const float adjL = clampf(p.profileAdjust, 0.25f, 6.0f);
+        sy = clampf(p.lockSY * adjL, kSigmaMin, kSigmaMax);
+        sc = clampf(p.lockSC * adjL, kSigmaMin, kSigmaMax);
+        ty = clampf(p.lockTY * adjL, kSigmaMin, kSigmaMax);
+        tc = clampf(p.lockTC * adjL, kSigmaMin, kSigmaMax);
+    } else if (p.profileSource != 2) {
         sy = __uint_as_float(stats[S_SY]);
         sc = __uint_as_float(stats[S_SC]);
         ty = __uint_as_float(stats[S_TY]);
@@ -596,8 +606,16 @@ __global__ void FinalizeResidualKernel(NRParams p, unsigned int* stats)
         total2 += stats[H_YR2 + b];
     }
 
-    const float sy = __uint_as_float(stats[S_SY]);
-    const float sc = __uint_as_float(stats[S_SC]);
+    // v3.3 lock fast path: under a lock the input-stat slots may not have
+    // been written this frame — compute the locked values from the params
+    // (bit-identical to what FinalizeStats writes when it does run).
+    float sy = __uint_as_float(stats[S_SY]);
+    float sc = __uint_as_float(stats[S_SC]);
+    if (p.profileLocked != 0) {
+        const float adjL = clampf(p.profileAdjust, 0.25f, 6.0f);
+        sy = clampf(p.lockSY * adjL, kSigmaMin, kSigmaMax);
+        sc = clampf(p.lockSC * adjL, kSigmaMin, kSigmaMax);
+    }
     float ry = sy, rc = sc, enmed = 1.0f;
 
     if (total >= 64) {
@@ -1012,10 +1030,19 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
         return;
 
     const bool manual = (p.profileSource == 2) && (p.profileLocked == 0);
-    const float sy = manual ? clampf(p.sigmaY, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_SY]);
-    const float sc = manual ? clampf(p.sigmaC, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_SC]);
-    const float tyG = manual ? sy : __uint_as_float(stats[S_TY]);
-    const float tcG = manual ? sc : __uint_as_float(stats[S_TC]);
+    // v3.3 lock fast path: locked input sigmas/gains come straight from the
+    // params (see loadSigmasIn); the residual pair still comes from the
+    // stats buffer — the residual passes always run under a lock.
+    const bool locked = (p.profileLocked != 0);
+    const float adjL = clampf(p.profileAdjust, 0.25f, 6.0f);
+    const float sy = locked ? clampf(p.lockSY * adjL, kSigmaMin, kSigmaMax)
+                   : manual ? clampf(p.sigmaY, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_SY]);
+    const float sc = locked ? clampf(p.lockSC * adjL, kSigmaMin, kSigmaMax)
+                   : manual ? clampf(p.sigmaC, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_SC]);
+    const float tyG = locked ? clampf(p.lockTY * adjL, kSigmaMin, kSigmaMax)
+                    : manual ? sy : __uint_as_float(stats[S_TY]);
+    const float tcG = locked ? clampf(p.lockTC * adjL, kSigmaMin, kSigmaMax)
+                    : manual ? sc : __uint_as_float(stats[S_TC]);
     const float ryG = manual ? sy : __uint_as_float(stats[S_RY]);
     const float rcG = manual ? sc : __uint_as_float(stats[S_RC]);
     const float enmed = manual ? 1.0f : __uint_as_float(stats[S_ENMED]);
@@ -1080,8 +1107,10 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
 
     const float4 tc = tmp[y * W + x];
     const int lb = clampi((int)(tc.x * kLumaBins), 0, kLumaBins - 1);
-    const float gainYv = manual ? 1.0f : __uint_as_float(stats[S_GY + lb]);
-    const float gainCv = manual ? 1.0f : __uint_as_float(stats[S_GC + lb]);
+    const float gainYv = locked ? clampf(p.lockGainY[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : __uint_as_float(stats[S_GY + lb]);
+    const float gainCv = locked ? clampf(p.lockGainC[lb], 0.6f, 2.2f)
+                       : manual ? 1.0f : __uint_as_float(stats[S_GC + lb]);
     const float sigY = clampf(ryG * gainYv, 1e-5f, 1.0f);
     const float sigC = clampf(rcG * gainCv, 1e-5f, 1.0f);
 
@@ -1527,13 +1556,23 @@ void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Para
     const dim3 blocksHalf((p_Width / 2 + threads.x - 1) / threads.x,
                           (p_Height / 2 + threads.y - 1) / threads.y, 1);
 
-    // a locked profile still runs estimation (live HUD) — FinalizeStats
-    // overrides the sigma/gain slots with the locked values
-    const bool autoProfile = (params.profileSource != 2) || (params.profileLocked != 0);
+    // v3.3 lock fast path: a locked profile still runs input estimation when
+    // a scope/analysis view is showing the live measurement; otherwise the
+    // estimation is output-inert — the kernels compute the locked values
+    // straight from the params — and the NoiseEst/FinalizeStats dispatches
+    // are skipped entirely. The residual passes always run under a lock (the
+    // residual depends on what the temporal stage removed from THIS frame).
+    const bool wantLiveStats = (params.scopeMeasure != 0) || (params.scopeEq != 0) ||
+                               (params.viewMode == 5);
+    const bool residualLive = (params.profileSource != 2) || (params.profileLocked != 0);
+    const bool inputLive = residualLive && ((params.profileLocked == 0) || wantLiveStats);
 
-    if (autoProfile)
+    if (residualLive)
     {
         cudaMemsetAsync(res.stats, 0, NR_STATS_UINTS * sizeof(unsigned int), stream);
+    }
+    if (inputLive)
+    {
         NoiseEstKernel<<<blocksHalf, threads, 0, stream>>>(params, p_Width, p_Height, srcs[2], partner, res.stats);
         FinalizeStatsKernel<<<1, 1, 0, stream>>>(params, res.stats);
     }
@@ -1542,7 +1581,7 @@ void RunCudaNR(void* p_Stream, int p_Width, int p_Height, const NRParams& p_Para
                                                    srcs[0], srcs[1], srcs[2], srcs[3], srcs[4],
                                                    res.stats, res.tmp);
 
-    if (autoProfile)
+    if (residualLive)
     {
         ResidualEstKernel<<<blocksHalf, threads, 0, stream>>>(params, p_Width, p_Height, res.tmp, res.stats);
         FinalizeResidualKernel<<<1, 1, 0, stream>>>(params, res.stats);

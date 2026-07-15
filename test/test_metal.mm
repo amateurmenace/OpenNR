@@ -326,6 +326,22 @@ int main()
     NRParams x5 = p; x5.motionTracking = 1; x5.ghostGuard = 1;
     failures += compareRun(queue, x5, "v3.2 guard + tracking (2px pan)", true);
 
+    // ---- v3.3 cases ----
+    // lock fast path: the "v3 locked profile" case above (locked, scopes
+    // off) now skips the NoiseEst/FinalizeStats dispatches on the GPU and
+    // the measurement pass on the CPU — these cover the boundaries.
+    NRParams y1 = v6; y1.scopeEq = 1;
+    failures += compareRun(queue, y1, "v3.3 locked + EQ scope (live stats)", false, false, true);
+
+    NRParams y2 = v6; y2.scopeMotion = 1;
+    failures += compareRun(queue, y2, "v3.3 locked + motion scope (fast path)", false, false, true);
+
+    NRParams y3 = v6; y3.viewMode = 4;
+    failures += compareRun(queue, y3, "v3.3 locked fast path, noise view");
+
+    NRParams y4 = v6; y4.profileSource = 1; y4.regionCX = 0.3f; y4.regionCY = 0.4f;
+    failures += compareRun(queue, y4, "v3.3 locked fast path, region source");
+
     printf(failures == 0 ? "ALL GPU PARITY CHECKS PASSED\n" : "%d GPU PARITY CHECK(S) FAILED\n", failures);
     return failures == 0 ? 0 : 1;
 }

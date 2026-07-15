@@ -118,6 +118,12 @@ int main()
     NRParams noTrack = best;
     noTrack.motionTracking = 0;   // the v2.1-equivalent temporal path
 
+    // v3.3 lock fast path: locked profile + no scopes skips the input
+    // estimation dispatches entirely
+    NRParams locked = best;
+    locked.profileLocked = 1;
+    locked.lockSY = 0.03f; locked.lockSC = 0.02f; locked.lockTY = 0.028f; locked.lockTC = 0.018f;
+
     struct { const char* name; int w, h; int iters; } sizes[] = {
         { "HD  1920x1080", 1920, 1080, 40 },
         { "UHD 3840x2160", 3840, 2160, 15 },
@@ -127,9 +133,11 @@ int main()
         const double msStatic = benchOne(queue, s.w, s.h, best, 0.0f, s.iters);
         const double msPan    = benchOne(queue, s.w, s.h, best, 1.5f, s.iters);
         const double msNoTrk  = benchOne(queue, s.w, s.h, noTrack, 0.0f, s.iters);
+        const double msLock   = benchOne(queue, s.w, s.h, locked, 0.0f, s.iters);
         const double msFast   = benchOne(queue, s.w, s.h, fast, 0.0f, s.iters);
-        printf("%s   Better(NLM,R3,5f): static %6.2f ms (%5.1f fps)  panning %6.2f ms (%5.1f fps)  tracking-off %6.2f ms\n",
-               s.name, msStatic, 1000.0 / msStatic, msPan, 1000.0 / msPan, msNoTrk);
+        printf("%s   Better(NLM,R3,5f): static %6.2f ms (%5.1f fps)  panning %6.2f ms (%5.1f fps)  tracking-off %6.2f ms  locked %6.2f ms (%5.1f fps)\n",
+               s.name, msStatic, 1000.0 / msStatic, msPan, 1000.0 / msPan, msNoTrk,
+               msLock, 1000.0 / msLock);
         printf("%s   Faster(Bilat,R2,3f): %6.2f ms/frame (%5.1f fps)\n",
                s.name, msFast, 1000.0 / msFast);
     }
