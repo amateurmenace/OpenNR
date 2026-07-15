@@ -225,7 +225,7 @@
         <a class="btn btn-green" style="background:var(--green-lt)" href="https://github.com/amateurmenace/Hush-OpenNR/releases/latest">Download · Windows</a>
         <a class="btn btn-line" href="https://github.com/amateurmenace/Hush-OpenNR">GitHub</a>
       </div>
-      <div class="meta">v3.1 · Resolve 17+ free &amp; Studio · macOS 11+ (universal) · Windows 10+ x64 (OpenCL) · MIT · Linux builds from source</div>
+      <div class="meta">v3.4 · Resolve 17+ free &amp; Studio · macOS 11+ (universal) · Windows 10+ x64 (OpenCL) · MIT · Linux builds from source</div>
     </div>
 
     <div class="demo reg">
@@ -280,7 +280,7 @@
 
 <section class="alt">
   <div class="wrap">
-    <div class="kicker">New in v3 &amp; v3.1 · Intelligence, power, transparency</div>
+    <div class="kicker">v3 → v3.4 · Intelligence, power, transparency</div>
     <h2>One click. Every slider, set.</h2>
     <p class="lede"><b>Auto Setup</b> analyzes your clip and dials in the whole
     plugin — then hands you the sliders.</p>
@@ -325,6 +325,35 @@
     carry plain names — Fine Grain (~1 px), Clumps (3–8 px), Stains (16 px+),
     Color Blotches.</p>
 
+    <h3 style="margin-top:38px">v3.2 &amp; v3.3 — field-review fixes, reach &amp; depth</h3>
+    <p><b>Ghost Guard (v3.2)</b> added a second, independent motion test to the temporal
+    gate — on the <em>signed</em> patch mean, where pure noise cancels toward zero but
+    slow coherent motion doesn't — catching the subtle slow-motion smear the magnitude
+    gate can't see, for ~0.01 dB on static footage. v3.2 also taught the residual
+    re-measurement to see <b>compression blotch</b> at two scales.
+    <b>v3.3</b> quadrupled Motion Tracking's reach (a hierarchical search out to
+    <b>~±8 px</b>, so real pans keep their temporal averaging), added a <b>7-frame
+    stack</b> for locked-off noisy shots, <b>Deep Clean</b> — a gentle bounded pre-pass
+    for severe or compressed noise — and <b>per-channel chroma profiles</b>, because
+    blue-channel night noise reads very differently on Cb than Cr.</p>
+
+    <h3 style="margin-top:38px">v3.4 — lock what you see</h3>
+    <p><b>Lock Profile now freezes exactly the measurement you are looking at.</b>
+    Until v3.4, locking silently swapped your live playhead measurement for a median of
+    five frames spread across the whole clip — on anything that moves, the box covers
+    different content at those times, and locking could visibly bring the noise back.
+    Now the lock is the playhead measurement, confirmed by a <b>tracked sweep</b> of the
+    ±4 neighbouring frames: the patch is followed frame-to-frame, measured at its
+    tracked position, and a frame only votes if its measurement agrees with the
+    playhead's — a subject crossing your patch is simply rejected. Worst case, the lock
+    is exactly what you saw.</p>
+    <p><b>Auto Region</b> finds the flattest patch on the current frame (scored against
+    the expected noise at its brightness, so dark noisy flats aren't penalized), moves
+    the yellow sampling box there and shows it. And the box finally tells you its mode:
+    <b>yellow with handles = live</b>, re-measured every frame; <b>ice-blue with a
+    padlock = frozen</b>, dragging disabled. The <b>temporal gate went
+    brightness-aware</b> too — details in the math section below.</p>
+
     <p style="font: 500 13px var(--mono); color: var(--text-med); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; max-width: 74ch; line-height: 2">
     <b style="color:var(--green)">Since v1, in one breath:</b><br>
     v1.1 &nbsp;video-native noise estimators, step-by-step UI, analysis views<br>
@@ -332,7 +361,10 @@
     v2.0 &nbsp;residual re-measurement, brightness-aware profiling, chroma blotch pass, film grain &amp; finishing stage<br>
     v2.1 &nbsp;"Hush" name, draggable sampling region, Windows builds<br>
     v3.0 &nbsp;Auto Setup, motion tracking, firefly zapper, Noise EQ, profile lock, deband, noisiness matte<br>
-    v3.1 &nbsp;Detail Rescue, per-step viewer scopes, extended ranges, bolder Auto Setup</p>
+    v3.1 &nbsp;Detail Rescue, per-step viewer scopes, extended ranges, bolder Auto Setup<br>
+    v3.2 &nbsp;Ghost Guard, two-scale residual, lock/region field fixes<br>
+    v3.3 &nbsp;±8 px hierarchical motion search, 7-frame stack, Deep Clean, per-channel chroma, lock fast path<br>
+    v3.4 &nbsp;playhead lock + tracked sweep, Auto Region, live/frozen box states, brightness-aware temporal gate</p>
   </div>
 </section>
 
@@ -357,13 +389,13 @@
     <h2>Five steps. Click each to learn more.</h2>
     <div class="autohint" id="hush-pipeHint">auto-cycling — click any step to explore</div>
     <div class="pipe" id="hush-pipe">
-      <div class="step on" data-d="Three estimators measure the noise of every frame: median frame-to-frame difference (immune to the correlated, blotchy noise compression creates), plus fine and coarse Laplacian statistics — with a separate estimate for every brightness band, because shadows are noisier than highlights. Robust medians keep edges, texture and motion out of the measurement, and exactly-flat pixels (letterbox bars, crushed blacks) are excluded so they can't drag the estimate toward zero. Lock the profile and every frame filters against the same numbers."><span class="n">1</span><b>Measure</b><small>3 estimators × 16 brightness bands</small></div>
-      <div class="step" data-d="Each pixel is compared patch-wise against up to two frames either side — and in v3, at nine candidate alignments, so slow pans and handheld drift keep their averaging (Motion Tracking). Below the expected pure-noise difference, frames average freely; past the motion threshold the gate closes to exactly zero — mismatched pixels can't bleed in, so motion can't ghost, by construction. A firefly zapper clips hot pixels to the temporal median first, and a live Motion Map scope shows green where frames are stacking, red where protection kicked in."><span class="n">2</span><b>Temporal</b><small>motion-tracked, hard-knee gate, zero ghosting</small></div>
-      <div class="step" data-d="The noise that actually survived temporal merging is measured again from the merged image — no assumptions — and a Noise EQ cuts it by SIZE: Fine Grain (~1 px, non-local means), Clumps (3–8 px compression blotch), Stains (16 px+ luma mottling) and Color Blotches, each removing only its own scale. Then Detail Rescue bounds the whole stage: anything changed by more than a noise-sized amount is put back, so cranked strengths smooth without blurring. Touch an EQ slider and its scope appears — bar = your cut, amber line = measured noise at that size."><span class="n">3</span><b>Spatial</b><small>self-truing Noise EQ + Detail Rescue</small></div>
+      <div class="step on" data-d="Three estimators measure the noise of every frame: median frame-to-frame difference (immune to the correlated, blotchy noise compression creates), plus fine and coarse Laplacian statistics — with a separate estimate for every brightness band, because shadows are noisier than highlights. Robust medians keep edges, texture and motion out of the measurement, and exactly-flat pixels (letterbox bars, crushed blacks) are excluded so they can't drag the estimate toward zero. The measurement runs live every frame — Lock Profile freezes exactly what you see at the playhead (confirmed by a tracked sweep of its neighbours), and Auto Region finds the flattest patch and places the sampling box for you."><span class="n">1</span><b>Measure</b><small>3 estimators × 16 brightness bands · lock what you see</small></div>
+      <div class="step" data-d="Each pixel is compared patch-wise against up to three frames either side, re-aimed by a hierarchical motion search out to ~±8 px so real pans and handheld drift keep their averaging. The anti-ghosting stack is layered: below the expected pure-noise difference frames average freely, past the knee the gate closes to EXACTLY zero (no Gaussian tail, so mismatches cannot bleed in); shifted matches face a 1.7× steeper roll-off; Ghost Guard runs a second test on the SIGNED patch mean, where noise cancels but slow coherent motion doesn't — the slow-motion smear the magnitude gate can't see; and a firefly zapper clips hot pixels to the temporal median only when three independent tests agree. Since v3.4 every one of those knees scales with the pixel's brightness band, so noisy shadows keep stacking instead of reading as motion."><span class="n">2</span><b>Temporal</b><small>±8 px tracked · hard knee + Ghost Guard · zero ghosting</small></div>
+      <div class="step" data-d="The noise that actually survived temporal merging is measured again from the merged image — no assumptions, at two scales so compression blotch can't hide — and a Noise EQ cuts it by SIZE: Fine Grain (~1 px, non-local means with per-channel chroma sigmas), Clumps (3–8 px), Stains (16 px+) and Color Blotches, each removing only its own scale. Deep Clean optionally runs a gentle bounded pre-pass first for severe or compressed noise. Then Detail Rescue bounds the whole stage: anything changed by more than a noise-sized amount is put back, so cranked strengths smooth without blurring. Touch an EQ slider and its scope appears — bar = your cut, amber line = measured noise at that size."><span class="n">3</span><b>Spatial</b><small>self-truing Noise EQ · Deep Clean · Detail Rescue</small></div>
       <div class="step" data-d="Finishing moves: desaturate the deepest shadows (where color noise hides), re-inject a little of the original brightness texture, smooth banding with a gradient-aware debander that never touches real edges, or lay down synthesized film grain — midtone-weighted like real stock, animated, with size and color controls."><span class="n">4</span><b>Refine</b><small>sat curve · texture · deband · grain</small></div>
       <div class="step" data-d="Per-step Scope checkboxes draw panels over any view — the Measurements panel, the Noise EQ lanes, the Motion Map — and the full-image views follow the picture through the pipeline: Input, After Temporal, Noise Removed (auto-gained to the measured noise level, soft-kneed so lights don't clip into blobs), a Temporal Activity map, a per-pixel SNR heat map, and a Noisiness matte written to RGB + alpha for keying downstream. Scopes are rendered by the same kernels that filter — they can't disagree with what's happening."><span class="n">5</span><b>Inspect</b><small>scopes + views · the viewer becomes the scope</small></div>
     </div>
-    <div class="pipedetail"><p id="hush-pipeText">Three estimators measure the noise of every frame: median frame-to-frame difference (immune to the correlated, blotchy noise compression creates), plus fine and coarse Laplacian statistics — with a separate estimate for every brightness band, because shadows are noisier than highlights. Robust medians keep edges, texture and motion out of the measurement, and exactly-flat pixels (letterbox bars, crushed blacks) are excluded so they can't drag the estimate toward zero. Lock the profile and every frame filters against the same numbers.</p></div>
+    <div class="pipedetail"><p id="hush-pipeText">Three estimators measure the noise of every frame: median frame-to-frame difference (immune to the correlated, blotchy noise compression creates), plus fine and coarse Laplacian statistics — with a separate estimate for every brightness band, because shadows are noisier than highlights. Robust medians keep edges, texture and motion out of the measurement, and exactly-flat pixels (letterbox bars, crushed blacks) are excluded so they can't drag the estimate toward zero. The measurement runs live every frame — Lock Profile freezes exactly what you see at the playhead (confirmed by a tracked sweep of its neighbours), and Auto Region finds the flattest patch and places the sampling box for you.</p></div>
   </div>
 </section>
 
@@ -375,14 +407,14 @@
     precisely known injected noise, so improvement is measured, not eyeballed.</p>
     <div class="chart" id="hush-chart">
       <h3>PSNR before → after (dB, higher is better)</h3>
-      <div class="sub">640×360 validation scenes · σ = 5% · defaults · v3.1</div>
+      <div class="sub">640×360 validation scenes · σ = 5% · defaults · v3.4</div>
       <div class="cbar"><div class="lab"><span>Static shot</span><b>26.0 → 40.9 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="82%"></div></div></div>
       <div class="cbar"><div class="lab"><span>Correlated (compressed) noise</span><b>26.0 → 35.4 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="71%"></div></div></div>
       <div class="cbar"><div class="lab"><span>Slow drift — motion-tracked in v3</span><b>26.0 → 38.3 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="77%"></div></div></div>
       <div class="cbar"><div class="lab"><span>Fast motion</span><b>26.0 → 36.0 dB</b></div><div class="track"><div class="before" style="width:52%"></div><div class="after" data-w="72%"></div></div></div>
       <div class="cbar"><div class="lab"><span>Auto Setup vs defaults (noisy footage, v3.1)</span><b>40.6 → 45.6 dB</b></div><div class="track"><div class="before" style="width:81%"></div><div class="after" data-w="91%"></div></div></div>
     </div>
-    <p class="cap" style="margin-top:10px">Plus: 86 synthetic-truth checks per build (auto must beat defaults on every footage class), GPU output verified against the CPU reference across 31 configurations to ~10⁻⁶ · 126 fps HD / 33 fps UHD max quality on an M1 Max.</p>
+    <p class="cap" style="margin-top:10px">Plus: 135 synthetic-truth checks per build (auto must beat defaults on every footage class, ghosting regressions are build failures), GPU output verified against the CPU reference across 51 configurations to ~10⁻⁶ · 104 fps HD / 27 fps UHD max quality on an M1 Max (129 fps HD locked).</p>
   </div>
 </section>
 
@@ -461,18 +493,54 @@
     <div class="formula">σ_fine = median(|L ∗ I|) / (6 · 0.6745)     L = [1 −2 1; −2 4 −2; 1 −2 1]
 gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence)</div>
 
-    <h3>A temporal gate that cannot ghost</h3>
-    <div class="formula">w = 1 − smoothstep(1.13σ_T,  1.13σ_T + k·σ_T,  |Δpatch|)</div>
+    <h3>The anti-ghosting stack: a gate that cannot ghost</h3>
+    <div class="formula">w = 1 − smoothstep(1.13·g·σ_T,  1.13·g·σ_T + k·g·σ_T,  |Δpatch|)      g = gain(brightness band)</div>
     <p>Full weight while a difference is explainable by noise; <em>exactly zero</em> past the
     knee. An earlier version used a Gaussian falloff — its fat tail blended pixels several σ
     apart at 30–40% weight and turned slow pans into soup. The hard knee ended that
-    structurally, and a slow-drift regression test now makes ghosting a build failure.</p>
+    structurally, and a slow-drift regression test now makes ghosting a build failure.
+    Since v3.4 the knee is calibrated <b>per brightness band</b> (the g above): shadows on a
+    real camera run 1.5–2.2× noisier than mids, so a flat knee starved them of averaging —
+    they read as motion — while highlights got a knee that was too wide. Measured: +1.35 dB
+    in the shadows on a brightness-profiled scene, highlights unchanged.</p>
+    <p>Three more layers back the knee up. <b>Motion Tracking</b> re-aims each neighbour
+    patch before gating — a step-4 coarse search on 2×2 block means (so a big step sees
+    structure, not aliasing), then a converging ±1 walk, out to ~±8 px — and any shifted
+    winner faces a <b>1.7× steeper roll-off</b> plus an acceptance margin, so misaligned
+    periodic texture cannot blend. <b>Ghost Guard</b> gates the <em>signed</em> patch mean:</p>
+    <div class="formula">w ×= 1 − smoothstep(1.13·g·σ_T,  …,  |mean_signed(Δpatch)|)      σ_mean = √2σ/3 → knee ≈ 2.4σ_mean</div>
+    <p>Pure-noise differences cancel when averaged with their signs — coherent motion
+    doesn't — so the slow, subtle smear the magnitude gate physically can't see gets its
+    weight cut, for ~0.01 dB on static footage. And the <b>firefly zapper</b> clips
+    single-frame impulses (hot pixels, sensor sparkles) to the 3-frame temporal median —
+    only when three independent tests agree, so thin fast-moving detail survives. It stays
+    deliberately un-scaled by brightness: at 6σ, the gain curve cannot flip a genuine
+    impulse.</p>
+
+    <h3>Lock what you see (v3.4)</h3>
+    <p>Unlocked, the profile is measured live on every frame — park somewhere and the
+    numbers follow the content under the box. <b>Lock Profile</b> freezes the playhead
+    measurement, hardened by a tracked sweep: the patch is followed across the ±4
+    neighbouring frames by SAD over sampled luma with a <em>zero-motion prior</em>
+    (featureless patches score every candidate alike, so the prior keeps the box still
+    instead of letting it random-walk along the noise), measured at its tracked position,
+    and a frame votes only if its σ lands within 1.6× of the playhead's and its patch
+    brightness within 0.13. A subject crossing the patch is rejected; the worst case is
+    exactly the measurement you approved. <b>Auto Region</b> places the box for you: every
+    candidate patch is scored by local variance <em>minus the expected noise variance at its
+    brightness</em>, so a dark noisy flat — the best measurement spot on most night footage —
+    is not mistaken for texture.</p>
 
     <h3>Spatial filtering that measures its own inheritance</h3>
     <p>Compression correlates noise <em>across frames</em>, so temporal averaging removes less
-    than √N theory promises. Hush re-measures the residual on the merged image itself and
-    tunes non-local means to that measurement — filter strength h = 1.15σ_residual for luma,
-    2.2σ for chroma, patch distances bias-corrected by the 2σ² noise alone contributes. The
+    than √N theory promises. Hush re-measures the residual on the merged image itself — at
+    two scales since v3.2, so blotch that survives the merge cannot hide from a fine-scale
+    estimator — and tunes non-local means to that measurement: filter strength
+    h = 1.15σ_residual for luma, 2.2σ for chroma, patch distances bias-corrected by the 2σ²
+    noise alone contributes. Since v3.3 every chroma estimate is per-channel (blue-channel
+    night noise puts several times more energy on Cb than Cr, and a combined median splits
+    the difference badly for both), and <b>Deep Clean</b> can run a gentle 0.6·h pre-pass
+    whose corrections are hard-clamped to noise size — structure-safe by construction. The
     Noise EQ's larger bands work on block means with corrections clipped to noise scale, so
     each band removes only its own size; a sparse luma-guided pass reaches 23 px for chroma
     blotches and 47 px for luma stains.</p>
@@ -499,14 +567,16 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
     <p>One reference implementation in C++; Metal, CUDA and OpenCL kernels are line-by-line
     ports, and a parity harness drives the actual plugin GPU entry point — the one Resolve
     calls — asserting agreement with the reference to ~10⁻⁶ across 51 configurations, with
-    116 synthetic-truth checks gating every build (including "Auto Setup must beat stock
-    defaults on every footage class"). Even the film grain is bit-deterministic
-    (integer-hash value noise). Honest limitations: no motion-vector compensation and no
-    neural net — that's what keeps it fast, predictable, and free.</p>
+    135 synthetic-truth checks gating every build (including "Auto Setup must beat stock
+    defaults on every footage class", a slow-drift no-ghosting regression, and v3.4's
+    tracked-sweep suite: the tracker must recover planted shifts, stay put on featureless
+    patches, and reject an occlusion crossing the sampling region). Even the film grain is
+    bit-deterministic (integer-hash value noise). Honest limitations: no motion-vector
+    compensation and no neural net — that's what keeps it fast, predictable, and free.</p>
     <table>
       <tr><th>Resolution</th><th>Best quality (NLM r3 · 5 frames · blotch)</th><th>Locked profile</th><th>Faster mode</th></tr>
-      <tr><td>HD 1920×1080</td><td>9.2 ms/frame — 109 fps</td><td>7.5 ms — 133 fps</td><td>5.4 ms — 184 fps</td></tr>
-      <tr><td>UHD 3840×2160</td><td>35 ms/frame — 28 fps</td><td>30 ms — 33 fps</td><td>20 ms — 49 fps</td></tr>
+      <tr><td>HD 1920×1080</td><td>9.7 ms/frame — 104 fps</td><td>7.8 ms — 129 fps</td><td>5.7 ms — 176 fps</td></tr>
+      <tr><td>UHD 3840×2160</td><td>37 ms/frame — 27 fps</td><td>31 ms — 32 fps</td><td>21 ms — 48 fps</td></tr>
     </table>
   </div>
 </section>
@@ -519,7 +589,7 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
       <li><b>macOS:</b> download the .pkg from the <a href="https://github.com/amateurmenace/Hush-OpenNR/releases/latest">latest release</a> and double-click (signed with an Apple developer ID — if Gatekeeper objects, right-click → Open). <b>Windows:</b> download the zip, then double-click <b>Install OpenNR (Windows).bat</b> — or just drag <b>OpenNR.ofx.bundle</b> into <code style="font-family:var(--mono);font-size:.85em">C:\Program Files\Common Files\OFX\Plugins</code>.</li>
       <li>Restart DaVinci Resolve.</li>
       <li>Find it under <b>Effects → OpenFX → Filters → Hush → Hush Open NR</b>. Drag onto an early node on the Color page (or a clip on the Edit page).</li>
-      <li>Click <b>Auto Setup</b>, then tick a <b>Scope</b> checkbox (Step 1 Measurements, Step 2 Motion Map, Step 3 Noise EQ) to watch it work — and for tricky footage, drag the yellow sampling rectangle right in the viewer. Untick scopes before rendering.</li>
+      <li>Click <b>Auto Setup</b>, then tick a <b>Scope</b> checkbox (Step 1 Measurements, Step 2 Motion Map, Step 3 Noise EQ) to watch it work. For tricky footage, click <b>Auto Region</b> to have the sampling box placed on the flattest patch (or drag the yellow rectangle yourself), then <b>Lock Profile</b> to freeze exactly what you see — the box turns blue with a padlock. Untick scopes before rendering.</li>
     </ol>
     <p class="cap">Works in the free version of Resolve (third-party OpenFX has been supported there since v15). The Windows build renders via OpenCL (NVIDIA, AMD and Intel GPUs); Linux builds from source.</p>
 
