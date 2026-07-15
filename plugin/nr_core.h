@@ -567,13 +567,15 @@ static inline void dec1Glyphs(float v, int out[3])
 static inline bool hudPixel(int x, int y, int W, int H, const Stats& st,
                             int enableTemporal, float& r, float& g, float& b)
 {
+    // OFX buffers are bottom-up: anchor the panel in DISPLAY space (top-left)
+    const int yd = H - 1 - y;
     const int s = std::max(1, H / 540);
     const int ox = 16 * s, oy = 16 * s;
     const int lw = 320, lh = 198;
-    if (x < ox || y < oy || x >= ox + lw * s || y >= oy + lh * s)
+    if (x < ox || yd < oy || x >= ox + lw * s || yd >= oy + lh * s)
         return false;
     const int lx = (x - ox) / s;
-    const int ly = (y - oy) / s;
+    const int ly = (yd - oy) / s;
 
     r = r * 0.20f + 0.015f; g = g * 0.20f + 0.015f; b = b * 0.20f + 0.02f;
     if (lx == 0 || ly == 0 || lx == lw - 1 || ly == lh - 1) {

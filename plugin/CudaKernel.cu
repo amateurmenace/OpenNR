@@ -529,13 +529,14 @@ __device__ inline bool hudPixel(int x, int y, int W, int H,
                                 const unsigned int* stats, int enableTemporal,
                                 float& r, float& g, float& b)
 {
+    const int yd = H - 1 - y;   // OFX buffers are bottom-up; panel anchors top-left on screen
     const int s = max(1, H / 540);
     const int ox = 16 * s, oy = 16 * s;
     const int lw = 320, lh = 198;
-    if (x < ox || y < oy || x >= ox + lw * s || y >= oy + lh * s)
+    if (x < ox || yd < oy || x >= ox + lw * s || yd >= oy + lh * s)
         return false;
     const int lx = (x - ox) / s;
-    const int ly = (y - oy) / s;
+    const int ly = (yd - oy) / s;
 
     r = r * 0.20f + 0.015f; g = g * 0.20f + 0.015f; b = b * 0.20f + 0.02f;
     if (lx == 0 || ly == 0 || lx == lw - 1 || ly == lh - 1) {

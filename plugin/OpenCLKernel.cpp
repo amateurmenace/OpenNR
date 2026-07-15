@@ -556,13 +556,14 @@ inline bool hudPixel(int x, int y, int W, int H,
                      uint medBin, uint hmax, __global const uint* stats,
                      int enableTemporal, float3* rgb)
 {
+    const int yd = H - 1 - y;   // OFX buffers are bottom-up; panel anchors top-left on screen
     const int s = max(1, H / 540);
     const int ox = 16 * s, oy = 16 * s;
     const int lw = 320, lh = 198;
-    if (x < ox || y < oy || x >= ox + lw * s || y >= oy + lh * s)
+    if (x < ox || yd < oy || x >= ox + lw * s || yd >= oy + lh * s)
         return false;
     const int lx = (x - ox) / s;
-    const int ly = (y - oy) / s;
+    const int ly = (yd - oy) / s;
 
     *rgb = *rgb * 0.20f + (float3)(0.015f, 0.015f, 0.02f);
     if (lx == 0 || ly == 0 || lx == lw - 1 || ly == lh - 1) {
