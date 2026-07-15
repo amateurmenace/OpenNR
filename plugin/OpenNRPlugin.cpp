@@ -27,16 +27,17 @@
 #define kPluginName "OpenNR Denoise"
 #define kPluginGrouping "OpenNR"
 #define kPluginDescription \
-    "OpenNR v1.2 — free spatio-temporal video noise reduction.\n\n" \
+    "OpenNR v2.0 — the free noise reduction suite.\n\n" \
     "Work top to bottom: 1) measure the noise (automatic, from a region, or " \
     "manual), 2) temporal NR averages matching pixels across frames, 3) spatial " \
-    "NR cleans what remains, 4) inspect with the analysis views.\n\n" \
-    "Open Step 4 and choose 'Noise Analysis' to SEE the measured noise levels " \
+    "NR cleans what remains, 4) refine the finish (shadow desaturation, texture, " \
+    "film grain), 5) inspect with the analysis views.\n\n" \
+    "Open Step 5 and choose 'Noise Analysis' to SEE the measured noise levels " \
     "on screen, or 'Noise Only' to see exactly what is being removed.\n\n" \
     "MIT-licensed and free forever."
 #define kPluginIdentifier "org.opennr.Denoise"
-#define kPluginVersionMajor 1
-#define kPluginVersionMinor 2
+#define kPluginVersionMajor 2
+#define kPluginVersionMinor 0
 
 #define kSupportsTiles false
 #define kSupportsMultiResolution false
@@ -153,6 +154,14 @@ public:
         m_SpatialLuma    = fetchDoubleParam("spatialLuma");
         m_SpatialChroma  = fetchDoubleParam("spatialChroma");
         m_PreserveDetail = fetchDoubleParam("preserveDetail");
+        m_ChromaBlotch   = fetchDoubleParam("chromaBlotch");
+        m_EnableRefine   = fetchBooleanParam("enableRefine");
+        m_ShadowDesat    = fetchDoubleParam("shadowDesat");
+        m_DesatRange     = fetchDoubleParam("desatRange");
+        m_LumaTexture    = fetchDoubleParam("lumaTexture");
+        m_GrainAmount    = fetchDoubleParam("grainAmount");
+        m_GrainSize      = fetchDoubleParam("grainSize");
+        m_GrainChroma    = fetchDoubleParam("grainChroma");
         m_ViewMode       = fetchChoiceParam("viewMode");
 
         updateEnabledness();
@@ -206,7 +215,8 @@ public:
 
     virtual void changedParam(const OFX::InstanceChangedArgs& /*p_Args*/, const std::string& p_ParamName)
     {
-        if (p_ParamName == "profileSource" || p_ParamName == "enableTemporal" || p_ParamName == "enableSpatial")
+        if (p_ParamName == "profileSource" || p_ParamName == "enableTemporal" ||
+            p_ParamName == "enableSpatial" || p_ParamName == "enableRefine")
             updateEnabledness();
     }
 
@@ -253,6 +263,15 @@ private:
         m_SpatialLuma->setEnabled(sOn);
         m_SpatialChroma->setEnabled(sOn);
         m_PreserveDetail->setEnabled(sOn);
+        m_ChromaBlotch->setEnabled(sOn);
+
+        const bool rOn = m_EnableRefine->getValue();
+        m_ShadowDesat->setEnabled(rOn);
+        m_DesatRange->setEnabled(rOn);
+        m_LumaTexture->setEnabled(rOn);
+        m_GrainAmount->setEnabled(rOn);
+        m_GrainSize->setEnabled(rOn);
+        m_GrainChroma->setEnabled(rOn);
     }
 
     NRParams gatherParams(double t)
@@ -285,6 +304,16 @@ private:
         p.spatialLuma     = static_cast<float>(m_SpatialLuma->getValueAtTime(t) / 100.0);
         p.spatialChroma   = static_cast<float>(m_SpatialChroma->getValueAtTime(t) / 100.0);
         p.preserveDetail  = static_cast<float>(m_PreserveDetail->getValueAtTime(t) / 100.0);
+        p.chromaBlotch    = static_cast<float>(m_ChromaBlotch->getValueAtTime(t) / 100.0);
+
+        p.enableRefine    = m_EnableRefine->getValueAtTime(t) ? 1 : 0;
+        p.shadowDesat     = static_cast<float>(m_ShadowDesat->getValueAtTime(t) / 100.0);
+        p.desatRange      = static_cast<float>(m_DesatRange->getValueAtTime(t));
+        p.lumaTexture     = static_cast<float>(m_LumaTexture->getValueAtTime(t) / 100.0);
+        p.grainAmount     = static_cast<float>(m_GrainAmount->getValueAtTime(t) / 100.0);
+        p.grainSize       = static_cast<float>(m_GrainSize->getValueAtTime(t));
+        p.grainChroma     = static_cast<float>(m_GrainChroma->getValueAtTime(t) / 100.0);
+        p.frameIndex      = static_cast<int>(t);
 
         p.master          = static_cast<float>(m_Master->getValueAtTime(t));
         int view = 0;
@@ -378,6 +407,15 @@ private:
         p.spatialLuma    = params.spatialLuma;
         p.spatialChroma  = params.spatialChroma;
         p.preserveDetail = params.preserveDetail;
+        p.chromaBlotch   = params.chromaBlotch;
+        p.enableRefine   = params.enableRefine;
+        p.shadowDesat    = params.shadowDesat;
+        p.desatRange     = params.desatRange;
+        p.lumaTexture    = params.lumaTexture;
+        p.grainAmount    = params.grainAmount;
+        p.grainSize      = params.grainSize;
+        p.grainChroma    = params.grainChroma;
+        p.frameIndex     = params.frameIndex;
         p.master         = params.master;
         p.viewMode       = params.viewMode;
 
@@ -440,6 +478,14 @@ private:
     OFX::DoubleParam*  m_SpatialLuma = nullptr;
     OFX::DoubleParam*  m_SpatialChroma = nullptr;
     OFX::DoubleParam*  m_PreserveDetail = nullptr;
+    OFX::DoubleParam*  m_ChromaBlotch = nullptr;
+    OFX::BooleanParam* m_EnableRefine = nullptr;
+    OFX::DoubleParam*  m_ShadowDesat = nullptr;
+    OFX::DoubleParam*  m_DesatRange = nullptr;
+    OFX::DoubleParam*  m_LumaTexture = nullptr;
+    OFX::DoubleParam*  m_GrainAmount = nullptr;
+    OFX::DoubleParam*  m_GrainSize = nullptr;
+    OFX::DoubleParam*  m_GrainChroma = nullptr;
     OFX::ChoiceParam*  m_ViewMode = nullptr;
 };
 
@@ -532,8 +578,10 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
 
     // ------------------------------------------------------------------ master
     defineDouble(p_Desc, page, "master", "Strength",
-                 "Overall amount of noise reduction. Scales every strength below at once. "
-                 "0 = off, 1 = normal, up to 2 for very noisy footage. Start here.",
+                 "Overall amount of noise reduction. Below 1.0 it fades the effect in and out. "
+                 "Above 1.0 it goes further: the filters widen what they treat as noise, so a "
+                 "Strength of 2 genuinely removes more than 1 (use for very noisy footage). "
+                 "0 = off. Start here.",
                  1.0, 0.0, 2.0, nullptr);
 
     // ---------------------------------------------------------- step 1: profile
@@ -642,27 +690,72 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
         OFX::IntParamDescriptor* i = p_Desc.defineIntParam("spatialRadius");
         i->setLabels("Search Radius", "Search Radius", "Radius");
         i->setHint("How far (in pixels) to look for similar areas. Larger = smoother flat areas but "
-                   "slower rendering. 3 is a good default.");
+                   "slower rendering. 3 is a good default; go to 6-8 for very soft, very noisy sources.");
         i->setDefault(3);
-        i->setRange(1, 5);
-        i->setDisplayRange(1, 5);
+        i->setRange(1, 8);
+        i->setDisplayRange(1, 8);
         i->setParent(*grpSpatial);
         page->addChild(*i);
     }
     defineDouble(p_Desc, page, "spatialLuma", "Luma Strength",
-                 "How much brightness noise to remove within the frame (0–100). Too high can look "
-                 "waxy — keep moderate to retain a filmic texture.", 45.0, 0.0, 100.0, grpSpatial);
+                 "How much brightness noise to remove within the frame (0–100). Higher values both "
+                 "blend more of the filtered result AND filter more aggressively. Too high can look "
+                 "waxy — pair with Step 4's texture/grain to keep a filmic feel.", 60.0, 0.0, 100.0, grpSpatial);
     defineDouble(p_Desc, page, "spatialChroma", "Chroma Strength",
-                 "How much color noise (blotches, speckle) to remove. Chroma tolerates high values "
-                 "— 75–100 is normal for phone or low-light footage.", 75.0, 0.0, 100.0, grpSpatial);
+                 "How much color noise (speckle) to remove. Chroma tolerates maximum strength on "
+                 "most footage — 100 is the default for a reason.", 100.0, 0.0, 100.0, grpSpatial);
     defineDouble(p_Desc, page, "preserveDetail", "Preserve Detail",
                  "Protects edges and texture: filtering is automatically reduced where the image has "
                  "real structure above the measured noise floor. Raise if fine detail is softening; "
                  "lower if edges stay noisy.", 35.0, 0.0, 100.0, grpSpatial);
+    defineDouble(p_Desc, page, "chromaBlotch", "Chroma Blotch Reduction",
+                 "A second, LARGE-radius color pass (up to 16 px) that reaches the big soft color "
+                 "stains that 4:2:0 compression leaves behind — the ones the normal search radius "
+                 "physically can't span. Guided by brightness so color never bleeds across edges. "
+                 "Raise for blotchy phone/low-light footage.", 25.0, 0.0, 100.0, grpSpatial);
 
-    // ---------------------------------------------------------- step 4: inspect
+    // ----------------------------------------------------------- step 4: refine
+    OFX::GroupParamDescriptor* grpRefine = p_Desc.defineGroupParam("grpRefine");
+    grpRefine->setLabels("Step 4 · Refine The Finish", "Step 4 · Refine", "4 · Refine");
+    grpRefine->setOpen(true);
+    grpRefine->setHint("Finishing touches after denoising: hide remaining color noise in the "
+                       "shadows, bring back natural texture, or lay down clean synthetic film "
+                       "grain in place of the ugly noise you removed.");
+
+    defineBool(p_Desc, page, "enableRefine", "Enable Refinements",
+               "Toggle the whole finishing stage on/off to compare.",
+               true, grpRefine);
+    defineDouble(p_Desc, page, "shadowDesat", "Shadow Desaturate",
+                 "Fades color saturation toward zero in the darkest tones (a saturation-vs-luma "
+                 "curve). Chroma noise lives in shadows — this hides what filtering can't remove, "
+                 "and reads as a clean, cinematic shadow rendering. Try 20–40 on noisy footage.",
+                 0.0, 0.0, 100.0, grpRefine);
+    defineDouble(p_Desc, page, "desatRange", "Desaturate Range",
+                 "How far up the tonal scale the shadow desaturation reaches (in luma, 0.02–0.5). "
+                 "Default 0.15 affects only true shadows.",
+                 0.15, 0.02, 0.5, grpRefine);
+    defineDouble(p_Desc, page, "lumaTexture", "Luma Texture",
+                 "Re-injects a percentage of the ORIGINAL brightness texture (grain) into the "
+                 "denoised image — the color noise stays gone, but the image keeps its natural "
+                 "film-like energy. Try 15–30 instead of cranking strengths down.",
+                 0.0, 0.0, 100.0, grpRefine);
+    defineDouble(p_Desc, page, "grainAmount", "Film Grain",
+                 "Adds clean, synthesized grain — soft, organic, animated per frame, strongest in "
+                 "the midtones like real film stock. The classic finishing move: remove the ugly "
+                 "noise, then lay down grain you chose.",
+                 0.0, 0.0, 100.0, grpRefine);
+    defineDouble(p_Desc, page, "grainSize", "Grain Size",
+                 "Grain particle size in pixels. 1 = fine 35mm-like, 3-4 = chunky 16mm feel. "
+                 "Scale up for UHD timelines.",
+                 1.6, 0.5, 6.0, grpRefine);
+    defineDouble(p_Desc, page, "grainChroma", "Grain Color",
+                 "0 = pure monochrome grain (film-like). Higher adds independent color grain "
+                 "(digital-sensor character).",
+                 25.0, 0.0, 100.0, grpRefine);
+
+    // ---------------------------------------------------------- step 5: inspect
     OFX::GroupParamDescriptor* grpOutput = p_Desc.defineGroupParam("grpOutput");
-    grpOutput->setLabels("Step 4 · Inspect & Compare", "Step 4 · Inspect", "4 · Inspect");
+    grpOutput->setLabels("Step 5 · Inspect & Compare", "Step 5 · Inspect", "5 · Inspect");
     grpOutput->setOpen(true);
     grpOutput->setHint("Views for checking what the plugin is measuring and doing. Set back to "
                        "Result before rendering.");
@@ -670,22 +763,30 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
     {
         OFX::ChoiceParamDescriptor* c = p_Desc.defineChoiceParam("viewMode");
         c->setLabels("View", "View", "View");
-        c->setHint("Result: the denoised image.\n\n"
-                   "Split: original on the left, denoised on the right.\n\n"
-                   "Noise Only: what is being removed (amplified 4x around gray). It should look "
-                   "like pure static — if you can see edges or faces in it, you are removing "
-                   "detail: lower Strength or raise Preserve Detail.\n\n"
-                   "Noise Analysis: on-screen readout of the measured noise levels (spatial and "
-                   "temporal, luma and chroma), meters, the noise histogram with its median marked, "
-                   "and the measurement region rectangle.\n\n"
-                   "Temporal Activity: where across-frame averaging is active (green) versus "
-                   "motion-protected (red). Red everywhere = temporal NR is doing nothing (motion "
-                   "or disabled); green flats = it is working.");
+        c->setHint("Follow the image through the pipeline:\n\n"
+                   "Result: the finished frame.\n\n"
+                   "Split: input on the left, result on the right.\n\n"
+                   "Input: the untouched source, for flip-comparisons.\n\n"
+                   "After Temporal: the image after Step 2 only — see what the across-frames stage "
+                   "contributed before spatial filtering.\n\n"
+                   "Noise Removed: what denoising took out (amplified 4x around gray, excludes "
+                   "grain/refinements). Should look like pure static — visible faces or edges mean "
+                   "detail is being cut: lower strengths or raise Preserve Detail.\n\n"
+                   "Noise Analysis: live measurements — input noise (blue) and the residual left "
+                   "after temporal NR (amber) for luma and chroma, effective frames averaged, the "
+                   "SNR gain so far, the noise-vs-brightness curve, the noise histogram, and the "
+                   "measurement region rectangle.\n\n"
+                   "Temporal Activity: green = frame-averaging active, red = motion-protected.\n\n"
+                   "SNR Map: signal-to-noise per pixel — magenta where noise dominates (NR matters "
+                   "most), green where the image wins.");
         c->appendOption("Result");
-        c->appendOption("Split (Before | After)");
-        c->appendOption("Noise Only (What Is Removed)");
+        c->appendOption("Split (Input | Result)");
+        c->appendOption("Input (Original)");
+        c->appendOption("After Temporal (Step 2 Only)");
+        c->appendOption("Noise Removed (Amplified)");
         c->appendOption("Noise Analysis (Measurements)");
         c->appendOption("Temporal Activity (Green = Averaging)");
+        c->appendOption("SNR Map (Magenta = Noisy)");
         c->setDefault(0);
         c->setParent(*grpOutput);
         page->addChild(*c);

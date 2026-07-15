@@ -66,9 +66,11 @@ int main()
     best.profileSource = 0; best.sigmaY = 0.02f; best.sigmaC = 0.02f; best.profileAdjust = 1.0f;
     best.regionCX = 0.5f; best.regionCY = 0.5f; best.regionSize = 0.25f; best.hasTemporalDiff = 0;
     best.enableTemporal = 1; best.temporalFrames = 5; best.temporalLuma = 0.6f; best.temporalChroma = 0.8f;
-    best.motionThresh = 0.4f; best.enableSpatial = 1; best.spatialMode = 1; best.spatialRadius = 3;
-    best.spatialLuma = 0.45f; best.spatialChroma = 0.75f; best.preserveDetail = 0.35f;
-    best.master = 1.0f; best.viewMode = 0;
+    best.motionThresh = 0.3f; best.enableSpatial = 1; best.spatialMode = 1; best.spatialRadius = 3;
+    best.spatialLuma = 0.6f; best.spatialChroma = 1.0f; best.preserveDetail = 0.35f;
+    best.chromaBlotch = 0.25f; best.enableRefine = 1; best.shadowDesat = 0.0f; best.desatRange = 0.15f;
+    best.lumaTexture = 0.0f; best.grainAmount = 0.0f; best.grainSize = 1.6f; best.grainChroma = 0.25f;
+    best.frameIndex = 0; best.master = 1.0f; best.viewMode = 0;
 
     NRParams fast = best;
     fast.temporalFrames = 3;

@@ -1,4 +1,4 @@
-// OpenNR — Metal implementation of the denoising pipeline (macOS).
+// OpenNR — Metal implementation of the denoising pipeline (macOS), v2.
 // Line-by-line port of plugin/nr_core.h; keep the two in sync.
 
 #import <Metal/Metal.h>
@@ -37,35 +37,66 @@ typedef struct NRParams
     float spatialLuma;
     float spatialChroma;
     float preserveDetail;
+    float chromaBlotch;
+
+    int   enableRefine;
+    float shadowDesat;
+    float desatRange;
+    float lumaTexture;
+    float grainAmount;
+    float grainSize;
+    float grainChroma;
+    int   frameIndex;
 
     float master;
     int   viewMode;
 } NRParams;
 
 constant float kMedianCal   = 0.247100f;   // 1 / (6 * 0.674490)
+constant float kQ35Cal      = 0.367299f;   // 1 / (6 * 0.453762)
 constant float kMedianCalT  = 1.048360f;   // 1 / (0.674490 * sqrt(2))
 constant float kQ20CalT     = 2.791278f;   // 1 / (0.253347 * sqrt(2))
-constant float kAbsDiffBias = 1.128379f;   // 2 / sqrt(pi)
+constant float kAbsDiffBias = 1.128379f;
 constant float kNlmHLuma    = 1.15f;
-constant float kNlmHChroma  = 2.00f;
+constant float kNlmHChroma  = 2.20f;
 constant int   kHistBins    = 256;
 constant float kHistScaleY  = 512.0f;
 constant float kHistScaleC  = 1024.0f;
+constant int   kLumaBins    = 16;
+constant int   kLumaSub     = 64;
+constant float kLumaSubScaleY = 128.0f;
+constant float kLumaSubScaleC = 256.0f;
 constant float kSigmaMin    = 1e-4f;
 constant float kSigmaMax    = 0.25f;
 
-#define H_YF   0
-#define H_CF   256
-#define H_Y2   512
-#define H_C2   768
-#define H_YT   1024
-#define H_CT   1280
-#define S_SY   1536
-#define S_SC   1537
-#define S_TY   1538
-#define S_TC   1539
-#define S_MED  1540
-#define S_HMAX 1541
+#define H_YF    0
+#define H_CF    256
+#define H_Y2    512
+#define H_C2    768
+#define H_YT    1024
+#define H_CT    1280
+#define L_Y     1536
+#define L_C     2560
+#define H_YR    3584
+#define H_CR    3840
+#define H_EN    4096
+#define S_SY    4128
+#define S_SC    4129
+#define S_TY    4130
+#define S_TC    4131
+#define S_RY    4132
+#define S_RC    4133
+#define S_MED   4134
+#define S_HMAX  4135
+#define S_GY    4136
+#define S_GC    4152
+#define S_ENMED 4168
+
+inline float smooth01(float t)
+{
+    t = clamp(t, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
 
 inline float3 rgb2ycc(float3 c)
 {
@@ -104,8 +135,30 @@ inline float4 sampleTmp(const device float4* tmp, int W, int H, int x, int y)
     return tmp[y * W + x];
 }
 
+inline float hashNoise(uint ix, uint iy, uint f, uint ch)
+{
+    uint h = ix * 374761393u + iy * 668265263u + f * 2246822519u + ch * 3266489917u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return (float(h & 0xFFFFFFu) / 16777215.0f) * 2.0f - 1.0f;
+}
+
+inline float valueNoise(float x, float y, float size, uint f, uint ch)
+{
+    const float gx = x / size, gy = y / size;
+    const int ix = int(floor(gx)), iy = int(floor(gy));
+    float fx = gx - ix, fy = gy - iy;
+    fx = fx * fx * fx * (fx * (fx * 6.0f - 15.0f) + 10.0f);
+    fy = fy * fy * fy * (fy * (fy * 6.0f - 15.0f) + 10.0f);
+    const float n00 = hashNoise(uint(ix),     uint(iy),     f, ch);
+    const float n10 = hashNoise(uint(ix + 1), uint(iy),     f, ch);
+    const float n01 = hashNoise(uint(ix),     uint(iy + 1), f, ch);
+    const float n11 = hashNoise(uint(ix + 1), uint(iy + 1), f, ch);
+    return (n00 + (n10 - n00) * fx) + ((n01 + (n11 - n01) * fx) - (n00 + (n10 - n00) * fx)) * fy;
+}
+
 // ---------------------------------------------------------------------------
-// Stage 1a — histograms: fine/coarse |laplacian| + |temporal diff|
+// Stage 1a — input histograms
 // ---------------------------------------------------------------------------
 kernel void NoiseEstKernel(constant NRParams& p  [[buffer(0)]],
                            constant int& W       [[buffer(1)]],
@@ -147,6 +200,11 @@ kernel void NoiseEstKernel(constant NRParams& p  [[buffer(0)]],
     atomic_fetch_add_explicit(&stats[H_CF + clamp(int(fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)], 1u, memory_order_relaxed);
     atomic_fetch_add_explicit(&stats[H_CF + clamp(int(fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)], 1u, memory_order_relaxed);
 
+    const int lb = clamp(int(Y[4] * kLumaBins), 0, kLumaBins - 1);
+    atomic_fetch_add_explicit(&stats[L_Y + lb * kLumaSub + clamp(int(fabs(lapY)  * kLumaSubScaleY), 0, kLumaSub - 1)], 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&stats[L_C + lb * kLumaSub + clamp(int(fabs(lapCb) * kLumaSubScaleC), 0, kLumaSub - 1)], 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&stats[L_C + lb * kLumaSub + clamp(int(fabs(lapCr) * kLumaSubScaleC), 0, kLumaSub - 1)], 1u, memory_order_relaxed);
+
     if (p.hasTemporalDiff != 0) {
         const float3 pv = sampleYCC(partner, W, H, x, y);
         atomic_fetch_add_explicit(&stats[H_YT + clamp(int(fabs(pv.x - Y[4])  * kHistScaleY), 0, kHistBins - 1)], 1u, memory_order_relaxed);
@@ -172,21 +230,21 @@ kernel void NoiseEstKernel(constant NRParams& p  [[buffer(0)]],
 }
 
 // ---------------------------------------------------------------------------
-// Stage 1b — quantiles from the histograms -> sigmas (single thread)
+// Stage 1b — quantiles -> input sigmas + brightness gains (single thread)
 // ---------------------------------------------------------------------------
 struct QuantRes { float value; uint bin; };
 
-static QuantRes histQuantile(device uint* stats, int base, ulong total, float scale,
+static QuantRes histQuantile(device uint* stats, int base, int n, ulong total, float scale,
                              ulong num, ulong den)
 {
     ulong cum = 0;
     const ulong target = (total * num + den - 1) / den;
-    for (int b = 0; b < kHistBins; ++b) {
+    for (int b = 0; b < n; ++b) {
         cum += stats[base + b];
         if (cum >= target)
             return { (float(b) + 0.5f) / scale, uint(b) };
     }
-    return { (float(kHistBins) - 0.5f) / scale, uint(kHistBins - 1) };
+    return { (float(n) - 0.5f) / scale, uint(n - 1) };
 }
 
 kernel void FinalizeStatsKernel(constant NRParams& p [[buffer(0)]],
@@ -210,13 +268,16 @@ kernel void FinalizeStatsKernel(constant NRParams& p [[buffer(0)]],
     float ty = sy, tc = sc;
     uint medBin = 0;
 
+    float gy[16], gc[16];
+    for (int b = 0; b < 16; ++b) { gy[b] = 1.0f; gc[b] = 1.0f; }
+
     if (totalF >= 64) {
-        const QuantRes mYf = histQuantile(stats, H_YF, totalF, kHistScaleY, 1, 2);
+        const QuantRes mYf = histQuantile(stats, H_YF, kHistBins, totalF, kHistScaleY, 1, 2);
         medBin = mYf.bin;
         const float syFine = mYf.value * kMedianCal;
-        const float scFine = histQuantile(stats, H_CF, totalF * 2, kHistScaleC, 1, 2).value * kMedianCal;
-        const float syCoarse = 2.0f * histQuantile(stats, H_Y2, total2, kHistScaleY, 1, 2).value * kMedianCal;
-        const float scCoarse = 2.0f * histQuantile(stats, H_C2, total2 * 2, kHistScaleC, 1, 2).value * kMedianCal;
+        const float scFine = histQuantile(stats, H_CF, kHistBins, totalF * 2, kHistScaleC, 1, 2).value * kMedianCal;
+        const float syCoarse = 2.0f * histQuantile(stats, H_Y2, kHistBins, total2, kHistScaleY, 1, 2).value * kMedianCal;
+        const float scCoarse = 2.0f * histQuantile(stats, H_C2, kHistBins, total2 * 2, kHistScaleC, 1, 2).value * kMedianCal;
 
         const float lapSY = max(syFine, 0.9f * syCoarse);
         const float lapSC = max(scFine, 0.9f * scCoarse);
@@ -224,10 +285,10 @@ kernel void FinalizeStatsKernel(constant NRParams& p [[buffer(0)]],
         ty = lapSY;
         tc = lapSC;
         if (p.hasTemporalDiff != 0 && totalT >= 64) {
-            const float medTY = histQuantile(stats, H_YT, totalT, kHistScaleY, 1, 2).value * kMedianCalT;
-            const float q20TY = histQuantile(stats, H_YT, totalT, kHistScaleY, 1, 5).value * kQ20CalT;
-            const float medTC = histQuantile(stats, H_CT, totalT * 2, kHistScaleC, 1, 2).value * kMedianCalT;
-            const float q20TC = histQuantile(stats, H_CT, totalT * 2, kHistScaleC, 1, 5).value * kQ20CalT;
+            const float medTY = histQuantile(stats, H_YT, kHistBins, totalT, kHistScaleY, 1, 2).value * kMedianCalT;
+            const float q20TY = histQuantile(stats, H_YT, kHistBins, totalT, kHistScaleY, 1, 5).value * kQ20CalT;
+            const float medTC = histQuantile(stats, H_CT, kHistBins, totalT * 2, kHistScaleC, 1, 2).value * kMedianCalT;
+            const float q20TC = histQuantile(stats, H_CT, kHistBins, totalT * 2, kHistScaleC, 1, 5).value * kQ20CalT;
             const float candY = (medTY <= 1.4f * q20TY) ? medTY : q20TY;
             const float candC = (medTC <= 1.4f * q20TC) ? medTC : q20TC;
             if (candY > 0.0015f && candY <= 3.5f * lapSY) ty = candY;
@@ -239,6 +300,23 @@ kernel void FinalizeStatsKernel(constant NRParams& p [[buffer(0)]],
         sc = clamp(max(lapSC, 0.85f * tc) * adj, kSigmaMin, kSigmaMax);
         ty = clamp(ty * adj, kSigmaMin, kSigmaMax);
         tc = clamp(tc * adj, kSigmaMin, kSigmaMax);
+
+        const float q35RefY = histQuantile(stats, H_YF, kHistBins, totalF, kHistScaleY, 7, 20).value * kQ35Cal;
+        const float q35RefC = histQuantile(stats, H_CF, kHistBins, totalF * 2, kHistScaleC, 7, 20).value * kQ35Cal;
+        for (int b = 0; b < kLumaBins; ++b) {
+            ulong cy = 0, cc = 0;
+            for (int s2 = 0; s2 < kLumaSub; ++s2) { cy += stats[L_Y + b * kLumaSub + s2]; cc += stats[L_C + b * kLumaSub + s2]; }
+            if (cy >= 200 && q35RefY > 1e-6f) {
+                const float sb = histQuantile(stats, L_Y + b * kLumaSub, kLumaSub, cy, kLumaSubScaleY, 7, 20).value * kQ35Cal;
+                const float w = float(cy) / (float(cy) + 2000.0f);
+                gy[b] = clamp(1.0f + w * (sb / q35RefY - 1.0f), 0.6f, 2.2f);
+            }
+            if (cc >= 200 && q35RefC > 1e-6f) {
+                const float sb = histQuantile(stats, L_C + b * kLumaSub, kLumaSub, cc, kLumaSubScaleC, 7, 20).value * kQ35Cal;
+                const float w = float(cc) / (float(cc) + 4000.0f);
+                gc[b] = clamp(1.0f + w * (sb / q35RefC - 1.0f), 0.6f, 2.2f);
+            }
+        }
     }
 
     stats[S_SY] = as_type<uint>(sy);
@@ -247,9 +325,18 @@ kernel void FinalizeStatsKernel(constant NRParams& p [[buffer(0)]],
     stats[S_TC] = as_type<uint>(tc);
     stats[S_MED] = medBin;
     stats[S_HMAX] = hmax;
+    for (int b = 0; b < kLumaBins; ++b) {
+        const int b0 = clamp(b - 1, 0, kLumaBins - 1);
+        const int b1 = clamp(b + 1, 0, kLumaBins - 1);
+        stats[S_GY + b] = as_type<uint>(0.25f * gy[b0] + 0.5f * gy[b] + 0.25f * gy[b1]);
+        stats[S_GC + b] = as_type<uint>(0.25f * gc[b0] + 0.5f * gc[b] + 0.25f * gc[b1]);
+    }
 }
 
-inline float4 loadSigmas(constant NRParams& p, const device uint* stats)
+// ---------------------------------------------------------------------------
+// Stage 2 — motion-adaptive temporal merge (hard-knee gate)
+// ---------------------------------------------------------------------------
+inline float4 loadSigmasIn(constant NRParams& p, const device uint* stats)
 {
     if (p.profileSource != 2)
         return float4(as_type<float>(stats[S_SY]), as_type<float>(stats[S_SC]),
@@ -259,9 +346,6 @@ inline float4 loadSigmas(constant NRParams& p, const device uint* stats)
     return float4(sy, sc, sy, sc);
 }
 
-// ---------------------------------------------------------------------------
-// Stage 2 — motion-adaptive temporal merge -> tmp[Y', Cb', Cr', effN]
-// ---------------------------------------------------------------------------
 kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
                            constant int& W [[buffer(1)]],
                            constant int& H [[buffer(2)]],
@@ -278,10 +362,13 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
     if (x >= W || y >= H)
         return;
 
-    const float4 sig = loadSigmas(p, stats);   // sy, sc, ty, tc
-    const float tL = clamp(p.temporalLuma   * p.master, 0.0f, 1.0f);
-    const float tC = clamp(p.temporalChroma * p.master, 0.0f, 1.0f);
-    const float thrMul = 0.4f + 2.6f * clamp(p.motionThresh, 0.0f, 1.0f);
+    const float4 sig = loadSigmasIn(p, stats);
+    const float mLow  = min(p.master, 1.0f);
+    const float mHigh = max(p.master, 1.0f);
+    const float tL = clamp(p.temporalLuma   * mLow, 0.0f, 1.0f);
+    const float tC = clamp(p.temporalChroma * mLow, 0.0f, 1.0f);
+    const float thrMul = 0.4f + 2.6f * clamp(p.motionThresh, 0.0f, 1.0f)
+                       + 0.8f * (mHigh - 1.0f);
     const int reach = (p.enableTemporal == 0) ? 0 : ((p.temporalFrames >= 5) ? 2 : 1);
     const float loY = kAbsDiffBias * sig.z, hiY = loY + thrMul * sig.z;
     const float loC = kAbsDiffBias * sig.w, hiC = loC + thrMul * sig.w;
@@ -318,12 +405,10 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
         dY *= (1.0f / 9.0f);
         dC *= (1.0f / 9.0f);
 
-        const float tY01 = clamp((dY - loY) * invSpanY, 0.0f, 1.0f);
-        const float gY = 1.0f - tY01 * tY01 * (3.0f - 2.0f * tY01);
-        const float tC01 = clamp((dC - loC) * invSpanC, 0.0f, 1.0f);
-        const float gC = 1.0f - tC01 * tC01 * (3.0f - 2.0f * tC01);
+        const float gY = 1.0f - smooth01((dY - loY) * invSpanY);
+        const float gC = 1.0f - smooth01((dC - loC) * invSpanC);
         const float wY = tL * gY;
-        const float wC = tC * gC * gY;   // chroma fully slaved to the luma gate
+        const float wC = tC * gC * gY;
 
         accY  += wY * fc.x;
         accCb += wC * fc.y;
@@ -338,15 +423,79 @@ kernel void TemporalKernel(constant NRParams& p [[buffer(0)]],
 }
 
 // ---------------------------------------------------------------------------
-// HUD (Noise Analysis view) — 5x7 font, meters, histogram
+// Stage 3 — residual measurement on the temporal result
 // ---------------------------------------------------------------------------
-// glyph order: 0-9 . % A C E F I L M O P R S T U Y space
-constant ulong kFont[27] = {
+kernel void ResidualEstKernel(constant NRParams& p [[buffer(0)]],
+                              constant int& W [[buffer(1)]],
+                              constant int& H [[buffer(2)]],
+                              const device float4* tmp [[buffer(3)]],
+                              device atomic_uint* stats [[buffer(4)]],
+                              uint2 id [[thread_position_in_grid]])
+{
+    const int x = 1 + int(id.x) * 2;
+    const int y = 1 + int(id.y) * 2;
+    if (x >= W - 1 || y >= H - 1)
+        return;
+
+    float Y[9], Cb[9], Cr[9];
+    int i = 0;
+    for (int dy = -1; dy <= 1; ++dy)
+        for (int dx = -1; dx <= 1; ++dx, ++i) {
+            const float4 t = sampleTmp(tmp, W, H, x + dx, y + dy);
+            Y[i] = t.x; Cb[i] = t.y; Cr[i] = t.z;
+        }
+    const float lapY  = 4.0f * Y[4]  - 2.0f * (Y[1] + Y[3] + Y[5] + Y[7])   + (Y[0] + Y[2] + Y[6] + Y[8]);
+    const float lapCb = 4.0f * Cb[4] - 2.0f * (Cb[1] + Cb[3] + Cb[5] + Cb[7]) + (Cb[0] + Cb[2] + Cb[6] + Cb[8]);
+    const float lapCr = 4.0f * Cr[4] - 2.0f * (Cr[1] + Cr[3] + Cr[5] + Cr[7]) + (Cr[0] + Cr[2] + Cr[6] + Cr[8]);
+    atomic_fetch_add_explicit(&stats[H_YR + clamp(int(fabs(lapY)  * kHistScaleY), 0, kHistBins - 1)], 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&stats[H_CR + clamp(int(fabs(lapCb) * kHistScaleC), 0, kHistBins - 1)], 1u, memory_order_relaxed);
+    atomic_fetch_add_explicit(&stats[H_CR + clamp(int(fabs(lapCr) * kHistScaleC), 0, kHistBins - 1)], 1u, memory_order_relaxed);
+    const float effN = sampleTmp(tmp, W, H, x, y).w;
+    atomic_fetch_add_explicit(&stats[H_EN + clamp(int((effN - 1.0f) * 8.0f), 0, 31)], 1u, memory_order_relaxed);
+}
+
+kernel void FinalizeResidualKernel(constant NRParams& p [[buffer(0)]],
+                                   device uint* stats   [[buffer(1)]],
+                                   uint tid [[thread_position_in_grid]])
+{
+    if (tid != 0)
+        return;
+
+    ulong total = 0;
+    for (int b = 0; b < kHistBins; ++b)
+        total += stats[H_YR + b];
+
+    const float sy = as_type<float>(stats[S_SY]);
+    const float sc = as_type<float>(stats[S_SC]);
+    float ry = sy, rc = sc, enmed = 1.0f;
+
+    if (total >= 64) {
+        const float adj = clamp(p.profileAdjust, 0.25f, 4.0f);
+        ry = histQuantile(stats, H_YR, kHistBins, total, kHistScaleY, 1, 2).value * kMedianCal * adj;
+        rc = histQuantile(stats, H_CR, kHistBins, total * 2, kHistScaleC, 1, 2).value * kMedianCal * adj;
+        enmed = 1.0f + histQuantile(stats, H_EN, 32, total, 8.0f, 1, 2).value;
+        const float floorY = 0.5f * sy / sqrt(max(1.0f, enmed));
+        const float floorC = 0.5f * sc / sqrt(max(1.0f, enmed));
+        ry = clamp(max(ry, floorY), kSigmaMin, sy > kSigmaMin ? sy : kSigmaMax);
+        rc = clamp(max(rc, floorC), kSigmaMin, sc > kSigmaMin ? sc : kSigmaMax);
+    }
+
+    stats[S_RY] = as_type<uint>(ry);
+    stats[S_RC] = as_type<uint>(rc);
+    stats[S_ENMED] = as_type<uint>(enmed);
+}
+
+// ---------------------------------------------------------------------------
+// HUD v2
+// ---------------------------------------------------------------------------
+// glyph order: 0-9 . % A C E F I L M O P R S T U Y B D G N + space
+constant ulong kFont[32] = {
     0x3a33ae62eULL, 0x11842108eULL, 0x3a213221fULL, 0x3a213062eULL, 0x08ca97c42ULL, 0x7e1e0862eULL,
     0x3a10f462eULL, 0x7c2222108ULL, 0x3a317462eULL, 0x3a317842eULL, 0x00000018cULL, 0x632222263ULL,
     0x3a31fc631ULL, 0x3a308422eULL, 0x7e10f421fULL, 0x7e10f4210ULL, 0x38842108eULL, 0x42108421fULL,
     0x4775ac631ULL, 0x3a318c62eULL, 0x7a31f4210ULL, 0x7a31f5251ULL, 0x3e107043eULL, 0x7c8421084ULL,
-    0x46318c62eULL, 0x462a21084ULL, 0x000000000ULL,
+    0x46318c62eULL, 0x462a21084ULL, 0x7a31f463eULL, 0x7a318c63eULL, 0x3a30bc62fULL, 0x47359c631ULL,
+    0x0084f9080ULL, 0x000000000ULL,
 };
 #define G_DOT 10
 #define G_PCT 11
@@ -364,17 +513,25 @@ constant ulong kFont[27] = {
 #define G_T 23
 #define G_U 24
 #define G_Y 25
-#define G_SP 26
+#define G_B 26
+#define G_D 27
+#define G_G 28
+#define G_N 29
+#define G_PLUS 30
+#define G_SP 31
 
-constant int kLabSY[9]  = { G_S, G_P, G_A, G_T, G_I, G_A, G_L, G_SP, G_Y };
-constant int kLabSC[9]  = { G_S, G_P, G_A, G_T, G_I, G_A, G_L, G_SP, G_C };
-constant int kLabTY[10] = { G_T, G_E, G_M, G_P, G_O, G_R, G_A, G_L, G_SP, G_Y };
-constant int kLabTC[10] = { G_T, G_E, G_M, G_P, G_O, G_R, G_A, G_L, G_SP, G_C };
+constant int kLabIY[4]  = { G_I, G_N, G_SP, G_Y };
+constant int kLabIC[4]  = { G_I, G_N, G_SP, G_C };
+constant int kLabRY[10] = { G_R, G_E, G_S, G_I, G_D, G_U, G_A, G_L, G_SP, G_Y };
+constant int kLabRC[10] = { G_R, G_E, G_S, G_I, G_D, G_U, G_A, G_L, G_SP, G_C };
 constant int kLabOFF[3] = { G_O, G_F, G_F };
+constant int kLabEFFN[5] = { G_E, G_F, G_F, G_SP, G_N };
+constant int kLabGAIN[4] = { G_G, G_A, G_I, G_N };
+constant int kLabDB[2]   = { G_D, G_B };
 
 inline bool glyphPixel(int glyph, int gx, int gy)
 {
-    if (glyph < 0 || glyph > 26 || gx < 0 || gx >= 5 || gy < 0 || gy >= 7)
+    if (glyph < 0 || glyph > 31 || gx < 0 || gx >= 5 || gy < 0 || gy >= 7)
         return false;
     return (kFont[glyph] >> (34 - (gy * 5 + gx))) & 1ULL;
 }
@@ -407,12 +564,22 @@ inline void pctGlyphs(float pp, thread int* outg)
     outg[5] = G_PCT;
 }
 
-inline bool hudPixel(int x, int y, int W, int H, float4 sig, uint medBin, uint hmax,
-                     const device uint* stats, int enableTemporal, thread float3& rgb)
+inline void dec1Glyphs(float v, thread int* outg)
+{
+    const int t = clamp(int(v * 10.0f + 0.5f), 0, 99);
+    outg[0] = (t / 10) % 10;
+    outg[1] = G_DOT;
+    outg[2] = t % 10;
+}
+
+inline bool hudPixel(int x, int y, int W, int H,
+                     float sy, float sc, float ry, float rc, float enmed,
+                     uint medBin, uint hmax, const device uint* stats,
+                     int enableTemporal, thread float3& rgb)
 {
     const int s = max(1, H / 540);
     const int ox = 16 * s, oy = 16 * s;
-    const int lw = 300, lh = 134;
+    const int lw = 320, lh = 198;
     if (x < ox || y < oy || x >= ox + lw * s || y >= oy + lh * s)
         return false;
     const int lx = (x - ox) / s;
@@ -424,43 +591,72 @@ inline bool hudPixel(int x, int y, int W, int H, float4 sig, uint medBin, uint h
         return true;
     }
 
-    const float sigRow[4] = { sig.x, sig.y, sig.z, sig.w };
-    const int rowY[4] = { 6, 30, 54, 78 };
+    const float sig[4] = { sy, sc, ry, rc };
+    const int rowY[4] = { 6, 28, 50, 72 };
 
     for (int row = 0; row < 4; ++row) {
         const int ty0 = rowY[row];
         bool lit = false;
-        if (row == 0) lit = textPixel(kLabSY, 9,  8, ty0, lx, ly);
-        if (row == 1) lit = textPixel(kLabSC, 9,  8, ty0, lx, ly);
-        if (row == 2) lit = textPixel(kLabTY, 10, 8, ty0, lx, ly);
-        if (row == 3) lit = textPixel(kLabTC, 10, 8, ty0, lx, ly);
-        const bool tOff = (row >= 2) && (enableTemporal == 0);
+        if (row == 0) lit = textPixel(kLabIY, 4,  8, ty0, lx, ly);
+        if (row == 1) lit = textPixel(kLabIC, 4,  8, ty0, lx, ly);
+        if (row == 2) lit = textPixel(kLabRY, 10, 8, ty0, lx, ly);
+        if (row == 3) lit = textPixel(kLabRC, 10, 8, ty0, lx, ly);
         if (!lit) {
-            if (tOff) {
-                lit = textPixel(kLabOFF, 3, 250, ty0, lx, ly);
-            } else {
-                int vg[6];
-                pctGlyphs(sigRow[row] * 100.0f, vg);
-                lit = textPixelT(vg, 6, 232, ty0, lx, ly);
-            }
+            int vg[6];
+            pctGlyphs(sig[row] * 100.0f, vg);
+            lit = textPixelT(vg, 6, 252, ty0, lx, ly);
         }
-        if (lit) {
-            rgb = float3(1.0f);
-            return true;
-        }
-        if (ly >= ty0 + 9 && ly < ty0 + 13 && lx >= 8 && lx < 268) {
-            const float fill = clamp(sigRow[row] / 0.08f, 0.0f, 1.0f);
-            const bool on = (lx - 8) < int(fill * 260.0f);
-            if (on && !tOff) rgb = float3(0.20f, 0.65f, 0.95f);
-            else             rgb = float3(0.16f);
+        if (lit) { rgb = float3(1.0f); return true; }
+
+        if (ly >= ty0 + 9 && ly < ty0 + 13 && lx >= 8 && lx < 288) {
+            const float fill = clamp(sig[row] / 0.08f, 0.0f, 1.0f);
+            const bool on = (lx - 8) < int(fill * 280.0f);
+            const bool residRow = (row >= 2);
+            if (on) rgb = residRow ? float3(0.95f, 0.65f, 0.20f) : float3(0.20f, 0.65f, 0.95f);
+            else    rgb = float3(0.16f);
             return true;
         }
     }
 
-    if (lx >= 8 && lx < 268 && ly >= 102 && ly < 130) {
+    {
+        const int ty0 = 94;
+        bool lit = textPixel(kLabEFFN, 5, 8, ty0, lx, ly);
+        if (!lit) {
+            int vg[3];
+            dec1Glyphs(enableTemporal ? enmed : 1.0f, vg);
+            lit = textPixelT(vg, 3, 44, ty0, lx, ly);
+        }
+        if (!lit) lit = textPixel(kLabGAIN, 4, 120, ty0, lx, ly);
+        if (!lit) {
+            const float gainDb = clamp(20.0f * log10(max(sy, 1e-5f) / max(ry, 1e-5f)), 0.0f, 40.0f);
+            int vg[4];
+            vg[0] = G_PLUS;
+            int d1[3];
+            dec1Glyphs(gainDb, d1);
+            vg[1] = d1[0]; vg[2] = d1[1]; vg[3] = d1[2];
+            lit = textPixelT(vg, 4, 150, ty0, lx, ly);
+            if (!lit) lit = textPixel(kLabDB, 2, 178, ty0, lx, ly);
+        }
+        if (lit) { rgb = float3(1.0f); return true; }
+        if (enableTemporal == 0 && textPixel(kLabOFF, 3, 220, ty0, lx, ly)) { rgb = float3(0.7f); return true; }
+    }
+
+    if (lx >= 8 && lx < 264 && ly >= 108 && ly < 148) {
+        const int bin = clamp((lx - 8) / 16, 0, kLumaBins - 1);
+        const float gain = as_type<float>(stats[S_GY + bin]);
+        const float v = clamp((gain - 0.6f) / 1.6f, 0.0f, 1.0f);
+        const bool bar = (147 - ly) < int(v * 39.0f + 0.5f);
+        const bool ref = (147 - ly) == int((1.0f - 0.6f) / 1.6f * 39.0f + 0.5f);
+        if (bar)      rgb = float3(0.20f, 0.65f, 0.95f);
+        else if (ref) rgb = float3(0.32f);
+        else          rgb = float3(0.10f);
+        return true;
+    }
+
+    if (lx >= 8 && lx < 268 && ly >= 156 && ly < 192) {
         const int bin = clamp((lx - 8) * kHistBins / 260, 0, kHistBins - 1);
-        const float hgt = 27.0f * float(stats[H_YF + bin]) / float(max(hmax, 1u));
-        const bool bar = (129 - ly) < int(hgt + 0.5f);
+        const float hgt = 35.0f * float(stats[H_YF + bin]) / float(max(hmax, 1u));
+        const bool bar = (191 - ly) < int(hgt + 0.5f);
         if (bin == int(medBin))  rgb = float3(0.95f, 0.85f, 0.15f);
         else if (bar)            rgb = float3(0.55f);
         else                     rgb = float3(0.10f);
@@ -471,8 +667,11 @@ inline bool hudPixel(int x, int y, int W, int H, float4 sig, uint medBin, uint h
 }
 
 // ---------------------------------------------------------------------------
-// Stage 3 — noise-adaptive NLM / bilateral + output assembly
+// Stage 4+5+6 — spatial + blotch + refine + output
 // ---------------------------------------------------------------------------
+constant float kDirX[8] = { 1, 0, -1, 0, 0.7071f, -0.7071f, -0.7071f, 0.7071f };
+constant float kDirY[8] = { 0, 1, 0, -1, 0.7071f, 0.7071f, -0.7071f, -0.7071f };
+
 kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
                              constant int& W [[buffer(1)]],
                              constant int& H [[buffer(2)]],
@@ -486,24 +685,52 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
     if (x >= W || y >= H)
         return;
 
-    const float4 sig = loadSigmas(p, stats);
-    const float aY = (p.enableSpatial == 0) ? 0.0f : clamp(p.spatialLuma   * p.master, 0.0f, 1.0f);
-    const float aC = (p.enableSpatial == 0) ? 0.0f : clamp(p.spatialChroma * p.master, 0.0f, 1.0f);
+    const bool manual = (p.profileSource == 2);
+    const float sy = manual ? clamp(p.sigmaY, kSigmaMin, kSigmaMax) : as_type<float>(stats[S_SY]);
+    const float sc = manual ? clamp(p.sigmaC, kSigmaMin, kSigmaMax) : as_type<float>(stats[S_SC]);
+    const float ryG = manual ? sy : as_type<float>(stats[S_RY]);
+    const float rcG = manual ? sc : as_type<float>(stats[S_RC]);
+    const float enmed = manual ? 1.0f : as_type<float>(stats[S_ENMED]);
+
+    const float mLow  = min(p.master, 1.0f);
+    const float mHigh = max(p.master, 1.0f);
+    const float hBoost = pow(mHigh, 1.2f);
+
+    const float sL = clamp(p.spatialLuma, 0.0f, 1.0f);
+    const float sC = clamp(p.spatialChroma, 0.0f, 1.0f);
+    const float aY = (p.enableSpatial == 0) ? 0.0f : clamp(sL * mLow, 0.0f, 1.0f);
+    const float aC = (p.enableSpatial == 0) ? 0.0f : clamp(sC * mLow, 0.0f, 1.0f);
+    const float hMulY = (0.6f + 1.4f * pow(sL, 1.5f)) * hBoost;
+    const float hMulC = (0.6f + 1.4f * pow(sC, 1.5f)) * hBoost;
     const float pd = clamp(p.preserveDetail, 0.0f, 1.0f);
-    const int   R  = clamp(p.spatialRadius, 1, 5);
+    const int   R  = clamp(p.spatialRadius, 1, 8);
     const bool  nlm = (p.spatialMode == 1);
     const bool  runSpatial = (p.enableSpatial != 0) && (aY > 0.0f || aC > 0.0f);
     const float spatialSigma = max(1.0f, float(R) / 1.5f);
     const float invSpatial2 = 1.0f / (2.0f * spatialSigma * spatialSigma);
 
+    const float blotch = (p.enableSpatial != 0) ? clamp(p.chromaBlotch, 0.0f, 1.0f) * mLow : 0.0f;
+    const int   Rb = 2 + int(14.0f * clamp(p.chromaBlotch, 0.0f, 1.0f));
+
+    const bool refine = (p.enableRefine != 0) && (p.master > 0.0f);
+    const float desat = refine ? clamp(p.shadowDesat, 0.0f, 1.0f) : 0.0f;
+    const float desatRange = max(0.02f, p.desatRange);
+    const float tex = refine ? clamp(p.lumaTexture, 0.0f, 1.0f) * mLow : 0.0f;
+    const float grainAmt = refine ? clamp(p.grainAmount, 0.0f, 1.0f) * 0.06f : 0.0f;
+    const float grainSize = clamp(p.grainSize, 0.5f, 6.0f);
+    const float grainCh = clamp(p.grainChroma, 0.0f, 1.0f);
+    const uint frame = uint(p.frameIndex);
+
     const float4 tc = tmp[y * W + x];
+    const int lb = clamp(int(tc.x * kLumaBins), 0, kLumaBins - 1);
+    const float gainYv = manual ? 1.0f : as_type<float>(stats[S_GY + lb]);
+    const float gainCv = manual ? 1.0f : as_type<float>(stats[S_GC + lb]);
+    const float sigY = clamp(ryG * gainYv, 1e-5f, 1.0f);
+    const float sigC = clamp(rcG * gainCv, 1e-5f, 1.0f);
+
     float Yo = tc.x, Cbo = tc.y, Cro = tc.z;
 
     if (runSpatial) {
-        const float effN = max(1.0f, tc.w);
-        const float sigY = clamp(sig.x / sqrt(effN), 1e-5f, 1.0f);
-        const float sigC = clamp(sig.y / sqrt(effN), 1e-5f, 1.0f);
-
         float3 pPatch[9];
         {
             int i = 0;
@@ -518,8 +745,8 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
         const float var = max(0.0f, m2 * (1.0f / 9.0f) - mean * mean);
         const float edginess = clamp(sqrt(max(var - sigY * sigY, 0.0f)) / (3.0f * sigY), 0.0f, 1.0f);
 
-        const float hY = kNlmHLuma   * sigY * (1.0f - pd * 0.85f * edginess);
-        const float hC = kNlmHChroma * sigC * (1.0f - pd * 0.50f * edginess);
+        const float hY = kNlmHLuma   * sigY * hMulY * (1.0f - pd * 0.85f * edginess);
+        const float hC = kNlmHChroma * sigC * hMulC * (1.0f - pd * 0.50f * edginess);
         const float invHY2 = 1.0f / max(hY * hY, 1e-12f);
         const float invHC2 = 1.0f / max(hC * hC, 1e-12f);
         const float biasY = 2.0f * sigY * sigY;
@@ -532,9 +759,7 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
             for (int dx = -R; dx <= R; ++dx) {
                 if (dx == 0 && dy == 0)
                     continue;
-                const int sx = clamp(x + dx, 0, W - 1);
-                const int sy = clamp(y + dy, 0, H - 1);
-                const float3 ts = tmp[sy * W + sx].xyz;
+                const float3 ts = sampleTmp(tmp, W, H, x + dx, y + dy).xyz;
 
                 float dY2, dC2;
                 if (nlm) {
@@ -542,7 +767,7 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
                     int i = 0;
                     for (int qy = -1; qy <= 1; ++qy) {
                         for (int qx = -1; qx <= 1; ++qx, ++i) {
-                            const float3 tq = sampleTmp(tmp, W, H, sx + qx, sy + qy).xyz;
+                            const float3 tq = sampleTmp(tmp, W, H, x + dx + qx, y + dy + qy).xyz;
                             const float3 e = pPatch[i] - tq;
                             dY2 += e.x * e.x;
                             dC2 += 0.5f * (e.y * e.y + e.z * e.z);
@@ -588,18 +813,66 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
         Cro = tc.z + aC * (Crf - tc.z);
     }
 
-    float3 rgb = ycc2rgb(float3(Yo, Cbo, Cro));
+    if (blotch > 0.0f) {
+        const float gyDen = 1.0f / max(2.0f * sigY * hBoost, 1e-6f);
+        const float gcDen = 1.0f / max(3.0f * sigC * hBoost, 1e-6f);
+        float accB = tc.y, accR = tc.z, sumW = 1.0f;
+        for (int d = 0; d < 8; ++d) {
+            for (int ri = 1; ri <= 3; ++ri) {
+                const float rr = Rb * (float(ri) / 3.0f);
+                const float3 ts = sampleTmp(tmp, W, H,
+                                            x + int(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
+                                            y + int(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f))).xyz;
+                const float eY = (ts.x - tc.x) * gyDen;
+                const float eC = (0.5f * (fabs(ts.y - tc.y) + fabs(ts.z - tc.z))) * gcDen;
+                const float w = exp(-(eY * eY + eC * eC));
+                accB += w * ts.y;
+                accR += w * ts.z;
+                sumW += w;
+            }
+        }
+        Cbo += blotch * (accB / sumW - Cbo);
+        Cro += blotch * (accR / sumW - Cro);
+    }
+
     const float4 c = curr[y * W + x];
+    const float3 cin = rgb2ycc(c.xyz);
+
+    float Yr = Yo, Cbr = Cbo, Crr = Cro;
+    if (refine) {
+        const float sat = 1.0f - desat * (1.0f - smooth01(Yr / desatRange));
+        Cbr *= sat;
+        Crr *= sat;
+        Yr += tex * (cin.x - Yr);
+        if (grainAmt > 0.0f) {
+            const float yc = clamp(Yr, 0.0f, 1.0f);
+            const float resp = 0.25f + 0.75f * (4.0f * yc * (1.0f - yc));
+            const float gn = valueNoise(float(x), float(y), grainSize, frame, 0u);
+            Yr += grainAmt * resp * gn;
+            if (grainCh > 0.0f) {
+                Cbr += grainAmt * grainCh * 0.6f * resp * valueNoise(float(x), float(y), grainSize, frame, 1u);
+                Crr += grainAmt * grainCh * 0.6f * resp * valueNoise(float(x), float(y), grainSize, frame, 2u);
+            }
+        }
+    }
+
+    float3 rgb = ycc2rgb(float3(Yr, Cbr, Crr));
+    const float3 dn = ycc2rgb(float3(Yo, Cbo, Cro));
     float4 o = float4(rgb, c.w);
 
     if (p.viewMode == 1) {
         if (x < W / 2) o.xyz = c.xyz;
         if (abs(x - W / 2) <= 1) o.xyz = float3(1.0f);
     } else if (p.viewMode == 2) {
-        o.xyz = 0.5f + (c.xyz - rgb) * 4.0f;
+        o.xyz = c.xyz;
     } else if (p.viewMode == 3) {
+        o.xyz = ycc2rgb(tc.xyz);
+    } else if (p.viewMode == 4) {
+        o.xyz = 0.5f + (c.xyz - dn) * 4.0f;
+    } else if (p.viewMode == 5) {
         float3 hud = rgb;
-        if (!hudPixel(x, y, W, H, sig, stats[S_MED], stats[S_HMAX], stats, p.enableTemporal, hud)) {
+        if (!hudPixel(x, y, W, H, sy, sc, ryG, rcG, enmed,
+                      stats[S_MED], stats[S_HMAX], stats, p.enableTemporal, hud)) {
             if (p.profileSource == 1) {
                 const float rHalf = 0.5f * p.regionSize * float(min(W, H));
                 const float cx = p.regionCX * W, cyy = p.regionCY * H;
@@ -610,14 +883,39 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
             }
         }
         o.xyz = hud;
-    } else if (p.viewMode == 4) {
+    } else if (p.viewMode == 6) {
         const float effN = max(1.0f, tc.w);
         const float t = clamp((effN - 1.0f) / 4.0f, 0.0f, 1.0f);
         const float3 heat = float3(0.90f + (0.10f - 0.90f) * t,
                                    0.15f + (0.85f - 0.15f) * t,
                                    0.10f + (0.20f - 0.10f) * t);
-        const float yl = rgb2ycc(c.xyz).x;
-        o.xyz = yl * 0.45f + heat * 0.55f;
+        o.xyz = cin.x * 0.45f + heat * 0.55f;
+    } else if (p.viewMode == 7) {
+        float mean = 0.0f, m2 = 0.0f;
+        for (int dy = -2; dy <= 2; ++dy)
+            for (int dx = -2; dx <= 2; ++dx) {
+                const float v = sampleTmp(tmp, W, H, x + dx, y + dy).x;
+                mean += v; m2 += v * v;
+            }
+        mean *= (1.0f / 25.0f);
+        const float var = max(0.0f, m2 * (1.0f / 25.0f) - mean * mean);
+        const float sigNoise = max(sy * gainYv, 1e-5f);
+        const float sigSignal = sqrt(max(var - sigNoise * sigNoise, 0.0f));
+        const float snrDb = 20.0f * log10(max(sigSignal, 1e-6f) / sigNoise);
+        const float t = clamp((snrDb + 6.0f) / 36.0f, 0.0f, 1.0f);
+        float3 heat;
+        if (t < 0.5f) {
+            const float u = t * 2.0f;
+            heat = float3(0.85f + (0.95f - 0.85f) * u,
+                          0.10f + (0.70f - 0.10f) * u,
+                          0.75f + (0.15f - 0.75f) * u);
+        } else {
+            const float u = (t - 0.5f) * 2.0f;
+            heat = float3(0.95f + (0.10f - 0.95f) * u,
+                          0.70f + (0.85f - 0.70f) * u,
+                          0.15f + (0.20f - 0.15f) * u);
+        }
+        o.xyz = cin.x * 0.35f + heat * 0.65f;
     }
 
     dst[y * W + x] = o;
@@ -634,6 +932,8 @@ struct QueueResources
     id<MTLComputePipelineState> est  = nil;
     id<MTLComputePipelineState> fin  = nil;
     id<MTLComputePipelineState> temp = nil;
+    id<MTLComputePipelineState> est2 = nil;
+    id<MTLComputePipelineState> fin2 = nil;
     id<MTLComputePipelineState> nlm  = nil;
     id<MTLBuffer> tmp   = nil;
     id<MTLBuffer> stats = nil;
@@ -690,8 +990,10 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
             r.est  = makePipeline(device, lib, @"NoiseEstKernel");
             r.fin  = makePipeline(device, lib, @"FinalizeStatsKernel");
             r.temp = makePipeline(device, lib, @"TemporalKernel");
+            r.est2 = makePipeline(device, lib, @"ResidualEstKernel");
+            r.fin2 = makePipeline(device, lib, @"FinalizeResidualKernel");
             r.nlm  = makePipeline(device, lib, @"SpatialNLMKernel");
-            if (!r.est || !r.fin || !r.temp || !r.nlm)
+            if (!r.est || !r.fin || !r.temp || !r.est2 || !r.fin2 || !r.nlm)
                 return;
         }
 
@@ -708,7 +1010,6 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         res = r;
     }
 
-    // temporal-difference partner: nearest distinct neighbor frame
     NRParams params = p_Params;
     const float* partnerPtr = p_Srcs[2];
     if (p_Srcs[1] != p_Srcs[2])      partnerPtr = p_Srcs[1];
@@ -735,6 +1036,10 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
     id<MTLComputeCommandEncoder> enc = [cmdBuf computeCommandEncoder];
     const MTLSize tg = MTLSizeMake(16, 16, 1);
     int W = p_Width, H = p_Height;
+    const MTLSize gridFull = MTLSizeMake((p_Width + tg.width - 1) / tg.width,
+                                         (p_Height + tg.height - 1) / tg.height, 1);
+    const MTLSize gridHalf = MTLSizeMake((p_Width / 2 + tg.width - 1) / tg.width,
+                                         (p_Height / 2 + tg.height - 1) / tg.height, 1);
 
     if (autoProfile) {
         [enc setComputePipelineState:res.est];
@@ -744,9 +1049,7 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         [enc setBuffer:src[2] offset:0 atIndex:3];
         [enc setBuffer:partner offset:0 atIndex:4];
         [enc setBuffer:res.stats offset:0 atIndex:5];
-        const MTLSize grid = MTLSizeMake((p_Width / 2 + tg.width - 1) / tg.width,
-                                         (p_Height / 2 + tg.height - 1) / tg.height, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        [enc dispatchThreadgroups:gridHalf threadsPerThreadgroup:tg];
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
 
         [enc setComputePipelineState:res.fin];
@@ -765,9 +1068,24 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
             [enc setBuffer:src[i] offset:0 atIndex:(3 + i)];
         [enc setBuffer:res.stats offset:0 atIndex:8];
         [enc setBuffer:res.tmp offset:0 atIndex:9];
-        const MTLSize grid = MTLSizeMake((p_Width + tg.width - 1) / tg.width,
-                                         (p_Height + tg.height - 1) / tg.height, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        [enc dispatchThreadgroups:gridFull threadsPerThreadgroup:tg];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+    }
+
+    if (autoProfile) {
+        [enc setComputePipelineState:res.est2];
+        [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
+        [enc setBytes:&W length:sizeof(int) atIndex:1];
+        [enc setBytes:&H length:sizeof(int) atIndex:2];
+        [enc setBuffer:res.tmp offset:0 atIndex:3];
+        [enc setBuffer:res.stats offset:0 atIndex:4];
+        [enc dispatchThreadgroups:gridHalf threadsPerThreadgroup:tg];
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+
+        [enc setComputePipelineState:res.fin2];
+        [enc setBytes:&params length:sizeof(NRParams) atIndex:0];
+        [enc setBuffer:res.stats offset:0 atIndex:1];
+        [enc dispatchThreadgroups:MTLSizeMake(1, 1, 1) threadsPerThreadgroup:MTLSizeMake(1, 1, 1)];
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
     }
 
@@ -780,9 +1098,7 @@ void RunMetalNR(void* p_CmdQ, int p_Width, int p_Height, const NRParams& p_Param
         [enc setBuffer:src[2] offset:0 atIndex:4];
         [enc setBuffer:res.stats offset:0 atIndex:5];
         [enc setBuffer:dst offset:0 atIndex:6];
-        const MTLSize grid = MTLSizeMake((p_Width + tg.width - 1) / tg.width,
-                                         (p_Height + tg.height - 1) / tg.height, 1);
-        [enc dispatchThreadgroups:grid threadsPerThreadgroup:tg];
+        [enc dispatchThreadgroups:gridFull threadsPerThreadgroup:tg];
     }
 
     [enc endEncoding];

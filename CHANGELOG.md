@@ -1,5 +1,44 @@
 # OpenNR changelog
 
+## 2.0.0 — 2026-07-14
+
+The full-suite release, built from field feedback ("spatial NR doesn't seem to
+be doing much", "so much chroma noise", "strength does nothing past one").
+
+### Fixed
+- **Strength above 1.0 was a mathematical no-op** — it multiplied blend
+  amounts that were already clamped at 1. New semantics: below 1.0 Strength
+  fades the effect; above 1.0 the filters widen what they treat as noise
+  (filter strengths and the temporal gate scale up), so 2.0 genuinely removes
+  more than 1.0.
+- **Spatial NR under-filtered after temporal NR.** It assumed temporal
+  averaging removed sqrt(N) of the noise — but compression correlates noise
+  across frames, so far less is actually removed. v2 measures the residual
+  noise on the temporally-merged image itself and filters against that
+  measurement. Self-truing, no assumptions.
+
+### Added
+- **Brightness-dependent noise profiling**: 16 luma bins, each with its own
+  robust noise estimate (confidence-weighted, smoothed) — shadows get the
+  stronger filtering they need without touching clean highlights. Visualized
+  as a curve in the Noise Analysis view.
+- **Chroma Blotch Reduction**: a sparse large-radius (up to 16 px) brightness-
+  guided chroma pass that reaches the big soft color stains 4:2:0 compression
+  leaves behind — the normal search radius physically can't span them.
+- **Step 4 · Refine The Finish**: shadow desaturation with range control (the
+  classic sat-vs-lum move), luma texture re-injection (keep the natural grain
+  energy, lose the color noise), and synthesized **film grain** — soft
+  value-noise, midtone-weighted like real stock, size and color controls,
+  animated per frame, deterministic.
+- **New views**: Input, After Temporal (mid-pipeline), and an **SNR Map**
+  (per-pixel signal-to-noise heat map — magenta where noise dominates).
+- **Noise Analysis HUD v2**: input AND residual noise readouts (see what
+  temporal NR actually accomplished), effective-frames-averaged readout, SNR
+  gain in dB, and the noise-vs-brightness curve.
+- Search radius extended to 8; chroma strength default raised to 100; per-
+  stage strength sliders now scale filter aggressiveness as well as blend.
+
+
 ## 1.2.0 — 2026-07-14
 
 ### Fixed

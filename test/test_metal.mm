@@ -1,6 +1,6 @@
-// OpenNR GPU parity test — runs the real Metal pipeline (RunMetalNR, the same
-// entry point DaVinci Resolve calls) against the CPU reference implementation
-// and verifies the outputs match within fast-math tolerance.
+// OpenNR GPU parity test (v2) — runs the real Metal pipeline (RunMetalNR, the
+// same entry point DaVinci Resolve calls) against the CPU reference and
+// verifies the outputs match within fast-math tolerance.
 //
 // Build:
 //   c++ -O2 -std=c++14 -I../plugin test_metal.mm ../plugin/MetalKernel.mm \
@@ -43,13 +43,8 @@ static void makeFrame(std::vector<float>& img, int k, uint32_t seed)
     }
 }
 
-static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char* label)
+static void toCpuParams(const NRParams& gp, nrcore::Params& cp)
 {
-    std::vector<std::vector<float>> frames(5);
-    for (int k = 0; k < 5; ++k)
-        makeFrame(frames[k], k - 2, 100 + k);
-
-    nrcore::Params cp;
     cp.profileSource  = gp.profileSource;
     cp.sigmaY         = gp.sigmaY;
     cp.sigmaC         = gp.sigmaC;
@@ -68,8 +63,27 @@ static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char*
     cp.spatialLuma    = gp.spatialLuma;
     cp.spatialChroma  = gp.spatialChroma;
     cp.preserveDetail = gp.preserveDetail;
+    cp.chromaBlotch   = gp.chromaBlotch;
+    cp.enableRefine   = gp.enableRefine;
+    cp.shadowDesat    = gp.shadowDesat;
+    cp.desatRange     = gp.desatRange;
+    cp.lumaTexture    = gp.lumaTexture;
+    cp.grainAmount    = gp.grainAmount;
+    cp.grainSize      = gp.grainSize;
+    cp.grainChroma    = gp.grainChroma;
+    cp.frameIndex     = gp.frameIndex;
     cp.master         = gp.master;
     cp.viewMode       = gp.viewMode;
+}
+
+static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char* label)
+{
+    std::vector<std::vector<float>> frames(5);
+    for (int k = 0; k < 5; ++k)
+        makeFrame(frames[k], k - 2, 100 + k);
+
+    nrcore::Params cp;
+    toCpuParams(gp, cp);
 
     const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
                              frames[3].data(), frames[4].data() };
@@ -105,7 +119,7 @@ static int compareRun(id<MTLCommandQueue> queue, const NRParams& gp, const char*
     }
     const double meand = sumd / n;
     const bool pass = (maxd < 5e-3) && (meand < 1e-4);
-    printf("  [%s] %-34s max %.2e  mean %.2e\n", pass ? "PASS" : "FAIL", label, maxd, meand);
+    printf("  [%s] %-36s max %.2e  mean %.2e\n", pass ? "PASS" : "FAIL", label, maxd, meand);
     return pass ? 0 : 1;
 }
 
@@ -117,7 +131,7 @@ int main()
         return 0;
     }
     id<MTLCommandQueue> queue = [device newCommandQueue];
-    printf("GPU parity test on %s\n", device.name.UTF8String);
+    printf("GPU parity test v2 on %s\n", device.name.UTF8String);
 
     int failures = 0;
 
@@ -126,14 +140,18 @@ int main()
     p.sigmaY = 0.02f; p.sigmaC = 0.02f;
     p.profileAdjust = 1.0f;
     p.regionCX = 0.5f; p.regionCY = 0.5f; p.regionSize = 0.25f;
-    p.hasTemporalDiff = 0; // host recomputes
+    p.hasTemporalDiff = 0;
     p.enableTemporal = 1; p.temporalFrames = 5;
     p.temporalLuma = 0.6f; p.temporalChroma = 0.8f; p.motionThresh = 0.4f;
     p.enableSpatial = 1; p.spatialMode = 1; p.spatialRadius = 3;
-    p.spatialLuma = 0.45f; p.spatialChroma = 0.75f;
-    p.preserveDetail = 0.35f; p.master = 1.0f; p.viewMode = 0;
+    p.spatialLuma = 0.6f; p.spatialChroma = 1.0f;
+    p.preserveDetail = 0.35f; p.chromaBlotch = 0.25f;
+    p.enableRefine = 1; p.shadowDesat = 0.0f; p.desatRange = 0.15f;
+    p.lumaTexture = 0.0f; p.grainAmount = 0.0f; p.grainSize = 1.6f; p.grainChroma = 0.25f;
+    p.frameIndex = 0;
+    p.master = 1.0f; p.viewMode = 0;
 
-    failures += compareRun(queue, p, "defaults (auto, 5f, NLM)");
+    failures += compareRun(queue, p, "defaults (auto, 5f, NLM, blotch)");
 
     NRParams p2 = p; p2.enableTemporal = 0;
     failures += compareRun(queue, p2, "temporal disabled");
@@ -153,20 +171,33 @@ int main()
     NRParams p7 = p; p7.master = 0.0f;
     failures += compareRun(queue, p7, "master 0 (identity)");
 
-    NRParams p8 = p; p8.viewMode = 2;
-    failures += compareRun(queue, p8, "noise-only view");
+    NRParams p8 = p; p8.master = 2.0f;
+    failures += compareRun(queue, p8, "master 2 (boosted)");
 
-    NRParams p9 = p; p9.viewMode = 3; p9.profileSource = 1;
-    failures += compareRun(queue, p9, "analysis HUD view");
+    NRParams p9 = p; p9.chromaBlotch = 1.0f;
+    failures += compareRun(queue, p9, "blotch pass full");
 
-    NRParams p10 = p; p10.viewMode = 4;
-    failures += compareRun(queue, p10, "temporal activity view");
+    NRParams p10 = p; p10.shadowDesat = 0.6f; p10.lumaTexture = 0.3f;
+    p10.grainAmount = 0.5f; p10.grainChroma = 0.5f; p10.frameIndex = 42;
+    failures += compareRun(queue, p10, "refine: desat+texture+grain");
 
-    NRParams p11 = p; p11.viewMode = 1;
-    failures += compareRun(queue, p11, "split view");
+    NRParams p11 = p; p11.spatialRadius = 8;
+    failures += compareRun(queue, p11, "radius 8");
 
-    NRParams p12 = p; p12.profileAdjust = 2.0f;
-    failures += compareRun(queue, p12, "profile adjust x2");
+    NRParams p12 = p; p12.viewMode = 3;
+    failures += compareRun(queue, p12, "after-temporal view");
+
+    NRParams p13 = p; p13.viewMode = 5; p13.profileSource = 1;
+    failures += compareRun(queue, p13, "analysis HUD v2 view");
+
+    NRParams p14 = p; p14.viewMode = 7;
+    failures += compareRun(queue, p14, "SNR map view");
+
+    NRParams p15 = p; p15.viewMode = 6;
+    failures += compareRun(queue, p15, "temporal activity view");
+
+    NRParams p16 = p; p16.viewMode = 4;
+    failures += compareRun(queue, p16, "noise removed view");
 
     printf(failures == 0 ? "ALL GPU PARITY CHECKS PASSED\n" : "%d GPU PARITY CHECK(S) FAILED\n", failures);
     return failures == 0 ? 0 : 1;

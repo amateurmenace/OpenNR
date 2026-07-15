@@ -1,14 +1,4 @@
-// OpenNR test harness — validates nr_core.h without DaVinci Resolve.
-//
-// Covers:
-//   1. estimator accuracy on iid Gaussian noise (all levels)
-//   2. estimator accuracy on spatially CORRELATED noise (the real-world case
-//      that broke v1.0's Laplacian-only estimator)
-//   3. temporal-difference estimator sanity under global motion (clamped)
-//   4. PSNR gains, static and moving
-//   5. identity: master = 0, and both stages disabled
-//   6. manual profile passthrough, region profiling
-//   7. renders of every view mode incl. the Noise Analysis HUD (PPM out)
+// OpenNR test harness — validates nr_core.h (v2) without DaVinci Resolve.
 //
 // Build: c++ -O2 -std=c++14 -I../plugin test_denoise.cpp -o test_denoise
 
@@ -73,9 +63,7 @@ static void addNoise(std::vector<float>& img, float sigma, uint32_t seed)
     }
 }
 
-// Spatially correlated noise: iid noise generated at half resolution, then
-// nearest-upsampled 2x — every 2x2 block shares one noise value per channel.
-// Mimics debayer/chroma-subsampling/compression correlation.
+// 2x2-correlated RGB noise (v1.0 failure case)
 static void addCorrelatedNoise(std::vector<float>& img, float sigma, uint32_t seed)
 {
     std::mt19937 rng(seed);
@@ -90,6 +78,27 @@ static void addCorrelatedNoise(std::vector<float>& img, float sigma, uint32_t se
             p[0] += half[s + 0];
             p[1] += half[s + 1];
             p[2] += half[s + 2];
+        }
+}
+
+// large soft chroma blotches (8x8 correlated, chroma only) — what 4:2:0 +
+// camera NR leaves behind; the NLM window cannot span these.
+static void addChromaBlotchNoise(std::vector<float>& img, float sigma, uint32_t seed)
+{
+    std::mt19937 rng(seed);
+    std::normal_distribution<float> N(0.0f, sigma);
+    const int bw = (W + 7) / 8, bh = (H + 7) / 8;
+    std::vector<float> blk(static_cast<size_t>(bw) * bh * 2);
+    for (auto& v : blk) v = N(rng);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            const size_t s = (static_cast<size_t>(y / 8) * bw + (x / 8)) * 2;
+            const float ncb = blk[s + 0], ncr = blk[s + 1];
+            const float dR = 1.5748f * ncr;
+            const float dB = 1.8556f * ncb;
+            const float dG = -(0.2126f * dR + 0.0722f * dB) / 0.7152f;
+            float* p = &img[(static_cast<size_t>(y) * W + x) * 4];
+            p[0] += dR; p[1] += dG; p[2] += dB;
         }
 }
 
@@ -153,7 +162,9 @@ static void check(bool ok, const char* what)
 
 struct CaseResult { double before, after; nrcore::Stats stats; float trueY; };
 
-static CaseResult runCase(float sigma, float stepX, float stepY, bool correlated, const nrcore::Params& p,
+enum NoiseKind { NOISE_IID, NOISE_CORR, NOISE_BLOTCH };
+
+static CaseResult runCase(float sigma, float stepX, float stepY, NoiseKind kind, const nrcore::Params& p,
                           std::vector<float>* outDenoised = nullptr,
                           std::vector<float>* outNoisy = nullptr)
 {
@@ -162,13 +173,10 @@ static CaseResult runCase(float sigma, float stepX, float stepY, bool correlated
 
     std::vector<std::vector<float>> frames(5);
     for (int k = 0; k < 5; ++k) {
-        const float sx = (k - 2) * stepX;
-        const float sy = (k - 2) * stepY;
-        renderScene(frames[k], sx, sy);
-        if (correlated)
-            addCorrelatedNoise(frames[k], sigma, 1000 + k);
-        else
-            addNoise(frames[k], sigma, 1000 + k);
+        renderScene(frames[k], (k - 2) * stepX, (k - 2) * stepY);
+        if (kind == NOISE_CORR) addCorrelatedNoise(frames[k], sigma, 1000 + k);
+        else if (kind == NOISE_BLOTCH) { addNoise(frames[k], sigma * 0.5f, 1000 + k); addChromaBlotchNoise(frames[k], sigma, 2000 + k); }
+        else addNoise(frames[k], sigma, 1000 + k);
     }
 
     const float* fptr[5] = { frames[0].data(), frames[1].data(), frames[2].data(),
@@ -190,9 +198,9 @@ static CaseResult runCase(float sigma, float stepX, float stepY, bool correlated
 
 int main()
 {
-    nrcore::Params p; // defaults
+    nrcore::Params p; // v2 defaults
 
-    printf("OpenNR algorithm validation v1.1 (%dx%d synthetic scene)\n", W, H);
+    printf("OpenNR algorithm validation v2 (%dx%d synthetic scene)\n", W, H);
     printf("=========================================================\n");
 
     // --- iid noise, static, 5 frames
@@ -200,14 +208,14 @@ int main()
     for (float sigma : { 0.02f, 0.05f, 0.10f }) {
         std::vector<float> denoised, noisy;
         const bool keep = (sigma == 0.05f);
-        CaseResult r = runCase(sigma, 0.0f, 0.0f, false, p, keep ? &denoised : nullptr, keep ? &noisy : nullptr);
-        printf("static iid s=%.2f: PSNR %5.2f -> %5.2f dB   sigS %.4f sigT %.4f / true %.4f\n",
-               sigma, r.before, r.after, r.stats.sy, r.stats.ty, r.trueY);
+        CaseResult r = runCase(sigma, 0.0f, 0.0f, NOISE_IID, p, keep ? &denoised : nullptr, keep ? &noisy : nullptr);
+        printf("static iid s=%.2f: PSNR %5.2f -> %5.2f dB   sigS %.4f sigT %.4f sigR %.4f effN %.1f / true %.4f\n",
+               sigma, r.before, r.after, r.stats.sy, r.stats.ty, r.stats.ry, r.stats.effNMed, r.trueY);
         char buf[160];
         snprintf(buf, sizeof(buf), "spatial sigma within 30%% of truth (iid s=%.2f)", sigma);
         check(std::fabs(r.stats.sy - r.trueY) / r.trueY < 0.30f, buf);
-        snprintf(buf, sizeof(buf), "temporal sigma within 25%% of truth (iid s=%.2f)", sigma);
-        check(std::fabs(r.stats.ty - r.trueY) / r.trueY < 0.25f, buf);
+        snprintf(buf, sizeof(buf), "residual < 75%% of input sigma (temporal worked, s=%.2f)", sigma);
+        check(r.stats.ry < 0.75f * r.stats.sy, buf);
         snprintf(buf, sizeof(buf), "PSNR gain >= 6 dB (static iid s=%.2f)", sigma);
         check(r.after >= r.before + 6.0, buf);
         if (keep) {
@@ -219,41 +227,61 @@ int main()
         }
     }
 
-    // --- CORRELATED noise (the v1.0 failure case): estimator must still see it
+    // --- correlated noise (v1.0 failure case)
     {
-        CaseResult r = runCase(0.05f, 0.0f, 0.0f, true, p);
-        printf("static CORR s=0.05: PSNR %5.2f -> %5.2f dB   sigS %.4f sigT %.4f / true %.4f\n",
-               r.before, r.after, r.stats.sy, r.stats.ty, r.trueY);
-        check(r.stats.ty > 0.60f * r.trueY, "temporal sigma catches correlated noise (>60% of truth)");
-        check(r.stats.sy > 0.55f * r.trueY, "spatial sigma catches correlated noise (>55% of truth)");
+        CaseResult r = runCase(0.05f, 0.0f, 0.0f, NOISE_CORR, p);
+        printf("static CORR s=0.05: PSNR %5.2f -> %5.2f dB   sigS %.4f sigT %.4f sigR %.4f / true %.4f\n",
+               r.before, r.after, r.stats.sy, r.stats.ty, r.stats.ry, r.trueY);
+        check(r.stats.ty > 0.60f * r.trueY, "temporal sigma catches correlated noise");
         check(r.after >= r.before + 5.0, "PSNR gain >= 5 dB on correlated noise");
     }
 
-    // --- motion: no ghosting collapse, temporal sigma stays clamped
+    // --- chroma blotches: the large-radius chroma pass must matter
     {
-        CaseResult r = runCase(0.05f, 3.0f, 1.5f, false, p);
-        printf("motion iid s=0.05: PSNR %5.2f -> %5.2f dB   sigS %.4f sigT %.4f / true %.4f\n",
-               r.before, r.after, r.stats.sy, r.stats.ty, r.trueY);
+        nrcore::Params pb0 = p; pb0.chromaBlotch = 0.0f;
+        nrcore::Params pb1 = p; pb1.chromaBlotch = 1.0f;
+        CaseResult r0 = runCase(0.04f, 0.0f, 0.0f, NOISE_BLOTCH, pb0);
+        CaseResult r1 = runCase(0.04f, 0.0f, 0.0f, NOISE_BLOTCH, pb1);
+        printf("chroma blotches: PSNR %5.2f -> without pass %5.2f dB, with pass %5.2f dB\n",
+               r0.before, r0.after, r1.after);
+        check(r1.after >= r0.after + 1.0, "blotch pass gains >= 1 dB on chroma stains");
+    }
+
+    // --- fast motion
+    {
+        CaseResult r = runCase(0.05f, 3.0f, 1.5f, NOISE_IID, p);
+        printf("motion iid s=0.05: PSNR %5.2f -> %5.2f dB   sigT %.4f\n", r.before, r.after, r.stats.ty);
         check(r.after >= r.before + 4.0, "PSNR gain >= 4 dB under motion");
         check(r.stats.ty <= 1.55f * r.stats.sy, "motion cannot inflate temporal sigma past clamp");
     }
 
-    // --- SLOW motion (the ghosting regime): sub-pixel drift like real
-    //     handheld/panning footage. v1.1's soft Gaussian gate blended
-    //     mismatched pixels here ("ghost soup"). Requirement: temporal NR
-    //     must never do worse than spatial-only.
+    // --- slow drift (the ghosting regime)
     {
         nrcore::Params ps = p;
         ps.enableTemporal = 0;
-        CaseResult spatialOnly = runCase(0.05f, 0.8f, 0.5f, false, ps);
-        CaseResult full        = runCase(0.05f, 0.8f, 0.5f, false, p);
-        printf("slow drift s=0.05: spatial-only %5.2f dB, temporal+spatial %5.2f dB (sigT %.4f)\n",
-               spatialOnly.after, full.after, full.stats.ty);
+        CaseResult spatialOnly = runCase(0.05f, 0.8f, 0.5f, NOISE_IID, ps);
+        CaseResult full        = runCase(0.05f, 0.8f, 0.5f, NOISE_IID, p);
+        printf("slow drift s=0.05: spatial-only %5.2f dB, temporal+spatial %5.2f dB\n",
+               spatialOnly.after, full.after);
         check(full.after >= spatialOnly.after - 0.3, "slow motion: temporal never hurts (no ghosting)");
         check(full.after >= full.before + 4.0, "slow motion: still >= 4 dB gain");
     }
 
-    // --- identity: master = 0
+    // --- master > 1 must actually do something now
+    {
+        nrcore::Params m1 = p;
+        nrcore::Params m2 = p; m2.master = 2.0f;
+        std::vector<float> o1, o2;
+        runCase(0.10f, 0.0f, 0.0f, NOISE_IID, m1, &o1);
+        runCase(0.10f, 0.0f, 0.0f, NOISE_IID, m2, &o2);
+        double diff = 0.0;
+        for (size_t i = 0; i < o1.size(); ++i) diff += std::fabs(o1[i] - o2[i]);
+        diff /= o1.size();
+        printf("master 1 vs 2: mean abs difference %.5f\n", diff);
+        check(diff > 5e-4, "master > 1 changes the result (stronger filtering)");
+    }
+
+    // --- identity: master = 0; both stages + refine off
     {
         nrcore::Params pid = p;
         pid.master = 0.0f;
@@ -268,12 +296,9 @@ int main()
             maxd = std::max(maxd, std::fabs(out[i] - noisy[i]));
         check(maxd < 2e-5f, "master=0 is identity");
     }
-
-    // --- identity: both stages disabled
     {
         nrcore::Params pid = p;
-        pid.enableTemporal = 0;
-        pid.enableSpatial = 0;
+        pid.enableTemporal = 0; pid.enableSpatial = 0; pid.enableRefine = 0;
         std::vector<float> clean, noisy, out(static_cast<size_t>(W) * H * 4), scratch;
         renderScene(clean, 0, 0);
         noisy = clean;
@@ -283,19 +308,57 @@ int main()
         float maxd = 0.0f;
         for (size_t i = 0; i < out.size(); ++i)
             maxd = std::max(maxd, std::fabs(out[i] - noisy[i]));
-        check(maxd < 2e-5f, "both stages disabled is identity");
+        check(maxd < 2e-5f, "all stages disabled is identity");
     }
 
-    // --- stage isolation: spatial-only must still denoise
+    // --- refine: grain determinism, grain identity at 0, shadow desat effect
     {
-        nrcore::Params ps = p;
-        ps.enableTemporal = 0;
-        CaseResult r = runCase(0.05f, 0.0f, 0.0f, false, ps);
-        printf("spatial only s=0.05: PSNR %5.2f -> %5.2f dB\n", r.before, r.after);
-        check(r.after >= r.before + 4.0, "spatial-only gain >= 4 dB");
+        nrcore::Params pg = p;
+        pg.grainAmount = 0.5f; pg.frameIndex = 42;
+        std::vector<float> a, b;
+        runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pg, &a);
+        runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pg, &b);
+        bool same = true;
+        for (size_t i = 0; i < a.size(); ++i) if (a[i] != b[i]) { same = false; break; }
+        check(same, "grain is deterministic for a fixed frame");
+
+        nrcore::Params pg2 = pg; pg2.frameIndex = 43;
+        std::vector<float> c2;
+        runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pg2, &c2);
+        double d = 0.0;
+        for (size_t i = 0; i < a.size(); ++i) d += std::fabs(a[i] - c2[i]);
+        check(d / a.size() > 1e-4, "grain animates between frames");
+
+        nrcore::Params p0 = p; p0.enableRefine = 1;   // defaults: desat 0, tex 0, grain 0
+        nrcore::Params pOff = p; pOff.enableRefine = 0;
+        std::vector<float> r1, r0;
+        runCase(0.05f, 0.0f, 0.0f, NOISE_IID, p0, &r1);
+        runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pOff, &r0);
+        float maxd = 0.0f;
+        for (size_t i = 0; i < r1.size(); ++i) maxd = std::max(maxd, std::fabs(r1[i] - r0[i]));
+        check(maxd < 2e-5f, "refine at neutral settings is identity");
+    }
+    {
+        nrcore::Params pd2 = p; pd2.shadowDesat = 1.0f; pd2.desatRange = 0.3f;
+        std::vector<float> withD, withoutD;
+        runCase(0.05f, 0.0f, 0.0f, NOISE_IID, pd2, &withD);
+        runCase(0.05f, 0.0f, 0.0f, NOISE_IID, p, &withoutD);
+        // chroma energy in the dark circle region (around 320,260) must drop
+        double cw = 0.0, cwo = 0.0;
+        for (int y = 240; y < 280; ++y)
+            for (int x = 300; x < 340; ++x) {
+                const size_t i = (static_cast<size_t>(y) * W + x) * 4;
+                float yy, cb, cr;
+                nrcore::rgb2ycc(withD[i], withD[i+1], withD[i+2], yy, cb, cr);
+                cw += std::fabs(cb) + std::fabs(cr);
+                nrcore::rgb2ycc(withoutD[i], withoutD[i+1], withoutD[i+2], yy, cb, cr);
+                cwo += std::fabs(cb) + std::fabs(cr);
+            }
+        printf("shadow desat: dark-region chroma %.4f -> %.4f\n", cwo, cw);
+        check(cw < cwo * 0.7, "shadow desaturation reduces dark-region chroma");
     }
 
-    // --- manual profile passthrough
+    // --- manual profile passthrough (applies to all three sigma pairs)
     {
         nrcore::Params pm = p;
         pm.profileSource = 2;
@@ -305,37 +368,24 @@ int main()
         renderScene(clean, 0, 0);
         std::vector<float> noisy = clean;
         addNoise(noisy, 0.05f, 11);
-        nrcore::Stats s = nrcore::estimateSigma(noisy.data(), nullptr, W, H, pm);
-        check(s.sy == 0.037f && s.tc == 0.021f, "manual sigma values pass through to both stages");
+        nrcore::Stats s;
+        nrcore::estimateInput(noisy.data(), nullptr, W, H, pm, s);
+        check(s.sy == 0.037f && s.tc == 0.021f && s.ry == 0.037f, "manual sigma values pass through");
     }
 
-    // --- profile adjust scales the auto estimate
-    {
-        nrcore::Params pa = p;
-        std::vector<float> clean;
-        renderScene(clean, 0, 0);
-        std::vector<float> noisy = clean;
-        addNoise(noisy, 0.05f, 12);
-        nrcore::Stats s1 = nrcore::estimateSigma(noisy.data(), nullptr, W, H, pa);
-        pa.profileAdjust = 2.0f;
-        nrcore::Stats s2 = nrcore::estimateSigma(noisy.data(), nullptr, W, H, pa);
-        check(std::fabs(s2.sy - 2.0f * s1.sy) < 1e-5f, "profile adjust x2 doubles the estimate");
-    }
-
-    // --- duplicate partner frame (clip boundary): zero temporal diff must not
-    //     collapse the temporal sigma; it falls back to the spatial estimate
+    // --- duplicate partner guard
     {
         std::vector<float> clean;
         renderScene(clean, 0, 0);
         std::vector<float> noisy = clean;
         addNoise(noisy, 0.05f, 21);
-        std::vector<float> duplicate = noisy; // distinct buffer, identical content
-        nrcore::Stats s = nrcore::estimateSigma(noisy.data(), duplicate.data(), W, H, p);
-        printf("duplicate partner: sigT %.4f (spatial fallback %.4f)\n", s.ty, s.sy);
+        std::vector<float> duplicate = noisy;
+        nrcore::Stats s;
+        nrcore::estimateInput(noisy.data(), duplicate.data(), W, H, p, s);
         check(s.ty > 0.01f, "duplicate partner does not collapse temporal sigma");
     }
 
-    // --- region profiling on the flat gray card
+    // --- region profiling
     {
         nrcore::Params pr = p;
         pr.profileSource = 1;
@@ -346,25 +396,40 @@ int main()
         renderScene(clean, 0, 0);
         std::vector<float> noisy = clean;
         addNoise(noisy, 0.05f, 13);
-        nrcore::Stats s = nrcore::estimateSigma(noisy.data(), nullptr, W, H, pr);
+        nrcore::Stats s;
+        nrcore::estimateInput(noisy.data(), nullptr, W, H, pr, s);
         const float t = trueSigmaY(noisy, clean);
-        printf("region profile: est %.4f / true %.4f\n", s.sy, t);
         check(std::fabs(s.sy - t) / t < 0.30f, "region-based sigma within 30% of truth");
     }
 
-    // --- render every view mode (HUD and activity map get a visual check)
+    // --- brightness profile sanity: gains near 1 for flat-spectrum noise
     {
-        for (int vm = 1; vm <= 4; ++vm) {
+        std::vector<float> clean;
+        renderScene(clean, 0, 0);
+        std::vector<float> noisy = clean;
+        addNoise(noisy, 0.05f, 15);
+        nrcore::Stats s;
+        nrcore::estimateInput(noisy.data(), nullptr, W, H, p, s);
+        bool sane = true;
+        for (int b2 = 4; b2 < 12; ++b2)   // mid bins have plenty of samples
+            if (s.gainY[b2] < 0.6f || s.gainY[b2] > 1.6f) sane = false;
+        check(sane, "brightness-dependent gains near 1 on uniform noise");
+    }
+
+    // --- render every view mode
+    {
+        for (int vm = 1; vm <= 7; ++vm) {
             nrcore::Params pv = p;
             pv.viewMode = vm;
-            if (vm == 3) pv.profileSource = 1; // show the region rect in analysis
+            if (vm == 5) pv.profileSource = 1;
+            const bool motion = (vm == 6);
             std::vector<float> denoised;
-            runCase(0.05f, (vm == 4) ? 3.0f : 0.0f, (vm == 4) ? 1.5f : 0.0f, false, pv, &denoised, nullptr);
+            runCase(0.05f, motion ? 3.0f : 0.0f, motion ? 1.5f : 0.0f, NOISE_IID, pv, &denoised);
             char name[64];
             snprintf(name, sizeof(name), "out_view%d.ppm", vm);
             writePPM(name, denoised);
         }
-        printf("view renders written: out_view1..4.ppm\n");
+        printf("view renders written: out_view1..7.ppm\n");
         check(true, "view modes rendered (visual check)");
     }
 

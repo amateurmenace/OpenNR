@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="1.2.0"
+VERSION="2.0.0"
 
 echo "== building plugin =="
 make -C plugin clean >/dev/null
