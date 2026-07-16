@@ -605,8 +605,8 @@ void SpeakPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, O
                "identity — the whole scatter pass is skipped. Raise for the red bloom around "
                "highlights that reads as film.", 0.0, 0.0, 2.0, 0.01, grpLight);
     sDefDouble(p_Desc, page, "halRadius", "Halation Radius",
-               "How far the light spreads, as a percentage of frame HEIGHT — so the look is "
-               "identical on a proxy and at full res. Around 1% is the order of real 35mm "
+               "How far the light spreads, as a percentage of frame HEIGHT — so it holds its "
+               "scale on a proxy and at full res. Around 1% is the order of real 35mm "
                "base-reflection geometry; it is a starting point, not a measured stock.",
                1.0, 0.05, 8.0, 0.01, grpLight);
     sDefDouble(p_Desc, page, "halThresh", "Halation Threshold",

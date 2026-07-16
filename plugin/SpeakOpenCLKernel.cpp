@@ -1075,8 +1075,15 @@ void RunOpenCLSpeak(void* p_CmdQ, int p_Width, int p_Height,
         error |= clSetKernelArg(res.kStats, c++, sizeof(cl_mem), &res.stats);
         SpeakCheck(error, "set stats args");
         const size_t localH[2]  = { 16, 16 };
-        const size_t globalH[2] = { static_cast<size_t>((p_Width / 2 + 15) / 16) * 16,
-                                    static_cast<size_t>((p_Height / 2 + 15) / 16) * 16 };
+        // ceil(W/2) sample threads, not floor(W/2): the kernel indexes x = gid*2
+        // and the CPU reference loops x = 0,2,..<W, so an odd W needs (W+1)/2
+        // columns. With floor(W/2) this fell exactly one sample column short
+        // whenever floor(W/2) landed on a multiple of the 16-wide group — i.e.
+        // W = 1 (mod 32), which includes 1921 and 3841. Scope-only, but it made
+        // the parade and histogram silently miss the frame's last sample column
+        // at those sizes. (Metal's dispatch over-covers and was never affected.)
+        const size_t globalH[2] = { static_cast<size_t>(((p_Width  + 1) / 2 + 15) / 16) * 16,
+                                    static_cast<size_t>(((p_Height + 1) / 2 + 15) / 16) * 16 };
         error = clEnqueueNDRangeKernel(cmdQ, res.kStats, 2, NULL, globalH, localH, 0, NULL, NULL);
         SpeakCheck(error, "enqueue stats");
         clEnqueueBarrierWithWaitList(cmdQ, 0, NULL, NULL);

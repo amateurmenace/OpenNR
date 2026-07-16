@@ -250,6 +250,13 @@ int main()
     // ladder and the clamped decimation taps.
     { SpeakParams p = halParams(1.0f, 2.0f);
       runHot(device, queue, 333, 197, p, "halation odd dims 333x197", 0); }
+    // 7h' — W and H both == 1 (mod 32). The stats dispatch indexes x = gid*2, so
+    // it needs ceil(W/2) sample threads; dispatching floor(W/2) falls exactly one
+    // sample column short at these sizes and nowhere else. Metal always
+    // over-covered, but OpenCL and CUDA did NOT (1921 and 3841 are both 1 mod 32),
+    // so pin the size here to keep every backend honest.
+    { SpeakParams p = halParams(1.0f, 2.0f); p.scopeDensity = 1; p.scopeHD = 1;
+      runHot(device, queue, 353, 225, p, "scopes at 353x225 (W,H = 1 mod 32)", 1); }
     // 7i — SIZE CHANGES on ONE queue: proxy -> full -> proxy -> bigger. The
     // scatter buffers are size-dependent (the stats buffer is not), so this is
     // the realloc path — and a stale buffer here is a silent overrun.

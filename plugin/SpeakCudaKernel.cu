@@ -901,7 +901,11 @@ void RunCudaSpeak(void* p_Stream, int p_Width, int p_Height,
 
     cudaMemsetAsync(res.stats, 0, SPEAK_STATS_UINTS * sizeof(unsigned int), stream);
     if (p_Params.scopeHD != 0 || p_Params.scopeDensity != 0) {
-        dim3 gridH((p_Width / 2 + block.x - 1) / block.x, (p_Height / 2 + block.y - 1) / block.y, 1);
+        // ceil(W/2) sample threads, not floor(W/2) — see SpeakOpenCLKernel.cpp:
+        // the kernel indexes x = gid*2, so an odd W needs (W+1)/2 columns, and
+        // floor(W/2) fell one column short at W = 1 (mod 32) (e.g. 1921, 3841).
+        dim3 gridH(((p_Width + 1) / 2 + block.x - 1) / block.x,
+                   ((p_Height + 1) / 2 + block.y - 1) / block.y, 1);
         SpeakStatsKernel<<<gridH, block, 0, stream>>>(p_Params, p_Width, p_Height,
                                                       reinterpret_cast<const float4*>(p_Src),
                                                       sc, res.stats);

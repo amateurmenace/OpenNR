@@ -363,8 +363,10 @@ static inline void setDyeCoupler(SpeakProfile& p, float amount)
 // has already been depleted of blue and green — by the yellow filter layer and
 // the upper emulsion layers — and the red-sensitive layer sits closest to the
 // base. That MECHANISM is published sensitometry. The specific {1, 0.30, 0.10}
-// ratio is NOT: it is our MODELLED DEFAULT for it, and it is stated as such in
-// the UI. (An earlier revision called these "Beer-Lambert-shaped, published AH
+// ratio is NOT: it is our MODELLED DEFAULT for it, gated by H3/H4 in
+// test/proto_halation.cpp rather than cited to anyone. It is not a user control,
+// and no shipping hint attributes it to a stock or to a measurement.
+// (An earlier revision called these "Beer-Lambert-shaped, published AH
 // behaviour" with no citation — that fitted a made-up ratio and then cited
 // Beer-Lambert for it, and is withdrawn. Nor is this the eye's glare-spread
 // function: Vos & van den Berg / CIE 135 model corneal and lens scatter in
@@ -740,11 +742,21 @@ inline void computeStats(const float* src, const float* scat, int W, int H,
     stats[SPEAK_STATS_WF_MAX] = wmx;
 }
 
-// The APPLIED transform for one input exposure, in stops. It mirrors the pixel
-// path EXACTLY — including the Strength mix and the enable toggle — so the plot
-// can never disagree with the pixels (at strength 0 it collapses to the y=x
-// diagonal, matching the identity pass-through). Output encode is a display
-// transform applied equally to curve and diagonal, so it cancels in stops.
+// The APPLIED TONE SCALE for one input exposure, in stops — the Strength mix and
+// the enable toggle included, so the plot cannot drift from the curve the pixels
+// use (at strength 0 it collapses to the y=x diagonal, matching the identity
+// pass-through). Output encode is a display transform applied equally to curve
+// and diagonal, so it cancels in stops.
+//
+// WHAT THIS PLOT DOES NOT SHOW, deliberately: halation. This is a function of
+// EXPOSURE ALONE, and halation is SPATIAL — a pixel's re-exposure depends on its
+// neighbours, so there is no single scatter value for an exposure and no honest
+// way to draw it as one curve (threading a scatter value in here would turn one
+// curve into a per-pixel family, and the per-channel AH weight into three). The
+// curve remains exactly true of the tone scale; it is not the whole transform
+// once Light is on. The two scopes that DO see halation are the Status-M density
+// parade (which measures the halated result — G17) and the isolated-scatter
+// view. Do not restore an "it can never disagree with the pixels" claim here.
 static inline float scopeYStops(float inStops, int ch, const SpeakParams& pr)
 {
     const float lin = k18Gray * std::exp2(inStops);

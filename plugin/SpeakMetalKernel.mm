@@ -1019,7 +1019,12 @@ void RunMetalSpeak(void* p_CmdQ, int p_Width, int p_Height,
         [enc setBuffer:src offset:0 atIndex:3];
         [enc setBuffer:res.statsBuf offset:0 atIndex:4];
         [enc setBuffer:scatBind offset:0 atIndex:5];
-        const MTLSize gh = MTLSizeMake((p_Width / 2 + 16) / 16, (p_Height / 2 + 16) / 16, 1);
+        // ceil(W/2) sample threads (the kernel indexes x = gid*2). This form
+        // already over-covered and was never short, but state the intent the
+        // same way the other two backends now do — they WERE short by one column
+        // at W = 1 (mod 32).
+        const MTLSize gh = MTLSizeMake(((p_Width + 1) / 2 + 15) / 16,
+                                       ((p_Height + 1) / 2 + 15) / 16, 1);
         [enc dispatchThreadgroups:gh threadsPerThreadgroup:tg];
         [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
 

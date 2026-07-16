@@ -620,8 +620,72 @@ static void gateHalResolution()
                (k + 1) / 40.0, lo[k], hi[k], rel);
         if (rel > worst) worst = rel;
     }
-    check(worst < 0.06, "G16 the halo profile matches across a 4x resolution change",
+    check(worst < 0.06, "G16a the halo profile matches across a 4x resolution change",
           (std::string("worst rel=") + std::to_string(worst)).c_str());
+}
+
+// G16b — the invariant G16a CANNOT see, asserted directly as arithmetic.
+//
+// An adversarial review caught this: G16a was credited with catching the
+// SPEAK_HAL_MAXLEV=9 bug, and it CANNOT. Reverting MAXLEV 14 -> 9 leaves the
+// whole suite byte-identically GREEN, because G16a's probes (480x270 -> nLev 7,
+// 1920x1080 -> nLev 9) never reach the bind — the defect only manifests at UHD,
+// which G16a never renders. The bug was actually found with a throwaway probe,
+// and then the gate took the credit. That is precisely the "gate that cannot
+// fail" this project treats as worthless.
+//
+// The property is a statement about halLevelCount's ARITHMETIC, so assert it as
+// arithmetic, over every delivery size that matters — O(1), no rendering:
+// MAXLEV must be a runaway guard only; MINDIM must be what binds. That is what
+// makes (nLev - L_target) independent of frame height, which is in turn what
+// makes the halo resolution-independent.
+static void gateHalMaxlevNeverBinds()
+{
+    printf("G16b MAXLEV is a runaway guard only — MINDIM must bind\n");
+    const int sizes[][2] = { { 480, 270 }, { 640, 360 }, { 960, 540 }, { 1280, 720 },
+                             { 1920, 1080 }, { 2048, 1080 }, { 3840, 2160 }, { 4096, 2160 },
+                             { 7680, 4320 }, { 333, 197 }, { 31, 19 } };
+    bool ok = true;
+    for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); ++i) {
+        const int W = sizes[i][0], H = sizes[i][1];
+        const int n = halLevelCount(W, H);
+        // The precise test is NOT "n reached MAXLEV" — at some sizes both limits
+        // land on the same level and MAXLEV is then irrelevant (1920x1080 stops
+        // at an 8x5 level either way). What must never happen is the loop
+        // stopping while both dims are still ABOVE MINDIM: that is MAXLEV, and
+        // only MAXLEV, cutting the pyramid short.
+        int lw, lh, off;
+        halLevelInfo(W, H, n - 1, lw, lh, off);
+        const bool mindimBound = (lw <= SPEAK_HAL_MINDIM) || (lh <= SPEAK_HAL_MINDIM);
+        if (!mindimBound) {
+            printf("    %5dx%-5d nLev=%2d last level %dx%d  <-- MAXLEV CUT IT SHORT\n",
+                   W, H, n, lw, lh);
+            ok = false;
+        }
+    }
+    check(ok, "G16b MAXLEV never binds at any delivery size (up to 8K)",
+          "MINDIM governs => nLev - L_target is height-independent");
+
+    // And the consequence, stated as the thing a user would actually feel: the
+    // fraction of the mixture's weight that the available levels can carry must
+    // be the SAME at proxy and at UHD. With MAXLEV=9 this read 93.7% vs 87.6%,
+    // i.e. UHD rendered a different halo than the proxy the shot was graded on.
+    double worst = 0.0;
+    for (int i = 0; i < 2; ++i) {
+        const int H = (i == 0) ? 270 : 2160, W = (i == 0) ? 480 : 3840;
+        SpeakParams pr = halParams(SPEAK_CS_LINEAR, 1.0f, 2.0f, 0.6f);
+        const float sig = halSigmaPx(H, pr);
+        const int n = halLevelCount(W, H);
+        float avail = 0.0f, full = 0.0f;
+        for (int L = 0; L < n; ++L)  avail += halLevelWeight(L, sig);
+        for (int L = 0; L < 20; ++L) full += halLevelWeight(L, sig);
+        const double carried = avail / full;
+        printf("    %5dx%-5d nLev=%2d  carries %.1f%% of the mixture's weight\n",
+               W, H, n, carried * 100.0);
+        worst = (i == 0) ? carried : std::fabs(carried - worst);
+    }
+    check(worst < 0.02, "G16b' proxy and UHD carry the same share of the mixture",
+          (std::string("difference=") + std::to_string(worst)).c_str());
 }
 
 static void gateHalScopeSeesScatter()
@@ -675,6 +739,7 @@ int main()
     gateHalEnergy();
     gateHalTail();
     gateHalResolution();
+    gateHalMaxlevNeverBinds();
     gateHalScopeSeesScatter();
     gateHalIsotropy();
     printf("\n%s (%d failures)\n", g_fail ? "FAILED" : "ALL GATES GREEN", g_fail);
