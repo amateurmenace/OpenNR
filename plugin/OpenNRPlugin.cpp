@@ -49,6 +49,8 @@ static uint32_t boostParamsHash(const NRParams& p)
     c.histValid    = 0;
     c.effnSteer    = 0;   // v3.6 S1: spatial-only, never touches the
                           // temporal buffer the history caches
+    c.exportMatteAlpha = 0; // v3.7: output-alpha only — toggling it must not
+                            // invalidate the boost history (like viewMode)
     uint32_t h = 2166136261u;
     const unsigned char* b = reinterpret_cast<const unsigned char*>(&c);
     for (size_t i = 0; i < sizeof(NRParams); ++i) {
@@ -63,7 +65,7 @@ static uint32_t boostParamsHash(const NRParams& p)
 #define kPluginName "Hush Open NR"
 #define kPluginGrouping "Hush"
 #define kPluginDescription \
-    "Hush Open NR v3.6 — the free noise reduction suite.\n\n" \
+    "Hush Open NR v3.7 — the free noise reduction suite.\n\n" \
     "Click AUTO SETUP and the plugin measures your clip and dials in every " \
     "slider (one undo reverts) — or CLEAN SLATE to zero everything and work " \
     "fully manually. Work top to bottom: 1 measure, 2 temporal, 3 spatial, " \
@@ -81,7 +83,7 @@ static uint32_t boostParamsHash(const NRParams& p)
     "MIT-licensed and free forever."
 #define kPluginIdentifier "org.opennr.Denoise"
 #define kPluginVersionMajor 3
-#define kPluginVersionMinor 6
+#define kPluginVersionMinor 7
 
 #define kSupportsTiles false
 #define kSupportsMultiResolution false
@@ -232,6 +234,7 @@ public:
         m_Acutance       = fetchDoubleParam("acutance");
         m_ChromaSpeckle  = fetchDoubleParam("chromaSpeckle");
         m_ViewMode       = fetchChoiceParam("viewMode");
+        m_ExportMatte    = fetchBooleanParam("exportMatteAlpha");
 
         // restore a locked profile saved with the project
         std::string lockStr;
@@ -1054,6 +1057,7 @@ private:
         int view = 0;
         m_ViewMode->getValueAtTime(t, view);
         p.viewMode        = view;
+        p.exportMatteAlpha = m_ExportMatte->getValueAtTime(t) ? 1 : 0;
 
         // ---- v3 ----
         p.motionTracking  = m_MotionTracking->getValueAtTime(t) ? 1 : 0;
@@ -1194,6 +1198,7 @@ private:
         p.frameIndex     = params.frameIndex;
         p.master         = params.master;
         p.viewMode       = params.viewMode;
+        p.exportMatteAlpha = params.exportMatteAlpha;
         p.motionTracking = params.motionTracking;
         p.fireflyRemoval = params.fireflyRemoval;
         p.eqFine         = params.eqFine;
@@ -1367,6 +1372,7 @@ private:
     OFX::DoubleParam*  m_Acutance = nullptr;      // v3.6
     OFX::DoubleParam*  m_ChromaSpeckle = nullptr; // v3.6
     OFX::ChoiceParam*  m_ViewMode = nullptr;
+    OFX::BooleanParam* m_ExportMatte = nullptr;   // v3.7
 };
 
 
@@ -1977,6 +1983,15 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
         c->setParent(*grpOutput);
         page->addChild(*c);
     }
+
+    // v3.7: the downstream handoff. Result view only; the inspection views keep
+    // the true alpha. The hint states plainly that it REPLACES incoming alpha.
+    defineBool(p_Desc, page, "exportMatteAlpha", "Export Clean Matte to Alpha",
+               "In the Result view, writes the clean-confidence matte into the output ALPHA "
+               "(clamp((effN-1)/6), identical to the Clean Confidence view) so a downstream "
+               "node - Speak's grain, or any qualifier - can key on where cleaning succeeded. "
+               "Replaces the incoming alpha while on; RGB is untouched.",
+               false, grpOutput);
 }
 
 OFX::ImageEffect* OpenNRPluginFactory::createInstance(OfxImageEffectHandle p_Handle, OFX::ContextEnum /*p_Context*/)

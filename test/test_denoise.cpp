@@ -922,6 +922,39 @@ int main()
         check(sConf > mConf + 0.3, "confidence matte: high where averaging was deep, low on motion");
     }
 
+    // v3.7 feature — Export Clean Matte to Alpha: in the RESULT view, the
+    // toggle writes view 9's exact map into output ALPHA while RGB stays
+    // bit-identical to the toggle-off render. This is the downstream handoff
+    // (Speak keys grain on it), so its three claims are gated separately:
+    // same calibration as view 9, RGB untouched, and off = bit-exact alpha
+    // passthrough (the golden default path).
+    {
+        nrcore::Params p0 = p; p0.viewMode = 0; p0.temporalFrames = 7;
+        nrcore::Params p1 = p0; p1.exportMatteAlpha = 1;
+        nrcore::Params p9 = p0; p9.viewMode = 9;
+        std::vector<float> off, on, view9;
+        runCase(0.04f, 0.0f, 0.0f, NOISE_IID, p0, &off);
+        runCase(0.04f, 0.0f, 0.0f, NOISE_IID, p1, &on);
+        runCase(0.04f, 0.0f, 0.0f, NOISE_IID, p9, &view9);
+        bool rgbSame = true, alphaIsMap = true, offPassthrough = true;
+        float maxAD = 0.0f;
+        for (int y = 0; y < H; ++y)
+            for (int x = 0; x < W; ++x) {
+                const size_t i = (static_cast<size_t>(y) * W + x) * 4;
+                if (on[i] != off[i] || on[i + 1] != off[i + 1] || on[i + 2] != off[i + 2])
+                    rgbSame = false;               // RGB must be untouched by the toggle
+                const float d = std::fabs(on[i + 3] - view9[i + 3]);
+                if (d > maxAD) maxAD = d;          // alpha must equal view 9's map
+                if (d > 1e-6f) alphaIsMap = false; // (same code path, same calibration)
+                if (off[i + 3] != 1.0f) offPassthrough = false; // scene alpha is 1.0
+            }
+        printf("v3.7 matte->alpha export: RGB bit-same %s, alpha==view9 map (maxD %.2e), off passthrough %s\n",
+               rgbSame ? "yes" : "NO", maxAD, offPassthrough ? "yes" : "NO");
+        check(rgbSame, "matte export: RGB is bit-identical with the toggle on");
+        check(alphaIsMap, "matte export: alpha carries view 9's exact calibrated map");
+        check(offPassthrough, "matte export off: alpha is the untouched input alpha");
+    }
+
     // v3.6 WEAK-1 chroma-speckle: a static block-chroma-blotch scene (the
     // speckle the chroma bands can't reach) must clean up in chroma without
     // touching luma. Real color is preserved because the scene's true color is

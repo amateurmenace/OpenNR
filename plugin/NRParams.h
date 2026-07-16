@@ -95,6 +95,12 @@ typedef struct NRParams
     float acutance;        // v3.6: optical acutance 0..~2 (edginess-gated high-
                            // pass on the cleaned luma, overshoot-clamped)
     float chromaSpeckle;   // v3.6: WEAK-1 luma-guided wide chroma pass 0..1
+    int   exportMatteAlpha;// v3.7: in the Result view, write the clean-confidence
+                           // matte (clamp((effN-1)/6, 0, 1) — the same calibration
+                           // as view 9) into OUTPUT ALPHA so a downstream node
+                           // (Speak) can key grain on where cleaning succeeded.
+                           // REPLACES the incoming alpha; RGB untouched. 0 = off
+                           // (bit-exact alpha passthrough, the default).
 } NRParams;
 
 // stats buffer layout (uint32 slots). v3.3 B5 re-layout: every chroma

@@ -1959,6 +1959,9 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
         const float conf = clampf((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
         o.x = conf; o.y = conf; o.z = conf; o.w = conf;
     }
+    // v3.7: Result-view handoff — same calibration as view 9 into ALPHA only.
+    if (p.exportMatteAlpha != 0 && p.viewMode == 0)
+        o.w = clampf((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
 
     // ---- v3.1 scope overlays: drawn over ANY view, never into alpha ----
     {
