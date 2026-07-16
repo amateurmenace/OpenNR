@@ -250,6 +250,16 @@ int main()
         { SpeakParams p = halParams(); p.scopeDensity = 1; runHot(W, H, p, "density scope + halation", 1); }
         { SpeakParams p = baseParams(); p.scopeDensity = 1; p.strength = 0.7f; p.profile = stockProfile(); runHot(W, H, p, "density scope on", 1); }
         { SpeakParams p = baseParams(); p.scopeHD = 1; p.scopeDensity = 1; p.strength = 0.7f; p.profile = stockProfile(); runHot(W, H, p, "both scopes on", 1); }
+        // W and H both == 1 (mod 32). The stats kernel indexes x = gid*2, so the
+        // dispatch needs ceil(W/2) sample threads; floor(W/2) falls exactly one
+        // sample column short at these sizes and nowhere else (1921 and 3841 are
+        // both 1 mod 32). Every OTHER scope case here runs at 640x480 — 0 mod 32
+        // — and the one odd-sized case (173x97, whose 97 IS 1 mod 32) has no
+        // scope on, so the stats pass never fires there. This suite was blind to
+        // it. NOTE it still skips on Apple's OpenCL (broken atomics); it earns
+        // its place on OpenCL's real targets (Win/Linux NVIDIA/AMD/Intel).
+        { SpeakParams p = halParams(); p.scopeDensity = 1; p.scopeHD = 1;
+          runHot(353, 225, p, "scopes at 353x225 (W,H = 1 mod 32)", 1); }
     } else {
         printf("  [SKIP] scope H&D / density / both    (device's OpenCL atomics are broken)\n");
     }
