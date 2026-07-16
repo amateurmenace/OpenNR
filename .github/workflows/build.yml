@@ -20,6 +20,8 @@ jobs:
           c++ -O2 -std=c++14 -I../plugin test_metal.mm ../plugin/MetalKernel.mm \
               -framework Metal -framework Foundation -o test_metal
           ./test_metal
+          # real-clip harness: compile-only (it runs on user footage, not CI)
+          c++ -O2 -std=c++14 -I../plugin hush_cli.cpp -o hush_cli
 
       # the CUDA kernel is a textual port that nothing else compiles until it
       # reaches NVIDIA hardware — clang's host-only CUDA mode at least

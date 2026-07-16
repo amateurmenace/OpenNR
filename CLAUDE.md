@@ -61,6 +61,18 @@ cd ../plugin && make
 cd ../test
 c++ -O2 -std=c++14 -I../plugin bench_metal.mm ../plugin/MetalKernel.mm \
     -framework Metal -framework Foundation -o bench_metal && ./bench_metal
+
+# Real-clip A/B harness (dev tool, never ships) — runs the exact CPU
+# pipeline on any footage so algorithm changes get scored on the user's
+# reference clips BEFORE a release. Plugin-slider units; --auto replicates
+# Auto Setup v3.5 (spread-frame analysis -> class table -> SURE tune);
+# --boost runs the Render Boost sequential chain; --jobs N parallelizes
+# when boost is off (bit-identical to sequential). CI compiles it only.
+c++ -O2 -std=c++14 -I../plugin hush_cli.cpp -o hush_cli
+#   ffmpeg -i clip.mov -pix_fmt rgb48be seq/f_%04d.ppm
+#   ./hush_cli -i seq/f_%04d.ppm -f 1 -l 100 -o out/f_%04d.ppm --auto --boost
+#   ffmpeg -framerate 24 -i out/f_%04d.ppm -c:v prores_ks -profile:v 3 out.mov
+# Keep reference clips OUTSIDE the repo (they are private footage and heavy).
 ```
 
 CUDA (`CudaKernel.cu`) cannot be RUN on this Mac — it is kept as a faithful

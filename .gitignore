@@ -8,6 +8,7 @@ release/
 test/test_denoise
 test/test_metal
 test/bench_metal
+test/hush_cli
 test/*.ppm
 test/*.png
 test/*.air
