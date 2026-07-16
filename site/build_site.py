@@ -27,8 +27,13 @@ for f in os.listdir(os.path.join(here, "assets")):
 # whitepaper.html is a self-contained static page (no image tokens) — it is
 # its own source AND output; sync it to docs/ so GitHub Pages stays in step.
 shutil.copy(os.path.join(here, "whitepaper.html"), os.path.join(docs, "whitepaper.html"))
-# GitHub Pages custom domain: keep the CNAME in docs/ so a rebuild never drops it
-# (the apex control-z.org points at Pages' four A records; www is a CNAME to
-# amateurmenace.github.io). Change here if the domain ever changes.
-open(os.path.join(docs, "CNAME"), "w").write("control-z.org\n")
-print("site/index.html + docs/ (GitHub Pages, incl. whitepaper.html + CNAME) rebuilt — also run build_embed.py")
+# NO CNAME HERE. control-z.org moved to the suite repo (amateurmenace/control-z,
+# gh-pages branch) on 2026-07-16 — it writes its own CNAME at bake time. Two repos
+# claiming one custom domain fight, and this one would win by accident and take
+# control-z.org down. This repo now publishes at amateurmenace.github.io/Hush-OpenNR/.
+# If a stale docs/CNAME is lying around from before the move, clear it.
+_stale_cname = os.path.join(docs, "CNAME")
+if os.path.exists(_stale_cname):
+    os.remove(_stale_cname)
+    print("removed stale docs/CNAME (control-z.org lives in the control-z repo now)")
+print("site/index.html + docs/ (GitHub Pages, incl. whitepaper.html) rebuilt — also run build_embed.py")
