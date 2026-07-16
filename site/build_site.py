@@ -24,4 +24,7 @@ open(os.path.join(docs, "index.html"), "w").write(html)
 import shutil
 for f in os.listdir(os.path.join(here, "assets")):
     shutil.copy(os.path.join(here, "assets", f), os.path.join(docs, "assets", f))
-print("site/index.html + docs/ (GitHub Pages) rebuilt — also run build_embed.py")
+# whitepaper.html is a self-contained static page (no image tokens) — it is
+# its own source AND output; sync it to docs/ so GitHub Pages stays in step.
+shutil.copy(os.path.join(here, "whitepaper.html"), os.path.join(docs, "whitepaper.html"))
+print("site/index.html + docs/ (GitHub Pages, incl. whitepaper.html) rebuilt — also run build_embed.py")
