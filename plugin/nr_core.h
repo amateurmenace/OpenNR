@@ -100,6 +100,11 @@ struct Params {
                                    // the frame-scale lighting gradient (window
                                    // < gradient scale) are preserved. 0 = off.
 
+    int   exportMatteAlpha = 0;   // v3.7: Result view writes the clean-confidence
+                                  // matte (clamp((effN-1)/6), = view 9) into
+                                  // OUTPUT alpha for the downstream handoff.
+                                  // Replaces incoming alpha; RGB untouched.
+
     int   enableRefine   = 1;
     float shadowDesat    = 0.0f;   // 0..1
     float desatRange     = 0.15f;  // luma pivot
@@ -2171,6 +2176,13 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
 
             float* o = out + idx;
             o[3] = c[3];   // alpha passthrough (the matte view overrides)
+            // v3.7: the downstream handoff. In the RESULT view only, write the
+            // clean-confidence matte into OUTPUT ALPHA — the SAME calibration as
+            // view 9, clamp((effN-1)/6) — so the next node (Speak) can key grain
+            // on where cleaning succeeded. REPLACES incoming alpha (stated in the
+            // UI hint); RGB untouched; the inspection views keep the true alpha.
+            if (p.exportMatteAlpha != 0 && p.viewMode == 0)
+                o[3] = clampf((tc[3] - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
 
             switch (p.viewMode) {
             case 1: { // split: input | result

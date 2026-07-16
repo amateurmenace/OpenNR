@@ -1,5 +1,21 @@
 # OpenNR changelog
 
+## 3.7.0 — 2026-07-16
+
+The handoff release: Hush can now hand its clean-confidence matte to the next
+node in the chain, which is what makes the "clean early, reconstruct late"
+pairing with Speak real instead of aspirational.
+
+- **Export Clean Matte to Alpha** (Output group, default off). In the Result
+  view, writes the v3.6 clean-confidence matte — `clamp((effN − 1) / 6, 0, 1)`,
+  the exact calibration of the "Matte: Clean Confidence" view — into the output
+  ALPHA channel, leaving RGB untouched. A downstream node (Speak's grain, or any
+  qualifier) can key on where cleaning actually succeeded: high where the
+  temporal stage averaged deep, low on the motion the gate protected. Replaces
+  the incoming alpha while on, and the hint says so. Off by default, so every
+  existing project renders bit-identically.
+- The inspection views keep the true alpha; only the Result view exports.
+
 ## 3.6.0 — 2026-07-16
 
 The texture-reconstruction release. A real-footage audit found the denoising

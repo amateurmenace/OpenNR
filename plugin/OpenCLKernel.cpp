@@ -90,6 +90,7 @@ typedef struct NRParams
     float grainBlue;
     float acutance;
     float chromaSpeckle;
+    int   exportMatteAlpha;
 } NRParams;
 
 #define kMedianCal   0.247100f
@@ -1968,6 +1969,9 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
         const float conf = clamp((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
         o = (float4)(conf, conf, conf, conf);
     }
+    /* v3.7: Result-view handoff — same calibration as view 9 into ALPHA only. */
+    if (p.exportMatteAlpha != 0 && p.viewMode == 0)
+        o.w = clamp((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
 
     // ---- v3.1 scope overlays: drawn over ANY view, never into alpha ----
     {

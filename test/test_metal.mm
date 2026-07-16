@@ -77,6 +77,7 @@ static void toCpuParams(const NRParams& gp, nrcore::Params& cp)
     cp.frameIndex     = gp.frameIndex;
     cp.master         = gp.master;
     cp.viewMode       = gp.viewMode;
+    cp.exportMatteAlpha = gp.exportMatteAlpha;   // v3.7
     cp.motionTracking = gp.motionTracking;
     cp.fireflyRemoval = gp.fireflyRemoval;
     cp.eqFine         = gp.eqFine;
@@ -418,6 +419,9 @@ int main()
 
     NRParams v9b = p; v9b.viewMode = 9;   // v3.6 clean-confidence matte (effN)
     failures += compareRun(queue, v9b, "v3.6 clean-confidence matte view");
+
+    NRParams vx = p; vx.exportMatteAlpha = 1;   // v3.7 Result view + matte->alpha
+    failures += compareRun(queue, vx, "v3.7 matte->alpha export (result)");
 
     // ---- v3.1 cases ----
     NRParams w1 = p; w1.detailRescue = 0.8f; w1.spatialLuma = 1.5f;

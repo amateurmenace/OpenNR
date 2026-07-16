@@ -39,6 +39,9 @@ __device__ float fmaxf(float, float);
 __device__ float fabsf(float);
 __device__ float sqrtf(float);
 __device__ float expf(float);
+__device__ float exp2f(float);      // Speak: nvcc provides these __device__
+__device__ float logf(float);
+__device__ float log2f(float);
 __device__ float powf(float, float);
 __device__ float log10f(float);
 __device__ float floorf(float);
