@@ -91,8 +91,12 @@ static void run(id<MTLDevice> device, id<MTLCommandQueue> queue,
     }
     const double meand = sumd / n;
     bool pass;
-    if (mode == 1) pass = (meand < 5e-5) && (nOver <= 400);      // scope: hudOK
-    else           pass = (maxd < 5e-3) && (meand < 1e-4);       // strict
+    if (mode == 1)      pass = (meand < 5e-5) && (nOver <= 400);              // scope: hudOK
+    else if (mode == 2) pass = (meand < 1e-5) && (nOver <= 64) && (maxd < 0.30); // bake: isolated
+                                                                              // gamut-edge/near-black pixels where fast-math
+                                                                              // straddles a channel zero and the (correct)
+                                                                              // pure gamma-2.4 slope->inf amplifies it
+    else                pass = (maxd < 5e-3) && (meand < 1e-4);               // strict
     printf("  [%s] %-30s max %.2e  mean %.2e  over %zu\n",
            pass ? "PASS" : "FAIL", label, maxd, meand, nOver);
     if (!pass) g_fail++;
@@ -119,6 +123,12 @@ int main()
     // 5 — Split view.
     { SpeakParams p = baseParams(); p.viewMode = SPEAK_VIEW_SPLIT; p.profile = stockProfile();
       run(device, queue, W, H, p, "split view s1.0", 0); }
+    // 5b — Bake to Rec.709 (output CST). Mode 2: bounded gamut-edge boundary flips.
+    { SpeakParams p = baseParams(); p.outputMode = SPEAK_OUT_BAKE_REC709; p.profile = stockProfile();
+      run(device, queue, W, H, p, "bake Rec.709 s1.0", 2); }
+    // 5c — Bake with look off (pure CST).
+    { SpeakParams p = baseParams(); p.outputMode = SPEAK_OUT_BAKE_REC709; p.strength = 0.0f;
+      run(device, queue, W, H, p, "bake Rec.709 CST-only", 2); }
     // 6 — H&D scope on (hud-tolerant).
     { SpeakParams p = baseParams(); p.scopeHD = 1; p.strength = 0.6f; p.profile = stockProfile();
       run(device, queue, W, H, p, "scope H&D on s0.6", 1); }

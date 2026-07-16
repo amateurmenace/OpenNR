@@ -92,6 +92,33 @@ inline float encodeFromLinear(int cs, float L)
     return L;
 }
 
+constant float kDWG_to_XYZ[9] = {
+    0.70062239f, 0.14877482f, 0.10105872f,
+    0.27411851f, 0.87363190f,-0.14775041f,
+   -0.09896291f,-0.13789533f, 1.32591599f };
+constant float kXYZ_to_Rec709[9] = {
+    3.24045420f,-1.53713850f,-0.49853140f,
+   -0.96926600f, 1.87601080f, 0.04155600f,
+    0.05564340f,-0.20402590f, 1.05722520f };
+inline void mul3(constant float* m, float r, float g, float b,
+                 thread float& oR, thread float& oG, thread float& oB)
+{
+    oR = m[0] * r + m[1] * g + m[2] * b;
+    oG = m[3] * r + m[4] * g + m[5] * b;
+    oB = m[6] * r + m[7] * g + m[8] * b;
+}
+inline void gamutToRec709Lin(int cs, float r, float g, float b,
+                             thread float& oR, thread float& oG, thread float& oB)
+{
+    if (cs == 0 || cs == 2) {
+        float X, Y, Z;
+        mul3(kDWG_to_XYZ, r, g, b, X, Y, Z);
+        mul3(kXYZ_to_Rec709, X, Y, Z, oR, oG, oB);
+    } else {
+        oR = r; oG = g; oB = b;
+    }
+}
+
 inline float hdCurve(float logH, float Dmin, float Dmax, float gamma,
                      float toe, float shoulder, float speed)
 {
@@ -188,24 +215,36 @@ inline void processPixel(float r, float g, float b, int x, int y, int W, int H,
                          constant SpeakParams& pr,
                          thread float& outR, thread float& outG, thread float& outB)
 {
+    int cs = pr.inputColorSpace;
     bool toneOn = (pr.enableTone != 0) && (pr.strength > 0.0f);
-    if (!toneOn) {
+    bool bake = (pr.outputMode == 1);
+    if (!toneOn && !bake) {
         outR = r; outG = g; outB = b;
     } else {
-        int cs = pr.inputColorSpace;
         float lr = decodeToLinear(cs, r);
         float lg = decodeToLinear(cs, g);
         float lb = decodeToLinear(cs, b);
-        float tr = toneChannel(lr, 0, pr.profile);
-        float tg = toneChannel(lg, 1, pr.profile);
-        float tb = toneChannel(lb, 2, pr.profile);
-        float s = clampf(pr.strength, 0.0f, 1.0f);
-        float mr = lerpf(lr, tr, s);
-        float mg = lerpf(lg, tg, s);
-        float mb = lerpf(lb, tb, s);
-        outR = encodeFromLinear(cs, mr);
-        outG = encodeFromLinear(cs, mg);
-        outB = encodeFromLinear(cs, mb);
+        float mr = lr, mg = lg, mb = lb;
+        if (toneOn) {
+            float s = clampf(pr.strength, 0.0f, 1.0f);
+            mr = lerpf(lr, toneChannel(lr, 0, pr.profile), s);
+            mg = lerpf(lg, toneChannel(lg, 1, pr.profile), s);
+            mb = lerpf(lb, toneChannel(lb, 2, pr.profile), s);
+        }
+        if (bake) {
+            float rr, rg, rb;
+            gamutToRec709Lin(cs, mr, mg, mb, rr, rg, rb);
+            rr = rr < 0.0f ? 0.0f : rr;
+            rg = rg < 0.0f ? 0.0f : rg;
+            rb = rb < 0.0f ? 0.0f : rb;
+            outR = encodeFromLinear(1, rr);
+            outG = encodeFromLinear(1, rg);
+            outB = encodeFromLinear(1, rb);
+        } else {
+            outR = encodeFromLinear(cs, mr);
+            outG = encodeFromLinear(cs, mg);
+            outB = encodeFromLinear(cs, mb);
+        }
     }
     if (pr.viewMode == 2) { outR = r; outG = g; outB = b; }
     else if (pr.viewMode == 1 && x < W / 2) { outR = r; outG = g; outB = b; }

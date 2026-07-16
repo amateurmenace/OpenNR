@@ -116,6 +116,46 @@ static inline float encodeFromLinear(int cs, float L)
 }
 
 // ---------------------------------------------------------------------------
+// Gamut colorimetry (for the Bake-to-Rec.709 output mode). DaVinci Wide Gamut
+// -> CIE XYZ (D65) is the published white-paper / colour-science matrix; XYZ ->
+// linear Rec.709 is the standard D65 matrix. Both share D65 so a neutral maps
+// to a neutral (the tiny residual is the published matrix's own rounding). The
+// inverse matrices used by the round-trip CST gate live in the test.
+// ---------------------------------------------------------------------------
+static const float kDWG_to_XYZ[9] = {
+    0.70062239f, 0.14877482f, 0.10105872f,
+    0.27411851f, 0.87363190f,-0.14775041f,
+   -0.09896291f,-0.13789533f, 1.32591599f };
+static const float kXYZ_to_Rec709[9] = {
+    3.24045420f,-1.53713850f,-0.49853140f,
+   -0.96926600f, 1.87601080f, 0.04155600f,
+    0.05564340f,-0.20402590f, 1.05722520f };
+
+static inline void mul3(const float* m, float r, float g, float b,
+                        float& oR, float& oG, float& oB)
+{
+    oR = m[0] * r + m[1] * g + m[2] * b;
+    oG = m[3] * r + m[4] * g + m[5] * b;
+    oB = m[6] * r + m[7] * g + m[8] * b;
+}
+
+// Working-space linear RGB -> linear Rec.709. Bake targets the DaVinci Wide
+// Gamut working space (the documented use); Rec.709 in is a gamut-identity, and
+// other declared spaces get a transfer-only bake (gamut left as-is) — stated in
+// the UI hint so the mode never claims a conversion it does not perform.
+static inline void gamutToRec709Lin(int cs, float r, float g, float b,
+                                    float& oR, float& oG, float& oB)
+{
+    if (cs == SPEAK_CS_DWG_INTERMEDIATE || cs == SPEAK_CS_DWG_LINEAR) {
+        float X, Y, Z;
+        mul3(kDWG_to_XYZ, r, g, b, X, Y, Z);
+        mul3(kXYZ_to_Rec709, X, Y, Z, oR, oG, oB);
+    } else {
+        oR = r; oG = g; oB = b;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The closed-form Hurter-Driffield characteristic curve  D(logH).
 //
 // Two stable softplus segments give independently tunable toe and shoulder
@@ -271,35 +311,44 @@ static inline void processPixel(float r, float g, float b,
                                 float& outR, float& outG, float& outB)
 {
     const SpeakProfile& p = pr.profile;
+    const int cs = pr.inputColorSpace;
     const bool toneOn = (pr.enableTone != 0) && (pr.strength > 0.0f);
+    const bool bake   = (pr.outputMode == SPEAK_OUT_BAKE_REC709);
 
-    if (!toneOn) {
-        // Identity short-circuit: bit-exact pass-through (matches Hush's
-        // globalBlend-at-0 behavior). Scopes may still overwrite below.
+    if (!toneOn && !bake) {
+        // Working space + no look: bit-exact pass-through (identity). Scopes
+        // may still overwrite below.
         outR = r; outG = g; outB = b;
     } else {
-        const int cs = pr.inputColorSpace;
+        // Working-space linear result (look applied if any).
         const float lr = decodeToLinear(cs, r);
         const float lg = decodeToLinear(cs, g);
         const float lb = decodeToLinear(cs, b);
-
-        const float tr = toneChannel(lr, 0, p);
-        const float tg = toneChannel(lg, 1, p);
-        const float tb = toneChannel(lb, 2, p);
-
-        // Blend in scene-linear, then re-encode to the working space.
-        const float s = clampf(pr.strength, 0.0f, 1.0f);
-        const float mr = lerpf(lr, tr, s);
-        const float mg = lerpf(lg, tg, s);
-        const float mb = lerpf(lb, tb, s);
-
-        // outputMode: WORKING re-encodes to the input space and lets RCM
-        // deliver. This is the only mode the UI exposes; the BAKE_REC709 branch
-        // (DWG->Rec.709 gamut matrix + transfer) lands here in a later increment
-        // and the option is only offered once it actually converts.
-        outR = encodeFromLinear(cs, mr);
-        outG = encodeFromLinear(cs, mg);
-        outB = encodeFromLinear(cs, mb);
+        float mr = lr, mg = lg, mb = lb;
+        if (toneOn) {
+            const float s = clampf(pr.strength, 0.0f, 1.0f);
+            mr = lerpf(lr, toneChannel(lr, 0, p), s);
+            mg = lerpf(lg, toneChannel(lg, 1, p), s);
+            mb = lerpf(lb, toneChannel(lb, 2, p), s);
+        }
+        if (bake) {
+            // Output CST: gamut-convert to Rec.709 and encode gamma 2.4. Applies
+            // regardless of the look (it is delivery, not a look) — a hard gamut
+            // clip for now (the constant-hue soft guardrail is a later module).
+            float rr, rg, rb;
+            gamutToRec709Lin(cs, mr, mg, mb, rr, rg, rb);
+            rr = rr < 0.0f ? 0.0f : rr;
+            rg = rg < 0.0f ? 0.0f : rg;
+            rb = rb < 0.0f ? 0.0f : rb;
+            outR = encodeFromLinear(SPEAK_CS_REC709_G24, rr);
+            outG = encodeFromLinear(SPEAK_CS_REC709_G24, rg);
+            outB = encodeFromLinear(SPEAK_CS_REC709_G24, rb);
+        } else {
+            // Working space: re-encode to the input space and let RCM deliver.
+            outR = encodeFromLinear(cs, mr);
+            outG = encodeFromLinear(cs, mg);
+            outB = encodeFromLinear(cs, mb);
+        }
     }
 
     // View modes (Split / Input) operate on the buffer coordinate.

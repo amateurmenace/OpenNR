@@ -144,8 +144,11 @@ public:
     virtual bool isIdentity(const OFX::IsIdentityArguments& p_Args, OFX::Clip*& p_IdentityClip, double& p_IdentityTime)
     {
         const double t = p_Args.time;
-        int vm = 0; m_ViewMode->getValueAtTime(t, vm);
+        int vm = 0, om = 0;
+        m_ViewMode->getValueAtTime(t, vm);
+        m_OutputMode->getValueAtTime(t, om);
         if (vm != 0) return false;
+        if (om != SPEAK_OUT_WORKING) return false;        // bake always transforms
         if (m_ScopeHD->getValueAtTime(t)) return false;   // scope must still draw
         const bool toneOn = m_EnableTone->getValueAtTime(t) && (m_Strength->getValueAtTime(t) > 0.0);
         if (!toneOn) { p_IdentityClip = m_SrcClip; p_IdentityTime = t; return true; }
@@ -376,15 +379,14 @@ void SpeakPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, O
     {
         OFX::ChoiceParamDescriptor* c = p_Desc.defineChoiceParam("outputMode");
         c->setLabels("Output", "Output", "Output");
-        c->setHint("Speak returns the working space so Resolve Color Management delivers "
-                   "Rec.709 / P3 / HDR from the same look (delivery-agnostic). A self-baked "
-                   "\"Bake to Rec.709\" mode for non-managed projects will be added once the "
-                   "DaVinci Wide Gamut -> Rec.709 gamut transform ships.");
-        // Only the implemented mode is offered — the "Bake to Rec.709" option is
-        // intentionally withheld until the gamut matrix exists (its enum value
-        // SPEAK_OUT_BAKE_REC709 and the processPixel branch land together), so
-        // the UI never advertises a conversion that doesn't happen.
+        c->setHint("Working space returns DWG/DI so Resolve Color Management delivers "
+                   "Rec.709 / P3 / HDR from the same look (delivery-agnostic default).\n\n"
+                   "Bake to Rec.709 makes Speak the literal last node for NON-managed "
+                   "projects: it converts DaVinci Wide Gamut -> Rec.709 (Gamma 2.4) itself. "
+                   "Use it only when Input is a DaVinci Wide Gamut space; for other inputs it "
+                   "applies the Rec.709 transfer without a gamut change.");
         c->appendOption("Working space (let RCM deliver)");
+        c->appendOption("Bake to Rec.709");
         c->setDefault(SPEAK_OUT_WORKING);
         c->setParent(*grpColor);
         page->addChild(*c);

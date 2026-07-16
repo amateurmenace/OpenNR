@@ -205,6 +205,64 @@ static void gateScopeMatchesKernel()
           (std::string("maxErr=") + std::to_string(maxErr)).c_str());
 }
 
+// -------------------------------------------------------------- G8 bake CST
+static void gateBakeCST()
+{
+    printf("G8 Bake-to-Rec.709 CST scaffold (neutral-identity + round-trip)\n");
+    SpeakParams pr = {};
+    pr.inputColorSpace = SPEAK_CS_DWG_INTERMEDIATE;
+    pr.outputMode = SPEAK_OUT_BAKE_REC709;
+    pr.enableTone = 0; pr.strength = 0.0f;      // pure CST, no look
+    pr.profile = neutralProfile();
+
+    // Neutral in -> neutral out: a DWG gray ramp bakes to Rec.709 with equal
+    // channels (bounded by the published matrix's own rounding).
+    float maxChroma = 0.0f;
+    for (int i = 0; i <= 400; ++i) {
+        const float lin = std::pow(10.0f, -3.0f + 5.0f * (i / 400.0f));
+        const float enc = diEncode(lin);
+        float oR, oG, oB;
+        processPixel(enc, enc, enc, 4, 4, 100, 100, pr, oR, oG, oB);
+        maxChroma = std::fmax(maxChroma, std::fmax(std::fabs(oR - oG), std::fabs(oG - oB)));
+    }
+    check(maxChroma < 2e-3f, "DWG neutral bakes to Rec.709 neutral",
+          (std::string("maxChroma=") + std::to_string(maxChroma)).c_str());
+
+    // 18% gray bakes to the correct Rec.709 code value (pow(0.18, 1/2.4)).
+    {
+        const float enc = diEncode(k18Gray);
+        float oR, oG, oB;
+        processPixel(enc, enc, enc, 4, 4, 100, 100, pr, oR, oG, oB);
+        const float expect = std::pow(k18Gray, 1.0f / 2.4f);
+        check(std::fabs(oR - expect) < 3e-3f, "18% gray -> correct Rec.709 code",
+              (std::string("got=") + std::to_string(oR) + " want=" + std::to_string(expect)).c_str());
+    }
+
+    // Round-trip DWG-linear -> Rec.709-linear -> DWG-linear ~ identity (proves
+    // the forward matrices are internally consistent).
+    const float XYZ_to_DWG[9] = {
+        1.51667205f,-0.28147806f,-0.14696364f,
+       -0.46491710f, 1.25142377f, 0.17488461f,
+        0.06484904f, 0.10913935f, 0.76141462f };
+    const float Rec709_to_XYZ[9] = {
+        0.41245643f, 0.35757608f, 0.18043748f,
+        0.21267285f, 0.71515217f, 0.07217500f,
+        0.01933390f, 0.11919203f, 0.95030407f };
+    const float cols[4][3] = { {0.2f,0.2f,0.2f}, {0.4f,0.1f,0.05f}, {0.05f,0.3f,0.2f}, {0.6f,0.5f,0.1f} };
+    float maxErr = 0.0f;
+    for (int t = 0; t < 4; ++t) {
+        float rr, rg, rb;
+        gamutToRec709Lin(SPEAK_CS_DWG_LINEAR, cols[t][0], cols[t][1], cols[t][2], rr, rg, rb);
+        float X, Y, Z, br, bg, bb;
+        mul3(Rec709_to_XYZ, rr, rg, rb, X, Y, Z);
+        mul3(XYZ_to_DWG, X, Y, Z, br, bg, bb);
+        maxErr = std::fmax(maxErr, std::fmax(std::fabs(br - cols[t][0]),
+                           std::fmax(std::fabs(bg - cols[t][1]), std::fabs(bb - cols[t][2]))));
+    }
+    check(maxErr < 1e-4f, "DWG->Rec.709->DWG round-trips",
+          (std::string("maxErr=") + std::to_string(maxErr)).c_str());
+}
+
 int main()
 {
     printf("=== Speak CPU gate suite ===\n");
@@ -215,6 +273,7 @@ int main()
     gateMonotone();
     gateGrayPivot();
     gateScopeMatchesKernel();
+    gateBakeCST();
     printf("\n%s (%d failures)\n", g_fail ? "FAILED" : "ALL GATES GREEN", g_fail);
     return g_fail ? 1 : 0;
 }

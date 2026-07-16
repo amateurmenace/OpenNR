@@ -86,7 +86,10 @@ static void run(int W, int H, const SpeakParams& p, const char* label, int mode)
         if (d > maxd) maxd = d; sumd += d; if (d > 5e-3) nOver++;
     }
     const double meand = sumd / n;
-    const bool pass = (mode == 1) ? (meand < 5e-5 && nOver <= 400) : (maxd < 5e-3 && meand < 1e-4);
+    bool pass;
+    if (mode == 1)      pass = (meand < 5e-5) && (nOver <= 400);                 // scope: hudOK
+    else if (mode == 2) pass = (meand < 1e-5) && (nOver <= 64) && (maxd < 0.30); // bake gamut-edge boundary flips
+    else                pass = (maxd < 5e-3) && (meand < 1e-4);                  // strict
     printf("  [%s] %-30s max %.2e  mean %.2e  over %zu\n", pass ? "PASS" : "FAIL", label, maxd, meand, nOver);
     if (!pass) g_fail++;
     clReleaseMemObject(srcBuf); clReleaseMemObject(dstBuf);
@@ -109,6 +112,8 @@ int main()
     { SpeakParams p = baseParams(); p.profile = stockProfile(); p.strength = 0.7f; run(W, H, p, "stock + printerLights s0.7", 0); }
     { SpeakParams p = baseParams(); p.inputColorSpace = SPEAK_CS_REC709_G24; p.profile = stockProfile(); run(W, H, p, "stock Rec709-in s1.0", 0); }
     { SpeakParams p = baseParams(); p.viewMode = SPEAK_VIEW_SPLIT; p.profile = stockProfile(); run(W, H, p, "split view s1.0", 0); }
+    { SpeakParams p = baseParams(); p.outputMode = SPEAK_OUT_BAKE_REC709; p.profile = stockProfile(); run(W, H, p, "bake Rec.709 s1.0", 2); }
+    { SpeakParams p = baseParams(); p.outputMode = SPEAK_OUT_BAKE_REC709; p.strength = 0.0f; run(W, H, p, "bake Rec.709 CST-only", 2); }
     { SpeakParams p = baseParams(); p.scopeHD = 1; p.strength = 0.6f; p.profile = stockProfile(); run(W, H, p, "scope H&D on s0.6", 1); }
 
     printf("\n%s (%d failures)\n", g_fail ? "PARITY FAILED" : "PARITY GREEN", g_fail);

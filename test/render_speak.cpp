@@ -37,7 +37,7 @@ int main(int argc, char** argv)
 
     SpeakParams p = {};
     p.inputColorSpace = SPEAK_CS_DWG_INTERMEDIATE;
-    p.outputMode = SPEAK_OUT_WORKING;
+    p.outputMode = (argc > 3 && atoi(argv[3]) == 1) ? SPEAK_OUT_BAKE_REC709 : SPEAK_OUT_WORKING;
     p.enableTone = 1;
     p.strength = (argc > 1) ? float(atof(argv[1])) : 0.85f;
     p.scopeHD = 1;
