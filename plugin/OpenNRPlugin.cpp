@@ -47,6 +47,8 @@ static uint32_t boostParamsHash(const NRParams& p)
     c.scopeMotion  = 0;
     c.scopeEq      = 0;
     c.histValid    = 0;
+    c.effnSteer    = 0;   // v3.6 S1: spatial-only, never touches the
+                          // temporal buffer the history caches
     uint32_t h = 2166136261u;
     const unsigned char* b = reinterpret_cast<const unsigned char*>(&c);
     for (size_t i = 0; i < sizeof(NRParams); ++i) {
@@ -61,24 +63,25 @@ static uint32_t boostParamsHash(const NRParams& p)
 #define kPluginName "Hush Open NR"
 #define kPluginGrouping "Hush"
 #define kPluginDescription \
-    "Hush Open NR v3.5 — the free noise reduction suite.\n\n" \
+    "Hush Open NR v3.6 — the free noise reduction suite.\n\n" \
     "Click AUTO SETUP and the plugin measures your clip and dials in every " \
     "slider (one undo reverts) — or CLEAN SLATE to zero everything and work " \
     "fully manually. Work top to bottom: 1 measure, 2 temporal, 3 spatial, " \
     "4 refine, 5 inspect.\n\n" \
-    "New in 3.5: RENDER BOOST blends against the previous rendered frame " \
-    "too, compounding the averaging on static areas during sequential " \
-    "playback and exports (up to about twice the frames); AUTO SETUP now " \
-    "self-tunes — it test-denoises a crop of your clip at a grid of " \
-    "settings and keeps the statistically best pair; and auto-exposure " \
-    "steps or light flicker no longer knock frames out of the temporal " \
-    "stack (each neighbour is exposure-matched before the motion tests).\n\n" \
+    "New in 3.6 — texture reconstruction: OPTICAL ACUTANCE adds lens-like " \
+    "edge sharpness back (gated to real edges, clamped so there is no halo); " \
+    "the FILM GRAIN is now matched to the noise that was removed (loud in " \
+    "shadows, faded on edges, with an optional finer blue-noise spectrum); " \
+    "LUMA TEXTURE cores out noise before it re-injects micro-detail so it no " \
+    "longer re-noises shadows; SHADOW COLOR CLEANUP clears the blotchy color " \
+    "speckle deep in shadows; and a CLEAN-CONFIDENCE matte exports where the " \
+    "denoiser averaged deepest for downstream grading.\n\n" \
     "Each step has a Scope checkbox that draws a panel right in the viewer. " \
     "Turn scopes off before rendering.\n\n" \
     "MIT-licensed and free forever."
 #define kPluginIdentifier "org.opennr.Denoise"
 #define kPluginVersionMajor 3
-#define kPluginVersionMinor 5
+#define kPluginVersionMinor 6
 
 #define kSupportsTiles false
 #define kSupportsMultiResolution false
@@ -206,6 +209,7 @@ public:
         m_SpatialChroma  = fetchDoubleParam("spatialChroma");
         m_PreserveDetail = fetchDoubleParam("preserveDetail");
         m_DetailRescue   = fetchDoubleParam("detailRescue");
+        m_EffnSteer      = fetchDoubleParam("adaptiveStrength");
         m_DeepClean      = fetchBooleanParam("deepClean");
         m_ChromaBlotch   = fetchDoubleParam("chromaBlotch");
         m_EqFine         = fetchDoubleParam("eqFine");
@@ -224,6 +228,9 @@ public:
         m_GrainAmount    = fetchDoubleParam("grainAmount");
         m_GrainSize      = fetchDoubleParam("grainSize");
         m_GrainChroma    = fetchDoubleParam("grainChroma");
+        m_GrainBlue      = fetchDoubleParam("grainBlue");
+        m_Acutance       = fetchDoubleParam("acutance");
+        m_ChromaSpeckle  = fetchDoubleParam("chromaSpeckle");
         m_ViewMode       = fetchChoiceParam("viewMode");
 
         // restore a locked profile saved with the project
@@ -558,7 +565,7 @@ private:
     // the separators never collide
     std::string snapshotDenoiseParams()
     {
-        char buf[1024];
+        char buf[2048];
         int tf = 0, sm = 0;
         m_TemporalFrames->getValue(tf);
         m_SpatialMode->getValue(sm);
@@ -566,7 +573,7 @@ private:
         m_LockData->getValue(lockStr);
         snprintf(buf, sizeof(buf),
                  "v1|et=%d|tf=%d|tl=%.17g|tc=%.17g|mt=%.17g|mtr=%d|ff=%d|gg=%d|rb=%d|es=%d|sm=%d|sr=%d|"
-                 "sl=%.17g|sc=%.17g|pd=%.17g|rs=%.17g|dc=%d|cb=%.17g|eqf=%.17g|eqm=%.17g|eqc=%.17g|pa=%.17g|lp=%d|ld=%s",
+                 "sl=%.17g|sc=%.17g|pd=%.17g|rs=%.17g|est=%.17g|dc=%d|cb=%.17g|eqf=%.17g|eqm=%.17g|eqc=%.17g|pa=%.17g|lp=%d|ld=%s",
                  m_EnableTemporal->getValue() ? 1 : 0, tf,
                  m_TemporalLuma->getValue(), m_TemporalChroma->getValue(), m_MotionThresh->getValue(),
                  m_MotionTracking->getValue() ? 1 : 0, m_FireflyRemoval->getValue() ? 1 : 0,
@@ -575,6 +582,7 @@ private:
                  m_EnableSpatial->getValue() ? 1 : 0, sm, m_SpatialRadius->getValue(),
                  m_SpatialLuma->getValue(), m_SpatialChroma->getValue(),
                  m_PreserveDetail->getValue(), m_DetailRescue->getValue(),
+                 m_EffnSteer->getValue(),
                  m_DeepClean->getValue() ? 1 : 0, m_ChromaBlotch->getValue(),
                  m_EqFine->getValue(), m_EqMedium->getValue(), m_EqCoarse->getValue(),
                  m_ProfileAdjust->getValue(), m_LockProfile->getValue() ? 1 : 0,
@@ -603,7 +611,8 @@ private:
     // failure returns not-ran: Auto Setup must never fail because of the
     // tuner. Deterministic: fixed-seed Rademacher, same playhead = same
     // frames = same answer.
-    nranalyze::SureTune tuneAutoSetupAt(double p_Time, const nranalyze::AutoSettings& p_As)
+    nranalyze::SureTune tuneAutoSetupAt(double p_Time, const nranalyze::AutoSettings& p_As,
+                                        nranalyze::SureDescent& p_Desc)
     {
         nranalyze::SureTune r;
         try
@@ -658,10 +667,23 @@ private:
                 fp[k] = crops[k].data();
             }
             r = nranalyze::sureTuneGrid(fp, cw, ch, nranalyze::paramsFromAutoSettings(p_As));
+            // v3.6 #19: coordinate descent + chroma SURE, seeded from the
+            // grid winner, on the same fetched crop (it sub-crops itself
+            // to <=384x216 to pay its own denoise bill). Failure leaves
+            // p_Desc.ran == 0 and the grid/table values stand.
+            if (r.ran)
+            {
+                nranalyze::AutoSettings asT = p_As;
+                asT.temporalLuma = r.temporalLuma * 100.0f;
+                asT.spatialLuma  = r.spatialLuma * 100.0f;
+                p_Desc = nranalyze::sureTuneDescent(fp, cw, ch,
+                                                    nranalyze::paramsFromAutoSettings(asT));
+            }
         }
         catch (...)
         {
             r.ran = 0;   // any host hiccup: the table values stand
+            p_Desc.ran = 0;
         }
         return r;
     }
@@ -702,11 +724,25 @@ private:
         // the playhead — the two swept sliders are overwritten only when the
         // sweep actually ran (~3-5 s, all CPU, deterministic; the table is
         // always the fallback)
-        const nranalyze::SureTune tuned = tuneAutoSetupAt(p_Time, as);
+        nranalyze::SureDescent desc;
+        const nranalyze::SureTune tuned = tuneAutoSetupAt(p_Time, as, desc);
         if (tuned.ran)
         {
             as.temporalLuma = tuned.temporalLuma * 100.0f;
             as.spatialLuma  = tuned.spatialLuma * 100.0f;
+        }
+        // v3.6 #19: the descent's winners land in the same sliders the
+        // user sees — measurement over table, table as fallback
+        if (desc.ran)
+        {
+            as.motionThresh   = desc.motionThresh * 100.0f;
+            as.preserveDetail = desc.preserveDetail * 100.0f;
+            as.detailRescue   = desc.detailRescue * 100.0f;
+            as.eqMedium       = desc.eqMedium * 100.0f;
+            as.effnSteer      = desc.effnSteer * 100.0f;
+            as.temporalChroma = desc.temporalChroma * 100.0f;
+            as.spatialChroma  = desc.spatialChroma * 100.0f;
+            as.chromaBlotch   = desc.chromaBlotch * 100.0f;
         }
 
         // belt and braces: the whole apply is one edit block (single Cmd+Z),
@@ -730,6 +766,7 @@ private:
         m_SpatialChroma->setValue(as.spatialChroma);
         m_PreserveDetail->setValue(as.preserveDetail);
         m_DetailRescue->setValue(as.detailRescue);
+        m_EffnSteer->setValue(as.effnSteer);
         m_DeepClean->setValue(as.deepClean != 0);
         m_ChromaBlotch->setValue(as.chromaBlotch);
         m_EqFine->setValue(as.eqFine);
@@ -741,7 +778,9 @@ private:
         int srcNow = 0;
         m_ProfileSource->getValue(srcNow);
         std::string report = nranalyze::formatAutoReport(agg, as, srcNow == 1 ? 1 : 0, flat);
-        if (tuned.ran)
+        if (desc.ran)
+            report += " \xc2\xb7 deep-tuned";  // grid + coordinate descent + chroma SURE
+        else if (tuned.ran)
             report += " \xc2\xb7 tuned";   // the SURE sweep confirmed or moved the sliders
         m_AutoReport->setValue(report);
         endEditBlock();
@@ -769,6 +808,7 @@ private:
         m_SpatialChroma->setValue(0.0);
         m_PreserveDetail->setValue(35.0);
         m_DetailRescue->setValue(0.0);
+        m_EffnSteer->setValue(0.0);
         m_DeepClean->setValue(false);
         m_ChromaBlotch->setValue(0.0);
         m_EqFine->setValue(100.0);
@@ -945,6 +985,8 @@ private:
         m_SpatialChroma->setEnabled(sOn);
         m_PreserveDetail->setEnabled(sOn);
         m_DetailRescue->setEnabled(sOn);
+        // v3.6 S1: needs the temporal stage's per-pixel sample counts
+        m_EffnSteer->setEnabled(sOn && tOn);
         m_DeepClean->setEnabled(sOn);
         m_ChromaBlotch->setEnabled(sOn);
         m_EqFine->setEnabled(sOn);
@@ -959,6 +1001,9 @@ private:
         m_GrainAmount->setEnabled(rOn);
         m_GrainSize->setEnabled(rOn);
         m_GrainChroma->setEnabled(rOn);
+        m_GrainBlue->setEnabled(rOn);
+        m_Acutance->setEnabled(rOn);
+        m_ChromaSpeckle->setEnabled(rOn);
     }
 
     NRParams gatherParams(double t)
@@ -1000,6 +1045,9 @@ private:
         p.grainAmount     = static_cast<float>(m_GrainAmount->getValueAtTime(t) / 100.0);
         p.grainSize       = static_cast<float>(m_GrainSize->getValueAtTime(t));
         p.grainChroma     = static_cast<float>(m_GrainChroma->getValueAtTime(t) / 100.0);
+        p.grainBlue       = static_cast<float>(m_GrainBlue->getValueAtTime(t) / 100.0);
+        p.acutance        = static_cast<float>(m_Acutance->getValueAtTime(t) / 100.0);
+        p.chromaSpeckle   = static_cast<float>(m_ChromaSpeckle->getValueAtTime(t) / 100.0);
         p.frameIndex      = static_cast<int>(t);
 
         p.master          = static_cast<float>(m_Master->getValueAtTime(t));
@@ -1042,6 +1090,8 @@ private:
         // ---- v3.5 ----
         p.renderBoost     = m_RenderBoost->getValueAtTime(t) ? 1 : 0;
         p.histValid       = 0;   // decided per render by the GPU/CPU hosts
+        // ---- v3.6 ----
+        p.effnSteer       = static_cast<float>(m_EffnSteer->getValueAtTime(t) / 100.0);
         return p;
     }
 
@@ -1138,6 +1188,9 @@ private:
         p.grainAmount    = params.grainAmount;
         p.grainSize      = params.grainSize;
         p.grainChroma    = params.grainChroma;
+        p.grainBlue      = params.grainBlue;
+        p.acutance       = params.acutance;
+        p.chromaSpeckle  = params.chromaSpeckle;
         p.frameIndex     = params.frameIndex;
         p.master         = params.master;
         p.viewMode       = params.viewMode;
@@ -1169,6 +1222,8 @@ private:
         // ---- v3.5 R1 ----
         p.renderBoost    = params.renderBoost;
         p.histValid      = 0;   // decided against the instance cache below
+        // ---- v3.6 S1 ----
+        p.effnSteer      = params.effnSteer;
 
         const size_t n = static_cast<size_t>(W) * H * 4;
         std::vector<std::vector<float>> packed;
@@ -1292,6 +1347,7 @@ private:
     OFX::DoubleParam*  m_SpatialChroma = nullptr;
     OFX::DoubleParam*  m_PreserveDetail = nullptr;
     OFX::DoubleParam*  m_DetailRescue = nullptr;
+    OFX::DoubleParam*  m_EffnSteer = nullptr;      // v3.6 S1
     OFX::BooleanParam* m_DeepClean = nullptr;
     OFX::DoubleParam*  m_ChromaBlotch = nullptr;
     OFX::BooleanParam* m_ScopeMeasure = nullptr;
@@ -1307,6 +1363,9 @@ private:
     OFX::DoubleParam*  m_GrainAmount = nullptr;
     OFX::DoubleParam*  m_GrainSize = nullptr;
     OFX::DoubleParam*  m_GrainChroma = nullptr;
+    OFX::DoubleParam*  m_GrainBlue = nullptr;     // v3.6
+    OFX::DoubleParam*  m_Acutance = nullptr;      // v3.6
+    OFX::DoubleParam*  m_ChromaSpeckle = nullptr; // v3.6
     OFX::ChoiceParam*  m_ViewMode = nullptr;
 };
 
@@ -1788,6 +1847,10 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "Puts back anything the smoothing changed by more than a noise-sized amount. "
                  "Crank the strengths for smoothness, then raise this until faces and edges "
                  "come back crisp — smoothing without blur. 0 = off.", 0.0, 0.0, 100.0, grpSpatial);
+    defineDouble(p_Desc, page, "adaptiveStrength", "Adaptive Strength",
+                 "Spends the cleaning where frame averaging couldn't help — moving subjects "
+                 "get the full treatment, well-averaged areas are left alone. Needs the "
+                 "Temporal stage on. 0 = off.", 0.0, 0.0, 100.0, grpSpatial);
     defineBool(p_Desc, page, "deepClean", "Deep Clean (2-Pass)",
                "Runs a gentle extra cleaning pass before the main one — its corrections are "
                "capped at noise size, so detail is safe. Helps severe or compressed noise; "
@@ -1840,8 +1903,19 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "How far up the tonal scale the shadow desaturation reaches.",
                  0.15, 0.02, 0.5, grpRefine);
     defineDouble(p_Desc, page, "lumaTexture", "Luma Texture",
-                 "Re-injects a share of the original brightness grain — color noise stays "
-                 "gone, natural energy comes back. Try 15–30.",
+                 "Transfers real micro-texture back from the original — noise-scale detail is "
+                 "cored out first, so you get structure back without re-noising the shadows. "
+                 "Try 15–30.",
+                 0.0, 0.0, 100.0, grpRefine);
+    defineDouble(p_Desc, page, "acutance", "Optical Acutance",
+                 "Adds lens-like edge sharpness back to the cleaned image. Gated to real "
+                 "edges (never sharpens noise) and clamped so it steepens edges without the "
+                 "bright halo of a normal sharpen. Try 40–100. 0 = off.",
+                 0.0, 0.0, 200.0, grpRefine);
+    defineDouble(p_Desc, page, "chromaSpeckle", "Shadow Color Cleanup",
+                 "Clears the large blotchy color speckle left in deep shadows — the kind the "
+                 "regular chroma controls are too small to reach. Follows the luma, so real "
+                 "color edges and lighting stay put. Try 50–100. 0 = off.",
                  0.0, 0.0, 100.0, grpRefine);
     defineDouble(p_Desc, page, "deband", "Deband",
                  "Dissolves the stair-steps in skies and gradients; real edges are rejected "
@@ -1858,6 +1932,11 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
                  "0 = monochrome film-like grain; higher adds color grain (digital-sensor "
                  "character).",
                  25.0, 0.0, 100.0, grpRefine);
+    defineDouble(p_Desc, page, "grainBlue", "Grain Fineness",
+                 "Shifts grain toward a finer, sharper spectrum (blue noise) by high-passing "
+                 "it. 0 = full-band grain; higher reads crisper and hides the plasticky look "
+                 "better at the same strength.",
+                 0.0, 0.0, 100.0, grpRefine);
 
     // ------------------------------------------------------- v3.2: global mix
     defineDouble(p_Desc, page, "globalBlend", "Global Blend",
@@ -1893,6 +1972,7 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
         c->appendOption("Temporal Activity (Green = Averaging)");
         c->appendOption("SNR Map (Magenta = Noisy)");
         c->appendOption("Matte: Noisiness (RGB + Alpha)");
+        c->appendOption("Matte: Clean Confidence (RGB + Alpha)");
         c->setDefault(0);
         c->setParent(*grpOutput);
         page->addChild(*c);

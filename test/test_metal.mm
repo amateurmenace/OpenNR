@@ -71,6 +71,9 @@ static void toCpuParams(const NRParams& gp, nrcore::Params& cp)
     cp.grainAmount    = gp.grainAmount;
     cp.grainSize      = gp.grainSize;
     cp.grainChroma    = gp.grainChroma;
+    cp.grainBlue      = gp.grainBlue;
+    cp.acutance       = gp.acutance;
+    cp.chromaSpeckle  = gp.chromaSpeckle;
     cp.frameIndex     = gp.frameIndex;
     cp.master         = gp.master;
     cp.viewMode       = gp.viewMode;
@@ -344,6 +347,26 @@ int main()
     p10.grainAmount = 0.5f; p10.grainChroma = 0.5f; p10.frameIndex = 42;
     failures += compareRun(queue, p10, "refine: desat+texture+grain");
 
+    // v3.6 reconstructed grain: shadow-loud amplitude (gainYv), contrast-mask
+    // (redg 3x3), blue-noise high-pass (4-neighbour valueNoise) — all new
+    // per-pixel refine math that must match CPU across the backend
+    NRParams p10b = p; p10b.grainAmount = 0.8f; p10b.grainChroma = 0.4f;
+    p10b.grainBlue = 0.7f; p10b.frameIndex = 42;
+    failures += compareRun(queue, p10b, "v3.6 grain: shadow-loud + blue-noise");
+
+    // v3.6 optical acutance: the 3x3 min/max clamp + edginess-gated high-pass
+    // (a gain>1 stage) must match CPU
+    NRParams p10c = p; p10c.acutance = 1.2f;
+    failures += compareRun(queue, p10c, "v3.6 acutance: overshoot-bounded high-pass");
+    NRParams p10d = p; p10d.acutance = 0.8f; p10d.grainAmount = 0.6f; p10d.grainBlue = 0.5f;
+    p10d.lumaTexture = 0.3f; p10d.frameIndex = 7;
+    failures += compareRun(queue, p10d, "v3.6 acutance + grain + texture together");
+
+    // v3.6 chroma-speckle (WEAK-1): wide luma-guided chroma ring (block means,
+    // exp luma weight) must match CPU
+    NRParams p10e = p; p10e.chromaSpeckle = 1.0f;
+    failures += compareRun(queue, p10e, "v3.6 chroma-speckle: luma-guided wide chroma");
+
     NRParams p11 = p; p11.spatialRadius = 8;
     failures += compareRun(queue, p11, "radius 8");
 
@@ -392,6 +415,9 @@ int main()
 
     NRParams v9 = p; v9.viewMode = 8;
     failures += compareRun(queue, v9, "v3 noise matte view");
+
+    NRParams v9b = p; v9b.viewMode = 9;   // v3.6 clean-confidence matte (effN)
+    failures += compareRun(queue, v9b, "v3.6 clean-confidence matte view");
 
     // ---- v3.1 cases ----
     NRParams w1 = p; w1.detailRescue = 0.8f; w1.spatialLuma = 1.5f;

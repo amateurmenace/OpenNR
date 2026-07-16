@@ -27,4 +27,8 @@ for f in os.listdir(os.path.join(here, "assets")):
 # whitepaper.html is a self-contained static page (no image tokens) — it is
 # its own source AND output; sync it to docs/ so GitHub Pages stays in step.
 shutil.copy(os.path.join(here, "whitepaper.html"), os.path.join(docs, "whitepaper.html"))
-print("site/index.html + docs/ (GitHub Pages, incl. whitepaper.html) rebuilt — also run build_embed.py")
+# GitHub Pages custom domain: keep the CNAME in docs/ so a rebuild never drops it
+# (the apex control-z.org points at Pages' four A records; www is a CNAME to
+# amateurmenace.github.io). Change here if the domain ever changes.
+open(os.path.join(docs, "CNAME"), "w").write("control-z.org\n")
+print("site/index.html + docs/ (GitHub Pages, incl. whitepaper.html + CNAME) rebuilt — also run build_embed.py")

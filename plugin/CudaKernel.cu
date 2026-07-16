@@ -1293,18 +1293,28 @@ __global__ void DeepCleanKernel(NRParams p, int W, int H,
     const float ryG = manual ? clampf(p.sigmaY, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_RY]);
     const float rcbG = manual ? clampf(p.sigmaC, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_RCB]);
     const float rcrG = manual ? clampf(p.sigmaC, kSigmaMin, kSigmaMax) : __uint_as_float(stats[S_RCR]);
+    const float enmed = manual ? 1.0f : __uint_as_float(stats[S_ENMED]);
 
     const int R = 2;
+    // v3.6 S1: the pre-pass follows the main stage's effN steering — the
+    // scaled sigmas carry it into h, the bias correction and the output
+    // clamps together. See spatialNLM in nr_core.h for the derivation
+    // and gating.
+    const float steer = (p.enableTemporal != 0) ? clampf(p.effnSteer, 0.0f, 1.0f) : 0.0f;
     const float4 tc = tmp[y * W + x];
     const int lb = clampi((int)(tc.x * kLumaBins), 0, kLumaBins - 1);
     const float gainYv = locked ? clampf(p.lockGainY[lb], 0.6f, 2.2f)
                        : manual ? 1.0f : __uint_as_float(stats[S_GY + lb]);
     const float gainCv = locked ? clampf(p.lockGainC[lb], 0.6f, 2.2f)
                        : manual ? 1.0f : __uint_as_float(stats[S_GC + lb]);
-    const float sigY = clampf(ryG * gainYv, 1e-5f, 1.0f);
+    const float eSteer = (steer > 0.0f)
+        ? 1.0f + steer * (sqrtf(clampf(enmed / fmaxf(tc.w, 1.0f),
+                                       0.0625f, 16.0f)) - 1.0f)
+        : 1.0f;
+    const float sigY = clampf(ryG * gainYv * eSteer, 1e-5f, 1.0f);
     // v3.3 B5: pooled-normalized chroma weight — see nr_core.h
-    const float sigCb = clampf(rcbG * gainCv, 1e-5f, 1.0f);
-    const float sigCr = clampf(rcrG * gainCv, 1e-5f, 1.0f);
+    const float sigCb = clampf(rcbG * gainCv * eSteer, 1e-5f, 1.0f);
+    const float sigCr = clampf(rcrG * gainCv * eSteer, 1e-5f, 1.0f);
     const float hY = 0.6f * kNlmHLuma * sigY;
     const float invHY2 = 1.0f / fmaxf(hY * hY, 1e-12f);
     const float invHC2 = 1.0f / fmaxf(0.36f * kNlmHChroma * kNlmHChroma, 1e-12f);
@@ -1455,6 +1465,14 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
 
     // v3.1 Detail Rescue — see nr_core.h
     const float rescue = clampf(p.detailRescue, 0.0f, 1.0f);
+    // v3.6 S1: effN-steered spatial strength. Steer moves the pixel's
+    // WHOLE noise model (sigY and both chroma sigmas) toward the local
+    // truth sqrt(effNMed/effN_local), so the similarity h, the 2 sigma^2
+    // bias correction and the edginess normalizer stay mutually
+    // consistent. The ratio clamp keeps sigma within [x0.25, x4] at full
+    // steer. Gated on enableTemporal: no temporal stage means no effN
+    // signal — steer 0 keeps bit-exactness. See nr_core.h.
+    const float steer = (p.enableTemporal != 0) ? clampf(p.effnSteer, 0.0f, 1.0f) : 0.0f;
 
     // v3.1: band sliders reach 150 — amount caps at 1, the extra drive
     // widens the similarity tolerances and the reach instead
@@ -1484,6 +1502,13 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
     const float grainAmt = refine ? clampf(p.grainAmount, 0.0f, 1.0f) * 0.06f : 0.0f;
     const float grainSize = clampf(p.grainSize, 0.5f, 6.0f);
     const float grainCh = clampf(p.grainChroma, 0.0f, 1.0f);
+    const float grainBlue = clampf(p.grainBlue, 0.0f, 1.0f);
+    const float chromaSpeckle = refine ? clampf(p.chromaSpeckle, 0.0f, 1.0f) * mLow : 0.0f;  // v3.6 WEAK-1
+    const float kChromaGuide = 6.0f;
+    const float kSpeckleReach = 48.0f;
+    const float kGrainMask = 0.9f;   // v3.6 grain contrast-masking — see nr_core.h
+    const float kCore = 1.5f;        // v3.6 detail-transfer coring — see nr_core.h
+    const float acut = refine ? fmaxf(0.0f, p.acutance) : 0.0f;   // v3.6 acutance
     const unsigned int frame = (unsigned int)p.frameIndex;
     // v3.2 global blend — see nr_core.h
     const float gBlend = clampf(p.globalBlend, 0.0f, 1.0f);
@@ -1513,10 +1538,18 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
                        : manual ? 1.0f : __uint_as_float(stats[S_GY + lb]);
     const float gainCv = locked ? clampf(p.lockGainC[lb], 0.6f, 2.2f)
                        : manual ? 1.0f : __uint_as_float(stats[S_GC + lb]);
-    const float sigY = clampf(ryG * gainYv, 1e-5f, 1.0f);
+    // v3.6 S1: local noise model from the per-pixel sample count (tmp.w
+    // of the centre pixel; exactly 1.0 when steer is 0 or the pixel sits
+    // at the median, so those paths stay bit-exact — see the block
+    // comment above).
+    const float eSteer = (steer > 0.0f)
+        ? 1.0f + steer * (sqrtf(clampf(enmed / fmaxf(tc.w, 1.0f),
+                                       0.0625f, 16.0f)) - 1.0f)
+        : 1.0f;
+    const float sigY = clampf(ryG * gainYv * eSteer, 1e-5f, 1.0f);
     // v3.3 B5 — see nr_core.h: fine band per channel, bands on the mean
-    const float sigCb = clampf(rcbG * gainCv, 1e-5f, 1.0f);
-    const float sigCr = clampf(rcrG * gainCv, 1e-5f, 1.0f);
+    const float sigCb = clampf(rcbG * gainCv * eSteer, 1e-5f, 1.0f);
+    const float sigCr = clampf(rcrG * gainCv * eSteer, 1e-5f, 1.0f);
     const float sigC = 0.5f * (sigCb + sigCr);
 
     float Yo = tc.x, Cbo = tc.y, Cro = tc.z;
@@ -1614,17 +1647,23 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
         const float Crf = (accCr + wCc * tc.z) / (sumWC + wCc);
 
         // v3.1 Detail Rescue — see nr_core.h for the coring rationale
+        // v3.6 S1: the blend follows the steering too — the amount steers
+        // toward 1 exactly where the merge could not average, keeping the
+        // RESIDUAL uniform across the frame (eSteer == 1.0 -> aYl == aY
+        // bit-exact, so the default path is untouched). See nr_core.h.
+        const float aYl = fminf(aY * eSteer, 1.0f);
+        const float aCl = fminf(aC * eSteer, 1.0f);
         if (rescue > 0.0f) {
             const float kY = sigY * (2.0f + 6.0f * (1.0f - rescue));
             const float kCb = sigCb * (3.0f + 9.0f * (1.0f - rescue));
             const float kCr = sigCr * (3.0f + 9.0f * (1.0f - rescue));
-            Yo  = tc.x - aY * clampf(tc.x - Yf,  -kY, kY);
-            Cbo = tc.y - aC * clampf(tc.y - Cbf, -kCb, kCb);
-            Cro = tc.z - aC * clampf(tc.z - Crf, -kCr, kCr);
+            Yo  = tc.x - aYl * clampf(tc.x - Yf,  -kY, kY);
+            Cbo = tc.y - aCl * clampf(tc.y - Cbf, -kCb, kCb);
+            Cro = tc.z - aCl * clampf(tc.z - Crf, -kCr, kCr);
         } else {
-            Yo  = tc.x + aY * (Yf  - tc.x);
-            Cbo = tc.y + aC * (Cbf - tc.y);
-            Cro = tc.z + aC * (Crf - tc.z);
+            Yo  = tc.x + aYl * (Yf  - tc.x);
+            Cbo = tc.y + aCl * (Cbf - tc.y);
+            Cro = tc.z + aCl * (Crf - tc.z);
         }
     }
 
@@ -1714,10 +1753,39 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
 
     float Yr = Yo, Cbr = Cbo, Crr = Cro;
     if (refine) {
+        // v3.6 refine local structure of the post-temporal luma — see nr_core.h
+        float redg = 0.0f, rMean = Yo, rMin = 0.0f, rMax = 0.0f;
+        if (grainAmt > 0.0f || acut > 0.0f) {
+            float m1 = 0.0f, m2 = 0.0f;
+            rMin = 1e30f; rMax = -1e30f;
+            for (int dyr = -1; dyr <= 1; ++dyr)
+                for (int dxr = -1; dxr <= 1; ++dxr) {
+                    const float v = sampleTmp(tmp, W, H, x + dxr, y + dyr).x;
+                    m1 += v; m2 += v * v;
+                    rMin = fminf(rMin, v); rMax = fmaxf(rMax, v);
+                }
+            m1 *= (1.0f / 9.0f);
+            rMean = m1;
+            const float rv = fmaxf(0.0f, m2 * (1.0f / 9.0f) - m1 * m1);
+            redg = clampf(sqrtf(fmaxf(rv - sigY * sigY, 0.0f)) / (3.0f * sigY), 0.0f, 1.0f);
+        }
         const float sat = 1.0f - desat * (1.0f - smooth01f(Yr / desatRange));
         Cbr *= sat;
         Crr *= sat;
-        Yr += tex * (cinY - Yr);
+        // v3.6 detail-transfer by coring the removed delta — see nr_core.h
+        if (tex > 0.0f) {
+            const float sigIn = clampf(sy * gainYv, 1e-5f, 1.0f);
+            const float kc = kCore * sigIn;
+            const float delta = cinY - Yr;
+            const float cored = (delta > kc) ? (delta - kc)
+                              : ((delta < -kc) ? (delta + kc) : 0.0f);
+            Yr += tex * cored;
+        }
+        // v3.6 overshoot-bounded optical acutance — see nr_core.h
+        if (acut > 0.0f) {
+            const float hp = tc.x - rMean;
+            Yr = clampf(Yr + acut * redg * hp, rMin, rMax);
+        }
         // v3 deband — see nr_core.h for the agreement-confidence rationale
         if (debandAmt > 0.0f) {
             const float dyDen = 1.0f / dbThrY;
@@ -1751,14 +1819,47 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
             Yr += dith * 0.5f * (hashNoise((unsigned int)x, (unsigned int)y, frame, 3u) +
                                  hashNoise((unsigned int)x, (unsigned int)y, frame + 977u, 3u));
         }
+        // v3.6 chroma-speckle suppression (WEAK-1) — see nr_core.h
+        if (chromaSpeckle > 0.0f) {
+            float b0Y, b0Cb, b0Cr;
+            blockMeanTmp(tmp, W, H, x, y, b0Y, b0Cb, b0Cr);
+            const float sigIn = clampf(sy * gainYv, 1e-5f, 1.0f);
+            const float invLg = 1.0f / fmaxf(kChromaGuide * sigIn, 1e-4f);
+            float accCb = b0Cb, accCr = b0Cr, sumWc = 1.0f;
+            for (int d = 0; d < 8; ++d)
+                for (int ri = 1; ri <= 3; ++ri) {
+                    const float rr = kSpeckleReach * ((float)ri / 3.0f);
+                    float bY, bCb, bCr;
+                    blockMeanTmp(tmp, W, H,
+                                 x + (int)(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
+                                 y + (int)(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f)),
+                                 bY, bCb, bCr);
+                    const float dl = (bY - b0Y) * invLg;
+                    const float wl = expf(-dl * dl);
+                    accCb += wl * bCb; accCr += wl * bCr; sumWc += wl;
+                }
+            Cbr += chromaSpeckle * (accCb / sumWc - Cbr);
+            Crr += chromaSpeckle * (accCr / sumWc - Crr);
+        }
         if (grainAmt > 0.0f) {
-            const float yc = clampf(Yr, 0.0f, 1.0f);
-            const float resp = 0.25f + 0.75f * (4.0f * yc * (1.0f - yc));
-            const float gn = valueNoise((float)x, (float)y, grainSize, frame, 0u);
-            Yr += grainAmt * resp * gn;
+            // v3.6 reconstructed grain — shadow-loud (gainYv) + contrast-masked
+            // (redg) + blue-noise (high-pass); see nr_core.h
+            const float gResp = gainYv;
+            const float gAmp  = grainAmt * gResp * (1.0f - kGrainMask * redg);
+            const float gfx = (float)x, gfy = (float)y;
+            float gn = valueNoise(gfx, gfy, grainSize, frame, 0u);
+            if (grainBlue > 0.0f) {
+                const float gLow = 0.25f * (
+                    valueNoise(gfx - grainSize, gfy, grainSize, frame, 0u) +
+                    valueNoise(gfx + grainSize, gfy, grainSize, frame, 0u) +
+                    valueNoise(gfx, gfy - grainSize, grainSize, frame, 0u) +
+                    valueNoise(gfx, gfy + grainSize, grainSize, frame, 0u));
+                gn -= grainBlue * gLow;
+            }
+            Yr += gAmp * gn;
             if (grainCh > 0.0f) {
-                Cbr += grainAmt * grainCh * 0.6f * resp * valueNoise((float)x, (float)y, grainSize, frame, 1u);
-                Crr += grainAmt * grainCh * 0.6f * resp * valueNoise((float)x, (float)y, grainSize, frame, 2u);
+                Cbr += gAmp * grainCh * 0.6f * valueNoise(gfx, gfy, grainSize, frame, 1u);
+                Crr += gAmp * grainCh * 0.6f * valueNoise(gfx, gfy, grainSize, frame, 2u);
             }
         }
     }
@@ -1853,6 +1954,10 @@ __global__ void SpatialNLMKernel(NRParams p, int W, int H,
         const float snrDb = 20.0f * log10f(fmaxf(sigSignal, 1e-6f) / sigNoise);
         const float m = 1.0f - clampf((snrDb + 6.0f) / 36.0f, 0.0f, 1.0f);
         o.x = m; o.y = m; o.z = m; o.w = m;
+    } else if (p.viewMode == 9) {
+        // v3.6 clean-confidence matte: calibrated effN in RGB+alpha — see nr_core.h
+        const float conf = clampf((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
+        o.x = conf; o.y = conf; o.z = conf; o.w = conf;
     }
 
     // ---- v3.1 scope overlays: drawn over ANY view, never into alpha ----
@@ -1944,6 +2049,8 @@ inline unsigned int boostParamsHash(const NRParams& p)
     c.scopeMotion  = 0;
     c.scopeEq      = 0;
     c.histValid    = 0;
+    c.effnSteer    = 0;   // v3.6 S1: spatial-only, never touches the
+                          // temporal buffer the history caches
     unsigned int h = 2166136261u;
     const unsigned char* b = reinterpret_cast<const unsigned char*>(&c);
     for (size_t i = 0; i < sizeof(NRParams); ++i) {

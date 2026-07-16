@@ -216,12 +216,25 @@ conversion lines).
    (amounts cap at 1); ≤100 is bit-compatible with earlier releases.
    **Detail Rescue** cores the fine band: correction clamped to
    k = σ(2+6(1−r)) — crank strengths without blur.
-5. **Refine**: shadow desat, luma texture re-injection, gradient-aware
-   deband, deterministic film grain; then **Global Blend** (plain final
-   original↔result crossfade, identity short-circuit at 0).
+5. **Refine**: shadow desat; **v3.6 detail-transfer coring** (luma texture
+   re-injection now soft-thresholds the removed delta at the input-noise scale
+   — `kCore·s.sy·gainY` — so it restores micro-structure without re-noising
+   shadows; `kCore=0` recovers the old uncored blend); **v3.6 optical
+   acutance** (edginess-gated high-pass on the cleaned luma, clamped to the
+   local 3×3 min/max — the only stage that *adds* HF energy); gradient-aware
+   deband; **v3.6 chroma-speckle** (luma-guided wide chroma ring for the
+   WEAK-1 shadow speckle above the chroma bands' reach); **v3.6 reconstructed
+   film grain** (amplitude from the `gainY` shadow-loud curve, contrast-masked
+   off edges via a refine-local edginess `redg`, optional blue-noise
+   high-pass); then **Global Blend** (plain final original↔result crossfade,
+   identity short-circuit at 0). All v3.6 refine features are off by default
+   (neutral refine stays bit-exact identity). **The refine texture stack is
+   the "texture-reconstruction" thesis**: the core denoises, refine puts the
+   optical character back.
 6. **Views + scopes**: views are full-image modes (result/split/input/
    after-temporal/noise-removed with noise-adaptive soft-knee gain/HUD/
-   activity/SNR/matte); **scopes are per-step overlay panels** (Measurements
+   activity/SNR/noisiness-matte/**v3.6 clean-confidence matte** = calibrated
+   effN in RGB+alpha for downstream keying); **scopes are per-step overlay panels** (Measurements
    top-left, Noise EQ top-right, Motion mini-map bottom-right) that composite
    over ANY view and never write alpha. 5×7 font in `kFont[43]`
    ("0-9.%A-Z+ -|="), all text at 2× glyph scale on opaque panels (1-px

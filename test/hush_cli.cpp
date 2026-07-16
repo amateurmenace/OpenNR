@@ -220,6 +220,8 @@ struct Cli
     float preserve = -1, rescue = -1, blotch = -1, eqf = -1, eqm = -1, eqc = -1;
     int frames = -1, mode = -1, radius = -1;
     int tracking = -1, guard = -1, firefly = -1, deep = -1;
+    // v3.6 texture-reconstruction overrides
+    float acut = -1, grain = -1, gsize = -1, gchroma = -1, gblue = -1, tex = -1, speckle = -1;
 };
 
 static void usage()
@@ -247,7 +249,9 @@ static void usage()
         "  --motion-thresh X --no-tracking --no-ghost-guard --no-firefly\n"
         "  --spatial-mode 0|1 --radius N --spatial-luma X --spatial-chroma X\n"
         "  --preserve X --rescue X --deep-clean --blotch X\n"
-        "  --eq-fine X --eq-med X --eq-coarse X\n");
+        "  --eq-fine X --eq-med X --eq-coarse X\n"
+        "  v3.6 texture: --acutance X --grain X --grain-size X --grain-chroma X\n"
+        "                --grain-blue X --texture X --speckle X\n");
 }
 
 static void applyOverrides(const Cli& a, nrcore::Params& p)
@@ -271,6 +275,14 @@ static void applyOverrides(const Cli& a, nrcore::Params& p)
     if (a.guard >= 0)   p.ghostGuard = a.guard;
     if (a.firefly >= 0) p.fireflyRemoval = a.firefly;
     if (a.deep >= 0)    p.deepClean = a.deep;
+    // v3.6 texture reconstruction
+    if (a.acut >= 0)    p.acutance = a.acut / 100.0f;
+    if (a.grain >= 0)   p.grainAmount = a.grain / 100.0f;
+    if (a.gsize >= 0)   p.grainSize = a.gsize;
+    if (a.gchroma >= 0) p.grainChroma = a.gchroma / 100.0f;
+    if (a.gblue >= 0)   p.grainBlue = a.gblue / 100.0f;
+    if (a.tex >= 0)     p.lumaTexture = a.tex / 100.0f;
+    if (a.speckle >= 0) p.chromaSpeckle = a.speckle / 100.0f;
 }
 
 // mirror of the plugin's whole-frame Auto Setup at v3.5: playhead (= middle
@@ -395,6 +407,13 @@ int main(int argc, char** argv)
         else if (s == "--no-ghost-guard") a.guard = 0;
         else if (s == "--no-firefly") a.firefly = 0;
         else if (s == "--deep-clean") a.deep = 1;
+        else if (s == "--acutance") a.acut = static_cast<float>(atof(next("--acutance")));
+        else if (s == "--grain") a.grain = static_cast<float>(atof(next("--grain")));
+        else if (s == "--grain-size") a.gsize = static_cast<float>(atof(next("--grain-size")));
+        else if (s == "--grain-chroma") a.gchroma = static_cast<float>(atof(next("--grain-chroma")));
+        else if (s == "--grain-blue") a.gblue = static_cast<float>(atof(next("--grain-blue")));
+        else if (s == "--texture") a.tex = static_cast<float>(atof(next("--texture")));
+        else if (s == "--speckle") a.speckle = static_cast<float>(atof(next("--speckle")));
         else if (s == "--help" || s == "-h") { usage(); return 0; }
         else {
             fprintf(stderr, "hush_cli: unknown flag %s (see --help)\n", s.c_str());

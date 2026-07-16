@@ -55,6 +55,11 @@
   .credit .by { font:700 15px "Space Grotesk",sans-serif; color:#F5F3EE; }
   .credit .by b { color:var(--amber); font-weight:700; }
   .credit .substamp { font:500 12.5px var(--mono); color:var(--sage); letter-spacing:.03em; }
+  .credit .pdfbtn { margin-left:auto; display:inline-flex; align-items:center; gap:7px;
+    background:var(--amber); color:#2A2109; font:700 13px "Space Grotesk",sans-serif;
+    padding:9px 17px; border-radius:9px; text-decoration:none; white-space:nowrap;
+    box-shadow:0 3px 12px rgba(0,0,0,.25); }
+  .credit .pdfbtn:hover { background:#F0B84A; }
 
   .metrics { position:relative; z-index:2; display:flex; flex-wrap:wrap;
     border-top:1px solid rgba(197,214,204,.22); margin-top:26px; }
@@ -117,6 +122,13 @@
     white-space:nowrap; flex:none; background:var(--amber-bg); border:1px solid var(--amber);
     color:#9A6B12; font-variant-numeric:tabular-nums; }
   .chip.maybe { background:transparent; border-color:var(--border-lt); color:var(--text-lt); }
+  .ship { display:inline-block; font:700 10px var(--mono); letter-spacing:.05em; text-transform:uppercase;
+    color:#2E6B3A; background:rgba(91,140,101,.14); border:1px solid rgba(91,140,101,.42);
+    padding:2px 8px; border-radius:999px; margin-left:9px; vertical-align:middle; white-space:nowrap; }
+  .shipbanner { display:flex; gap:12px; align-items:flex-start; margin:0 0 22px;
+    background:rgba(91,140,101,.10); border:1px solid rgba(91,140,101,.34); border-left:4px solid var(--green-br);
+    border-radius:var(--r-md); padding:14px 18px; font-size:15px; color:var(--text-med); }
+  .shipbanner b { color:var(--green-br); }
   .note { font-size:15px; color:var(--text-med); margin:.6em 0 0; }
   .note b { color:var(--green); }
 
@@ -169,6 +181,45 @@
     .mast h1 { font-size:32px; }
   }
   @media (prefers-reduced-motion:reduce){ *{ animation:none!important; transition:none!important; } }
+
+  /* ---- print / PDF: a clean, traditional white-paper document ---- */
+  @media print {
+    @page { margin: 16mm 15mm 18mm; }
+    html, body { background:#fff !important; color:#1b1b1b !important; font-size:10.5pt; line-height:1.5; }
+    a { color:#1b1b1b !important; text-decoration:none !important; }
+    .mast { background:#fff !important; color:#1b1b1b !important; border-bottom:2.5px solid var(--amber) !important; }
+    .mast > canvas, .topline, .credit .pdfbtn, .backbar, footer .bars { display:none !important; }
+    .mast .wrap { padding-top:4mm !important; padding-bottom:5mm !important; }
+    .eyebrow { color:#B5791C !important; }
+    .mast h1, .mast h1 .k, .k { color:#111 !important; }
+    .dek { color:#333 !important; }
+    .credit { border-top-color:#ccc !important; }
+    .credit .by { color:#111 !important; } .credit .by b { color:#B5791C !important; }
+    .credit .substamp { color:#555 !important; }
+    .metrics { border-top-color:#ccc !important; }
+    .metrics .m { border-right-color:#ddd !important; }
+    .metrics .n { color:#111 !important; } .metrics .n.sig { color:#B5791C !important; }
+    .metrics .lbl { color:#555 !important; }
+    main { padding-top:4mm !important; }
+    section { padding:5mm 0 !important; border-bottom:1px solid #e6e6e6 !important; }
+    h2, h3 { color:#111 !important; break-after:avoid; }
+    h2 .sn { color:var(--amber) !important; }
+    .kicker { color:#B5791C !important; }
+    p, li { color:#1b1b1b !important; orphans:3; widows:3; }
+    .lead { color:#111 !important; }
+    .pull { color:#111 !important; background:none !important; border-left:3px solid var(--amber); break-inside:avoid; }
+    code { background:#eee !important; color:#111 !important; }
+    .sub, .idea, .kill, table, tr, .formula { break-inside:avoid; }
+    .sub, .card { background:#faf9f5 !important; border-color:#ddd !important; box-shadow:none !important; }
+    .chip { background:#f3edd9 !important; border-color:#e5cc86 !important; color:#5A4A18 !important; }
+    .chip.maybe { background:#fff !important; }
+    table td, table th { border-color:#ddd !important; color:#1b1b1b !important; }
+    .vd.strong { color:#2E6B3A !important; background:#e8f2ea !important; }
+    .vd.weak { color:#9A6510 !important; background:#faf1dd !important; }
+    footer { background:#fff !important; border-top-color:#ccc !important; }
+    footer, .credit2, .credit2 a { color:#333 !important; }
+    * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
 </style>
 </head>
 <body>
@@ -178,14 +229,15 @@
   <div class="wrap">
     <div class="topline">
       <span>Hush · Open NR — design study</span>
-      <span><a href="index.html">← hush home</a> &nbsp; <a href="https://github.com/amateurmenace/Hush-OpenNR">source ↗</a></span>
+      <span><a href="index.html">← hush home</a> &nbsp; <a href="hush-whitepaper.pdf" download>download PDF ↓</a> &nbsp; <a href="https://github.com/amateurmenace/Hush-OpenNR">source ↗</a></span>
     </div>
     <p class="eyebrow">Design Study</p>
     <h1>Toward the world's best <span class="k">free</span> video noise reducer</h1>
     <p class="dek">A nine-lens agent panel and a real-footage audit agree on an inversion: the frontier isn't removing more noise — it's <span class="k" style="color:var(--amber)">reconstructing the image's optical character</span> once the noise is gone.</p>
     <div class="credit">
-      <span class="by">Authored by <b>Claude</b> · Commissioned by Stephen Walter</span>
-      <span class="substamp">2026-07-15 · Anthropic's Claude, from a 77-agent design panel</span>
+      <span class="by">Authored by <b>Claude</b> · Commissioned by <a href="https://weirdmachine.org" style="color:var(--amber);text-decoration:none">Stephen Walter</a></span>
+      <span class="substamp">2026-07-15 · from a 77-agent design panel · build postscript 2026-07-16 (v3.6)</span>
+      <a class="pdfbtn" href="hush-whitepaper.pdf" download>Download PDF ↓</a>
     </div>
     <div class="metrics">
       <div class="m"><div class="n">68</div><div class="lbl">Ideas raised</div></div>
@@ -234,40 +286,41 @@
     <p><strong>2 · Detail transfer, not blur inversion.</strong> Put back the high-frequency <em>structure</em> the denoiser removed by coring the denoise delta — amplify what survives a noise-scale threshold, discard the rest. Halo-free by construction.</p>
     <p><strong>3 · Reconstructed film grain.</strong> Replace the spectrally-white, mid-gray-peaked value-noise with grain whose <strong>amplitude follows the measured shadow-loud noise curve</strong>, whose <strong>spectrum is shaped</strong> near the eye's contrast-sensitivity peak, and which is <strong>placed where the denoiser waxed the image</strong> — refilling exactly what was removed.</p>
     <p>Why this is the answer and not "denoise harder": <strong>the kills prove it.</strong> Almost every killed or demoted idea did so for the same reason — it only lowered a noise number, which the north star explicitly rules out. Hush stops competing on "cleanest" (a race against paid tools with far larger teams) and wins on <em class="t">"most filmic"</em> — a race almost nobody is running, and one a small, transparent, free plugin can lead.</p>
-    <div class="pull">There is no stage anywhere that <span class="k">adds</span> high-frequency energy. The whole opportunity is the un-built other half.</div>
+    <div class="pull">There is no stage anywhere that <span class="k">adds</span> high-frequency energy. The whole opportunity is the un-built other half.<span style="display:block;font:600 .62em var(--mono);color:var(--green-br);margin-top:.55em;letter-spacing:.02em">↳ v3.6 built it — optical acutance is now that stage.</span></div>
   </section>
 
   <section>
     <h2><span class="sn">03</span>The 22 survivors, as one architecture</h2>
     <p>The keepers aren't a list; they're four subsystems plus a substrate. Chips show the adversary's confidence.</p>
+    <div class="shipbanner"><span>✅</span><div><b>Since this study, v3.6 shipped the marked items.</b> All of Phase&nbsp;0 (acutance, the three grain fixes, coring, the confidence matte) and the Phase-1 chroma-speckle pass are now in the plugin, across all four backends. What the build taught — including three places it corrected the paper — is in the <a href="#postscript" style="color:var(--green-br)">postscript</a> below.</div></div>
 
     <div class="sub">
       <div class="h"><span class="letter">A</span><h3>Optical sharpening &amp; detail transfer <span class="tag" style="margin:0">the "enhance sharpness" pillar</span></h3></div>
-      <div class="idea"><span class="chip">0.80 · RT✓</span><div class="body"><div class="name">Overshoot-bounded optical acutance</div><div class="desc">Edginess-gated high-pass hard-clamped to the local 3×3 min/max — edge slope steepens with <b>zero ringing by construction</b>. Highest-confidence primitive; build first.</div></div></div>
-      <div class="idea"><span class="chip">0.72 · RT✓</span><div class="body"><div class="name">Detail-transfer by coring the denoise delta</div><div class="desc">Discard <code>|delta|&lt;k·noise</code>, re-inject the rest at gain ≥ 1. A strict upgrade over today's plasticky texture path.</div></div></div>
+      <div class="idea"><span class="chip">0.80 · RT✓</span><div class="body"><div class="name">Overshoot-bounded optical acutance <span class="ship">✓ shipped v3.6</span></div><div class="desc">Edginess-gated high-pass hard-clamped to the local 3×3 min/max — edge slope steepens with <b>zero ringing by construction</b>. Highest-confidence primitive; build first.</div></div></div>
+      <div class="idea"><span class="chip">0.72 · RT✓</span><div class="body"><div class="name">Detail-transfer by coring the denoise delta <span class="ship">✓ shipped v3.6</span></div><div class="desc">Discard <code>|delta|&lt;k·noise</code>, re-inject the rest at gain ≥ 1. A strict upgrade over the old uncored texture path that re-noised the shadow.</div></div></div>
       <div class="idea"><span class="chip">0.72 · WHT</span><div class="body"><div class="name">Subband acutance in a shift-invariant WHT</div><div class="desc">Shrink noise octaves and <b>amplify signal octaves at once</b> — multi-scale acutance reads more optical than any single-radius sharpen. Walsh-Hadamard, never DCT.</div></div></div>
       <div class="idea"><span class="chip">0.72 · Cinema</span><div class="body"><div class="name">SNR-regularized deconvolution</div><div class="desc">Fixed-iteration Wiener / Richardson-Lucy on cleaned luma to <b>recover</b> lens / focus-pull softness — the only family that raises lost resolution.</div></div></div>
     </div>
 
     <div class="sub">
       <div class="h"><span class="letter">B</span><h3>Film-grain reconstruction <span class="tag" style="margin:0">"film not video" · fixes Weak 2</span></h3></div>
-      <div class="idea"><span class="chip">0.80 · S</span><div class="body"><div class="name">Brightness-amplitude-matched grain</div><div class="desc">Today's grain peaks at mid-gray; <b>real noise lives in shadows.</b> Drive amplitude off the measured 16-bin curve. Near-certain win.</div></div></div>
-      <div class="idea"><span class="chip">0.80 · S</span><div class="body"><div class="name">Contrast-masking placement</div><div class="desc">Full grain into waxed flats, almost none on hair/glasses edges — reuses the NLM's own edginess signal. Near-free.</div></div></div>
-      <div class="idea"><span class="chip">0.82 · top</span><div class="body"><div class="name">Blue-noise / band-pass spectrum</div><div class="desc">Shift grain energy toward the CSF peak; at matched RMS it masks plasticity and reads sharper — the eye reads HF texture as grain, LF wobble as dirt.</div></div></div>
+      <div class="idea"><span class="chip">0.80 · S</span><div class="body"><div class="name">Brightness-amplitude-matched grain <span class="ship">✓ shipped v3.6</span></div><div class="desc">The old grain peaked at mid-gray; <b>real noise lives in shadows.</b> Drive amplitude off the measured 16-bin curve. Near-certain win.</div></div></div>
+      <div class="idea"><span class="chip">0.80 · S</span><div class="body"><div class="name">Contrast-masking placement <span class="ship">✓ shipped v3.6</span></div><div class="desc">Full grain into waxed flats, almost none on hair/glasses edges — reuses the NLM's own edginess signal. Near-free.</div></div></div>
+      <div class="idea"><span class="chip">0.82 · top</span><div class="body"><div class="name">Blue-noise / band-pass spectrum <span class="ship">✓ shipped v3.6</span></div><div class="desc">Shift grain energy toward the CSF peak; at matched RMS it masks plasticity and reads sharper — the eye reads HF texture as grain, LF wobble as dirt.</div></div></div>
       <div class="idea"><span class="chip">0.72</span><div class="body"><div class="name">effN-modulated octaves + RGB dye layers</div><div class="desc">Most texture where the image was most cleaned; per-channel granularity (B&gt;G&gt;R) re-codes shadow chroma speckle as emulsion, not noise.</div></div></div>
       <div class="idea"><span class="chip maybe">apex</span><div class="body"><div class="name">Measured-NPS coloring FIR</div><div class="desc">Measure the removed noise's actual spectrum and use it as the grain's coloring filter, with an in-viewer scope. The octave presets are its cheap control arm.</div></div></div>
     </div>
 
     <div class="sub">
       <div class="h"><span class="letter">C</span><h3>Grade coupling <span class="tag" style="margin:0">the "leverage grading" pillar</span></h3></div>
-      <div class="idea"><span class="chip">0.70 · RT✓</span><div class="body"><div class="name">Clean-confidence matte export</div><div class="desc">Route per-pixel effN to the OFX alpha so a <b>downstream node</b> keys shadow-lift, grain, and contrast off where the denoiser actually averaged deep.</div></div></div>
+      <div class="idea"><span class="chip">0.70 · RT✓</span><div class="body"><div class="name">Clean-confidence matte export <span class="ship">✓ shipped v3.6</span></div><div class="desc">Route per-pixel effN to the OFX alpha so a <b>downstream node</b> keys shadow-lift, grain, and contrast off where the denoiser actually averaged deep.</div></div></div>
       <div class="idea"><span class="chip maybe">0.68</span><div class="body"><div class="name">Qualifier-mask input</div><div class="desc">Accept an incoming matte that scales strength/bands/sharpen per region <b>and scopes the estimator</b> to keyed pixels — one seam-free node instead of a stack.</div></div></div>
       <div class="idea"><span class="chip">0.72</span><div class="body"><div class="name">Specular halation + negative sharpening</div><div class="desc">Roll acutance off near clip, add a red-weighted highlight bloom (the film "glow"), full acutance in mids. Pure optical finishing.</div></div></div>
     </div>
 
     <div class="sub">
-      <div class="h"><span class="letter">D</span><h3>The chroma-speckle fix <span class="tag" style="margin:0">Weak 1 · real, deliberately secondary</span></h3></div>
-      <p class="note">Honest tension: the shadow chroma speckle <b>is</b> a genuine defect, but every fix is "denoising," which the thesis deprioritizes — so most landed in <b>maybe</b>. The credible route is a <b>small-scale collaborative chroma pass</b> (luma-guided shrinkage, or a spatially-variant chroma map that scores real low-frequency color as zero and leaves it alone). Ship it — as plumbing, not the headline.</p>
+      <div class="h"><span class="letter">D</span><h3>The chroma-speckle fix <span class="ship" style="margin:0">✓ shipped v3.6</span></h3></div>
+      <p class="note">Honest tension: the shadow chroma speckle <b>is</b> a genuine defect, but every fix is "denoising," which the thesis deprioritizes — so most landed in <b>maybe</b>. The credible route is a <b>small-scale collaborative chroma pass</b> (luma-guided shrinkage, or a spatially-variant chroma map that scores real low-frequency color as zero and leaves it alone). <b style="color:var(--green-br)">Shipped in v3.6</b> as a luma-guided wide chroma pass — −70% shadow speckle on the clip, real color preserved (the postscript has the twist: the "block-mean subtraction" turned out to be the window size).</p>
     </div>
 
     <div class="sub">
@@ -292,8 +345,8 @@
     <h2><span class="sn">05</span>A build sequence, with honest gates</h2>
     <p>Each item is prototyped on the real clip, gated against its stated control arm, then ported to four kernels only if it passes. Grain and acutance <em>add</em> high-frequency energy on purpose — they're gated on acutance / overshoot / matched-RMS / blind preference, <strong>never on PSNR.</strong></p>
     <div class="phase">
-      <div class="pl">Phase 0 — cheap, high-confidence, ship-now</div>
-      <div class="pd">Fixes the plasticky read and adds the first real sharpness.</div>
+      <div class="pl">Phase 0 — cheap, high-confidence, ship-now <span class="ship">✓ shipped v3.6</span></div>
+      <div class="pd">Fixes the plasticky read and adds the first real sharpness. <b style="color:var(--green-br)">Shipped in full</b> across all four backends.</div>
       <ol class="steps">
         <li>Grain overhaul: shadow-loud amplitude + contrast-masking + blue-noise spectrum <span class="fine">3×S, ~0.8</span></li>
         <li>Overshoot-bounded optical acutance on cleaned luma <span class="fine">the 0.80 primitive</span></li>
@@ -302,12 +355,12 @@
       </ol>
     </div>
     <div class="phase">
-      <div class="pl">Phase 1 — the transform &amp; the chroma fix</div>
+      <div class="pl">Phase 1 — the transform &amp; the chroma fix <span class="ship">◑ 2 of 3 shipped</span></div>
       <div class="pd">Once Phase 0 is measured on the clip.</div>
       <ol class="steps">
-        <li>Shift-invariant WHT subband acutance — gated vs gradient-masked USM</li>
-        <li>Small-scale collaborative chroma pass for Weak 1 — real color untouched</li>
-        <li>effN-steered spatial <code>h</code> on the WHT / pyramid substrate</li>
+        <li>Shift-invariant WHT subband acutance — gated vs gradient-masked USM <span class="fine">next up</span></li>
+        <li>Small-scale collaborative chroma pass for Weak 1 — real color untouched <span class="ship">✓ v3.6</span></li>
+        <li>effN-steered spatial <code>h</code> — shipped as <b>Adaptive Strength</b> <span class="ship">✓ v3.6</span></li>
       </ol>
     </div>
     <div class="phase">
@@ -319,7 +372,7 @@
         <li>Specular halation + tone-keyed negative sharpening; qualifier-matte input</li>
       </ol>
     </div>
-    <p class="note">Code-level corrections surfaced: the grain response peaks mid-gray (backwards); the luma-texture re-add is uncored (re-noises the shadow it's meant to fix); Detail Rescue is preserve-only (gain ≤ 1 — no sharpening exists today); <code>effN</code> and the residual field are computed but under-consumed — the exact signals the acutance gating and confidence matte should ride.</p>
+    <p class="note">Code-level corrections the panel surfaced <b style="color:var(--green-br)">(all since fixed in v3.6)</b>: the grain response peaked mid-gray (backwards); the luma-texture re-add was uncored (re-noising the shadow it was meant to fix); Detail Rescue was preserve-only (gain ≤ 1 — no sharpening existed). And <code>effN</code> plus the residual field were computed but under-consumed — they now ride the acutance gating and the confidence matte, exactly as predicted.</p>
   </section>
 
   <section>
@@ -337,6 +390,31 @@
   </section>
 
   <section>
+    <h2 id="postscript"><span class="sn">07</span>Postscript: from study to shipped</h2>
+    <p style="color:var(--text-lt);font:600 12px var(--mono);letter-spacing:.04em;margin:-4px 0 18px;text-transform:uppercase">Added 2026-07-16 · after v3.6 built Phase&nbsp;0 and the first Phase-1 fix</p>
+    <p class="lead">The study was a design panel. The next day a second Claude instance <strong>built</strong> its Phase&nbsp;0 and the start of Phase&nbsp;1 — across the CPU reference and all three GPU kernels at parity, gated on the same night clip. Building it did what a panel cannot: it shipped the thesis, and it <strong>corrected the paper in three places</strong>. That correction is the entire point of the X3 "prototype before code" law — here is what it caught.</p>
+
+    <p><strong>Shipped in v3.6.</strong> The full Phase-0 quartet — shadow-loud, contrast-masked, blue-noise grain; overshoot-bounded optical acutance; detail-transfer coring; and the clean-confidence matte — plus the Phase-1 shadow chroma-speckle fix. Everything is off by default, so existing projects render bit-for-bit identical until you reach for it.</p>
+
+    <div class="pull">Three things the panel got wrong on paper only surfaced when the code met the real clip.</div>
+
+    <p><strong>1 · The blue-noise grain formula was backwards for this codebase.</strong> The study proposed <code>gn − gHi·valueNoise(2·size)</code>. But here <code>valueNoise</code> at a coarser scale is an <em>independent</em> field — subtracting it <em>adds</em> low-frequency energy, the opposite of blue. On the real clip the high-frequency fraction moved the wrong way (0.41&nbsp;→&nbsp;0.29). The true high-pass subtracts a low-pass of the <em>same</em> grain field (its four-neighbour mean, a grain-cell away), which put the spectrum where it belongs: 0.41&nbsp;→&nbsp;0.69. A one-line error no panel could have caught without measuring.</p>
+
+    <p><strong>2 · Auto-tuning correlated chroma noise needs <em>generalized</em> SURE — the build's most transferable result.</strong> The self-tuner's chroma pass read the real shadow speckle backwards and de-tuned a good profile by ~0.9&nbsp;dB. The cause is textbook but easy to miss: Monte-Carlo SURE is an unbiased error estimate only for <em>white</em> noise, and the speckle is spatially correlated. Match the probe's own correlation to the measured noise — a block-constant Rademacher field at the estimated correlation length — and the estimator becomes generalized SURE (it measures <code>tr(AΣ)</code>, not <code>σ²·tr(A)</code>); its argmin tracks true error again. The 0.9&nbsp;dB loss became a <strong>3.0&nbsp;dB gain</strong>. The lesson outlives this plugin: <em class="t">if you tune against SURE, the probe must carry the noise's covariance, or it will confidently tune the wrong way on anything but white noise.</em></p>
+
+    <p><strong>3 · The chroma-speckle "safety" is just the window size.</strong> The panel asked for a block-mean-subtracted chroma pass so real low-frequency color scores zero. In practice no subtraction is needed: a luma-guided wide chroma mean at <em>moderate</em> reach averages the ~30&nbsp;px speckle while the frame-scale lighting gradient — warm streetlight against cool ambient over dark fabric — is locally flat across the window and passes straight through. The protection falls out of the geometry: <strong>−70% shadow speckle</strong>, the real color untouched.</p>
+
+    <p><strong>And two the build sharpened.</strong> Acutance's halo bound must reference the <em>pre-spatial</em> (post-temporal) 3×3 min/max, not the over-smoothed spatial output — exceeding the smoothed range is precisely how it <em>restores</em> the slope the smoother removed, while staying halo-free against the true signal. And coring belongs at the <em>input</em>-noise scale (<code>s.sy·gainY</code>), not the residual: the removed delta carries a single frame's full noise, so thresholding at the residual under-cores and re-noises the shadow — the correct scale cut shadow re-noising from 4.7×&nbsp;to&nbsp;1.2×.</p>
+
+    <p><strong>One honest limitation — for the graveyard.</strong> Scoring the whole temporal-plus-spatial pipeline against the <em>input</em> sigma over-credits the spatial stage once the temporal average has already crushed the residual, so on a near-lossless static shot the tuner can nudge toward over-smoothing (a 46&nbsp;dB stack drifting to 45&nbsp;dB — imperceptible, but the wrong direction). Hold-out cross-validation against an independent probe catches the <em>variance</em> form of this; the <em>systematic</em> bias wants scoring against the post-temporal residual, and is logged for a later pass. The panel's discipline was to publish its graveyard — this belongs in it.</p>
+
+    <h3 style="margin-top:1.5em">The thesis grew a second tool</h3>
+    <p>Section 06's conclusion — <em class="t">clean early, reconstruct late, on a final node</em> — was a prediction about the shape of the node graph. Building it produced <strong>both halves</strong>. Hush denoises early and now exports the clean-confidence matte; the reconstruction half became <strong>Speak</strong>, a standalone film-emulation effect for the <em>end</em> of the tree — film-stock density, subtractive color, halation, bloom, grain — that reads Hush's confidence matte downstream to lay grain exactly where the image was cleaned most. Node one measures and cleans; the last node reconstructs the optical image; a matte crosses the graph between them. The study didn't just steer a denoiser — it specified an interface, and a second product grew into it.</p>
+
+    <div class="pull" style="max-width:24em">The frontier the panel named — texture reconstruction — turned out to be big enough to be its own tool.</div>
+  </section>
+
+  <section>
     <p class="kicker">Ultimate finding</p>
     <p>The world's best free video noise reducer won't win by removing the most noise — that race is against paid tools with large teams, and Hush is already close. It wins by being the only free tool that treats denoising as <strong>step one of texture management</strong>: strip the noise, then reconstruct the optical image — lens-like acutance without a digital halo, emulsion-grade grain matched to exactly what was removed — and couple that reconstruction to the grade through confidence mattes, qualifier inputs, and film-optic finishing.</p>
     <div class="pull" style="max-width:22em">Clean early. Reconstruct late. Match the grain to the noise you took. Sharpen only what the noise field says is real.</div>
@@ -350,6 +428,7 @@
     <div class="bars" style="margin-bottom:26px"><span style="background:#3D5A47"></span><span style="background:#5B8C65"></span><span style="background:#A3C0B0"></span><span style="background:#E5A835"></span><span style="background:#E89D6B"></span><span style="background:#C5D6CC"></span><span style="background:#2D3A2E"></span></div>
     <div class="backbar">
       <a class="primary" href="index.html">← Back to Hush</a>
+      <a class="line" href="hush-whitepaper.pdf" download>Download PDF ↓</a>
       <a class="line" href="https://github.com/amateurmenace/Hush-OpenNR">GitHub</a>
     </div>
     <p class="credit2">Authored by <b>Claude</b> (Anthropic), commissioned by <a href="https://weirdmachine.org">Stephen Walter</a>.</p>

@@ -551,6 +551,9 @@ struct AutoSettings {
     float eqFine          = 100.0f;
     float eqMedium        = 0.0f;
     float eqCoarse        = 0.0f;
+    float effnSteer       = 0.0f;   // v3.6 S1 (UI percent); the class table
+                                    // leaves it off — the SURE descent turns
+                                    // it on only when measurement says so
     float profileAdjust   = 1.0f;   // raw multiplier, not percent
     int   lockProfile     = 1;
     int   noiseClass      = 1;      // for the report
@@ -729,6 +732,7 @@ inline nrcore::Params paramsFromAutoSettings(const AutoSettings& s)
     p.eqFine         = s.eqFine / 100.0f;
     p.eqMedium       = s.eqMedium / 100.0f;
     p.eqCoarse       = s.eqCoarse / 100.0f;
+    p.effnSteer      = s.effnSteer / 100.0f;
     p.profileAdjust  = s.profileAdjust;
     return p;
 }
@@ -749,6 +753,34 @@ inline float sureLuma(const float* px)
     float y, cb, cr;
     nrcore::rgb2ycc(px[0], px[1], px[2], y, cb, cr);
     return y;
+}
+
+// One luma SURE evaluation: two full-pipeline runs (clean + perturbed
+// stack). Verbatim extraction of the v3.5 X1 grid loop body — the tests
+// pin that surface bit-for-bit, so the arithmetic order must not change.
+inline double sureEvalLuma(const float* const frames[7], const float* const pf[7],
+                           const std::vector<signed char>& rad,
+                           int W, int H, const nrcore::Params& p,
+                           float sigma, float eps,
+                           std::vector<float>& outA, std::vector<float>& outB,
+                           std::vector<float>& scratch)
+{
+    const size_t nl = static_cast<size_t>(W) * H;
+    nrcore::denoiseFrame(frames, W, H, p, outA.data(), scratch);
+    nrcore::denoiseFrame(pf, W, H, p, outB.data(), scratch);
+    double rss = 0.0, div = 0.0;
+    for (size_t i = 0; i < nl; ++i) {
+        const float ly  = sureLuma(frames[3] + i * 4);
+        const float fy  = sureLuma(outA.data() + i * 4);
+        const float fyp = sureLuma(outB.data() + i * 4);
+        const double d = static_cast<double>(fy) - ly;
+        rss += d * d;
+        div += static_cast<double>(rad[i]) * (static_cast<double>(fyp) - fy);
+    }
+    div /= eps;
+    return rss / static_cast<double>(nl)
+         - static_cast<double>(sigma) * sigma
+         + (2.0 * sigma * sigma / static_cast<double>(nl)) * div;
 }
 
 inline SureTune sureTuneGrid(const float* const frames[7], int W, int H,
@@ -815,22 +847,10 @@ inline SureTune sureTuneGrid(const float* const frames[7], int W, int H,
             nrcore::Params p = base;
             p.temporalLuma = r.gridT[ti];
             p.spatialLuma  = r.gridS[si];
-            nrcore::denoiseFrame(frames, W, H, p, outA.data(), scratch);
-            nrcore::denoiseFrame(pf, W, H, p, outB.data(), scratch);
-
-            double rss = 0.0, div = 0.0;
-            for (size_t i = 0; i < nl; ++i) {
-                const float ly  = sureLuma(frames[3] + i * 4);
-                const float fy  = sureLuma(outA.data() + i * 4);
-                const float fyp = sureLuma(outB.data() + i * 4);
-                const double d = static_cast<double>(fy) - ly;
-                rss += d * d;
-                div += static_cast<double>(rad[i]) * (static_cast<double>(fyp) - fy);
-            }
-            div /= eps;
-            const double sure = rss / static_cast<double>(nl)
-                              - static_cast<double>(sigma) * sigma
-                              + (2.0 * sigma * sigma / static_cast<double>(nl)) * div;
+            // v3.6 #19: the evaluation lives in sureEvalLuma (verbatim
+            // extraction — the tests pin this surface bit-for-bit)
+            const double sure = sureEvalLuma(frames, pf, rad, W, H, p,
+                                             sigma, eps, outA, outB, scratch);
             r.sure[ti][si] = sure;
             if ((ti == 0 && si == 0) || sure < bestSure) {
                 bestSure = sure;
@@ -841,6 +861,421 @@ inline SureTune sureTuneGrid(const float* const frames[7], int W, int H,
 
     r.temporalLuma = r.gridT[r.ti];
     r.spatialLuma  = r.gridS[r.si];
+    r.ran = 1;
+    return r;
+}
+
+// ---------------------------------------------------------------------------
+// v3.6 #19 — SURE everything: coordinate descent + chroma SURE.
+//
+// X1 proved the machinery (full-pipeline MC-SURE argmin matched true-MSE
+// argmin exactly, bit-deterministic); this widens it two ways:
+//
+//   1. LUMA coordinate descent over the axes the 3x3 grid never touches —
+//      motionThresh, preserveDetail, detailRescue, eqMedium and the v3.6
+//      Adaptive Strength (effnSteer). One pass, one axis at a time,
+//      +/- one step around the incumbent, adopt only on improvement,
+//      ride a winning direction at most one extra step. The incumbent's
+//      score is reused across axes, so each axis costs 2-3 evaluations
+//      (4-6 crop denoises).
+//
+//   2. A CHROMA-SURE pass over (temporalChroma, spatialChroma,
+//      chromaBlotch) — the same estimator on Cb/Cr against their OWN
+//      measured sigmas (tcb/tcr), so the chroma sliders come from
+//      measurement instead of the class table. The perturbation moves
+//      each chroma axis in RGB along the exact direction that leaves the
+//      other two YCC axes fixed (dY == 0 by construction), with
+//      INDEPENDENT fixed-seed Rademacher fields per channel — Stein's
+//      identity then splits cleanly per channel (cross-divergences vanish
+//      in expectation).
+//
+// Runs on a centre SUB-crop (<=384x216) of the tuner crop: the descent
+// costs ~2x the grid's denoise count, the smaller crop pays that bill.
+// Deterministic end to end (fixed seeds, fixed order). Any failure path
+// returns ran=0 and Auto Setup keeps the grid/table values.
+// ---------------------------------------------------------------------------
+// One chroma SURE evaluation: SURE_cb + SURE_cr, each channel against its
+// own sigma and its own Rademacher field / epsilon.
+inline double sureEvalChroma(const float* const frames[7], const float* const pfc[7],
+                             const std::vector<signed char>& radCb,
+                             const std::vector<signed char>& radCr,
+                             int W, int H, const nrcore::Params& p,
+                             float sigmaCb, float sigmaCr,
+                             float epsCb, float epsCr,
+                             std::vector<float>& outA, std::vector<float>& outB,
+                             std::vector<float>& scratch)
+{
+    const size_t nl = static_cast<size_t>(W) * H;
+    nrcore::denoiseFrame(frames, W, H, p, outA.data(), scratch);
+    nrcore::denoiseFrame(pfc, W, H, p, outB.data(), scratch);
+    double rssCb = 0.0, rssCr = 0.0, divCb = 0.0, divCr = 0.0;
+    for (size_t i = 0; i < nl; ++i) {
+        float y0, cb0, cr0, ya, cba, cra, yb, cbb, crb;
+        const float* src = frames[3] + i * 4;
+        nrcore::rgb2ycc(src[0], src[1], src[2], y0, cb0, cr0);
+        const float* pa = outA.data() + i * 4;
+        nrcore::rgb2ycc(pa[0], pa[1], pa[2], ya, cba, cra);
+        const float* pb = outB.data() + i * 4;
+        nrcore::rgb2ycc(pb[0], pb[1], pb[2], yb, cbb, crb);
+        const double dcb = static_cast<double>(cba) - cb0;
+        const double dcr = static_cast<double>(cra) - cr0;
+        rssCb += dcb * dcb;
+        rssCr += dcr * dcr;
+        divCb += static_cast<double>(radCb[i]) * (static_cast<double>(cbb) - cba);
+        divCr += static_cast<double>(radCr[i]) * (static_cast<double>(crb) - cra);
+    }
+    divCb /= epsCb;
+    divCr /= epsCr;
+    const double sCb = rssCb / static_cast<double>(nl)
+                     - static_cast<double>(sigmaCb) * sigmaCb
+                     + (2.0 * sigmaCb * sigmaCb / static_cast<double>(nl)) * divCb;
+    const double sCr = rssCr / static_cast<double>(nl)
+                     - static_cast<double>(sigmaCr) * sigmaCr
+                     + (2.0 * sigmaCr * sigmaCr / static_cast<double>(nl)) * divCr;
+    return sCb + sCr;
+}
+
+// Chroma noise spatial-correlation length, for the descent's chroma-SURE
+// probe. White MC-SURE (a per-pixel Rademacher probe) estimates tr(A) and is
+// an unbiased MSE estimator ONLY for white noise: on the spatially-correlated
+// shadow chroma speckle (the WEAK-1 case — "sits above the chroma bands'
+// reach") the divergence term must be tr(A*Sigma), not sigma^2*tr(A), so a
+// white probe is blind to the win and the descent walks the chroma sliders
+// the WRONG way (measured: it dropped true PSNR 0.9 dB by de-tuning a good
+// seed). Feeding the probe the noise's own correlation makes cov(b)=Sigma/
+// sigma^2, and the SAME estimator formula becomes generalized SURE
+// (tr(A*Sigma) exactly) — so it tracks true MSE across white AND correlated
+// chroma without any change to sureEvalChroma.
+//
+// L is read from the temporal chroma difference (signal cancels on the static
+// shadows this targets): block-mean chroma std at box sizes 1,2,4,8. White
+// noise falls as 1/k; a field correlated over L px stays flat out to k~L. L is
+// the largest size still above 0.6x the per-pixel level. Capped at 8 (the
+// conservative direction — a block-8 probe already tracks larger-scale speckle,
+// and capping bounds the over-credit if frame-to-frame MOTION, not noise,
+// inflates the coarse levels). Returns 1 (the exact white probe, bit-for-bit)
+// with no partner, negligible chroma noise, or an immediate fall-off.
+inline int chromaCorrLen(const float* cur, const float* partner, int W, int H)
+{
+    if (!partner || W < 32 || H < 32) return 1;
+    auto blockSig = [&](int k) -> double {
+        const int bw = W / k, bh = H / k;
+        if (bw < 2 || bh < 2) return 0.0;
+        double s2 = 0.0; size_t c = 0;
+        for (int by = 0; by < bh; ++by)
+            for (int bx = 0; bx < bw; ++bx) {
+                double acb = 0.0, acr = 0.0;
+                for (int j = 0; j < k; ++j)
+                    for (int i = 0; i < k; ++i) {
+                        const size_t p = ((static_cast<size_t>(by) * k + j)
+                                          * W + (static_cast<size_t>(bx) * k + i)) * 4;
+                        float y1, cb1, cr1, y2, cb2, cr2;
+                        nrcore::rgb2ycc(cur[p],     cur[p + 1],     cur[p + 2],     y1, cb1, cr1);
+                        nrcore::rgb2ycc(partner[p], partner[p + 1], partner[p + 2], y2, cb2, cr2);
+                        acb += (cb1 - cb2); acr += (cr1 - cr2);
+                    }
+                const double inv = 1.0 / (static_cast<double>(k) * static_cast<double>(k));
+                acb *= inv; acr *= inv;
+                s2 += acb * acb + acr * acr; c += 2;
+            }
+        // /sqrt(2): the difference of two independent noise fields has 2x
+        // the per-field variance
+        return (c > 0) ? std::sqrt(s2 / static_cast<double>(c)) * 0.70710678f : 0.0;
+    };
+    const double s1 = blockSig(1);
+    if (s1 < 1e-4) return 1;   // negligible chroma noise: the white probe
+    int L = 1;
+    for (int k = 2; k <= 8; k *= 2) {
+        if (blockSig(k) >= 0.6 * s1) L = k; else break;   // stop at fall-off
+    }
+    return L;
+}
+
+struct SureDescent {
+    int    ran = 0;
+    int    evals = 0;            // SURE evaluations spent (2 denoises each)
+    // tuned values, PARAM fractions (UI/100) — valid when ran
+    float  motionThresh = 0.0f, preserveDetail = 0.0f, detailRescue = 0.0f;
+    float  eqMedium = 0.0f, effnSteer = 0.0f;
+    float  temporalChroma = 0.0f, spatialChroma = 0.0f, chromaBlotch = 0.0f;
+    double lumaBase = 0.0, lumaTuned = 0.0;      // SURE, for the report
+    double chromaBase = 0.0, chromaTuned = 0.0;
+    int    chromaCorr = 1;                        // probe correlation length
+};
+
+// Axis ids for the descent get/set switches (explicit — no member pointers,
+// the GPU-struct 4-byte discipline has made us allergic to layout games).
+enum SureAxisId {
+    kAxMotionThresh, kAxPreserveDetail, kAxDetailRescue,
+    kAxEqMedium, kAxEffnSteer,
+    kAxTemporalChroma, kAxSpatialChroma, kAxChromaBlotch
+};
+
+inline float sureAxisGet(const nrcore::Params& p, int id)
+{
+    switch (id) {
+        case kAxMotionThresh:   return p.motionThresh;
+        case kAxPreserveDetail: return p.preserveDetail;
+        case kAxDetailRescue:   return p.detailRescue;
+        case kAxEqMedium:       return p.eqMedium;
+        case kAxEffnSteer:      return p.effnSteer;
+        case kAxTemporalChroma: return p.temporalChroma;
+        case kAxSpatialChroma:  return p.spatialChroma;
+        default:                return p.chromaBlotch;
+    }
+}
+
+inline void sureAxisSet(nrcore::Params& p, int id, float v)
+{
+    switch (id) {
+        case kAxMotionThresh:   p.motionThresh = v;   break;
+        case kAxPreserveDetail: p.preserveDetail = v; break;
+        case kAxDetailRescue:   p.detailRescue = v;   break;
+        case kAxEqMedium:       p.eqMedium = v;       break;
+        case kAxEffnSteer:      p.effnSteer = v;      break;
+        case kAxTemporalChroma: p.temporalChroma = v; break;
+        case kAxSpatialChroma:  p.spatialChroma = v;  break;
+        default:                p.chromaBlotch = v;   break;
+    }
+}
+
+inline SureDescent sureTuneDescent(const float* const frames[7], int W, int H,
+                                   const nrcore::Params& base)
+{
+    SureDescent r;
+    if (W < 32 || H < 32)
+        return r;
+
+    // ---- centre sub-crop (<=384x216, even-aligned) with the aliasing
+    // structure preserved: slots that shared a pointer share a crop ----
+    const int cw = (W > 384 ? 384 : W) & ~1;
+    const int ch = (H > 216 ? 216 : H) & ~1;
+    const int x0 = ((W - cw) / 2) & ~1;
+    const int y0 = ((H - ch) / 2) & ~1;
+    std::vector<float> crops[7];
+    const float* cf[7] = { 0, 0, 0, 0, 0, 0, 0 };
+    for (int k = 0; k < 7; ++k) {
+        int prior = -1;
+        for (int j = 0; j < k; ++j)
+            if (frames[j] == frames[k]) { prior = j; break; }
+        if (prior >= 0) { cf[k] = cf[prior]; continue; }
+        crops[k].resize(static_cast<size_t>(cw) * ch * 4);
+        for (int y = 0; y < ch; ++y)
+            std::memcpy(&crops[k][static_cast<size_t>(y) * cw * 4],
+                        frames[k] + ((static_cast<size_t>(y0 + y) * W + x0) * 4),
+                        static_cast<size_t>(cw) * 4 * sizeof(float));
+        cf[k] = crops[k].data();
+    }
+
+    const size_t n  = static_cast<size_t>(cw) * ch * 4;
+    const size_t nl = static_cast<size_t>(cw) * ch;
+
+    // ---- sigmas once, from the sub-crop (X1 pattern) ----
+    const float* partner = 0;
+    if (cf[2] != cf[3])      partner = cf[2];
+    else if (cf[4] != cf[3]) partner = cf[4];
+    nrcore::Params p0 = base;
+    nrcore::Stats s0;
+    nrcore::estimateInput(cf[3], partner, cw, ch, p0, s0);
+    const float sigma   = s0.hadTemporal ? s0.ty  : s0.sy;
+    const float sigmaCb = s0.hadTemporal ? s0.tcb : s0.scb;
+    const float sigmaCr = s0.hadTemporal ? s0.tcr : s0.scr;
+    const float eps   = std::max(sigma * 0.05f, 1e-4f);
+    const float epsCb = std::max(sigmaCb * 0.05f, 1e-4f);
+    const float epsCr = std::max(sigmaCr * 0.05f, 1e-4f);
+
+    // ---- fixed-seed Rademacher fields + the two perturbed stacks ----
+    // Luma: R,G,B together (channel 7 — the X1 seed). Chroma: independent
+    // fields per channel (8, 9); the RGB delta moves exactly one YCC axis:
+    //   pure Cb: (0, -0.0722*1.8556/0.7152, 1.8556) * dcb
+    //   pure Cr: (1.5748, -0.2126*1.5748/0.7152, 0) * dcr
+    // so dY == 0 identically and Cb/Cr move by exactly dcb/dcr (rgb2ycc's
+    // BT.709 constants; verified against nr_core.h:224).
+    //
+    // The chroma field is block-constant at the measured correlation length
+    // cB (see chromaCorrLen): cov(b)=Sigma/sigma^2, so chroma SURE becomes
+    // generalized SURE and tracks true MSE on correlated speckle. cB==1 (the
+    // white-noise / no-partner case) is x/1 == x — bit-for-bit the old probe,
+    // so the luma path and every white-noise result stay unchanged.
+    const int cB = chromaCorrLen(cf[3], partner, cw, ch);
+    // Two independent probe families (seeds 977 and 1013): the first drives
+    // the descent, the second holds it out for cross-validation (see below).
+    std::vector<float> pertL(n), pertC(n), pertL2(n), pertC2(n);
+    std::vector<signed char> rad(nl), radCb(nl), radCr(nl),
+                             rad2(nl), radCb2(nl), radCr2(nl);
+    for (int y = 0; y < ch; ++y)
+        for (int x = 0; x < cw; ++x) {
+            const size_t i = static_cast<size_t>(y) * cw + x;
+            for (int pass = 0; pass < 2; ++pass) {
+                const uint32_t sd = (pass == 0) ? 977u : 1013u;
+                const signed char b =
+                    (nrcore::hashNoise(static_cast<uint32_t>(x),
+                                       static_cast<uint32_t>(y), sd, 7u) >= 0.0f) ? 1 : -1;
+                const signed char bcb =
+                    (nrcore::hashNoise(static_cast<uint32_t>(x / cB),
+                                       static_cast<uint32_t>(y / cB), sd, 8u) >= 0.0f) ? 1 : -1;
+                const signed char bcr =
+                    (nrcore::hashNoise(static_cast<uint32_t>(x / cB),
+                                       static_cast<uint32_t>(y / cB), sd, 9u) >= 0.0f) ? 1 : -1;
+                float* pL = (pass == 0) ? pertL.data() : pertL2.data();
+                float* pC = (pass == 0) ? pertC.data() : pertC2.data();
+                (pass == 0 ? rad   : rad2)[i]   = b;
+                (pass == 0 ? radCb : radCb2)[i] = bcb;
+                (pass == 0 ? radCr : radCr2)[i] = bcr;
+                const float d = eps * static_cast<float>(b);
+                pL[i * 4 + 0] = cf[3][i * 4 + 0] + d;
+                pL[i * 4 + 1] = cf[3][i * 4 + 1] + d;
+                pL[i * 4 + 2] = cf[3][i * 4 + 2] + d;
+                pL[i * 4 + 3] = cf[3][i * 4 + 3];
+                const float dcb = epsCb * static_cast<float>(bcb);
+                const float dcr = epsCr * static_cast<float>(bcr);
+                pC[i * 4 + 0] = cf[3][i * 4 + 0] + 1.5748f * dcr;
+                pC[i * 4 + 1] = cf[3][i * 4 + 1]
+                              - (0.0722f * 1.8556f / 0.7152f) * dcb
+                              - (0.2126f * 1.5748f / 0.7152f) * dcr;
+                pC[i * 4 + 2] = cf[3][i * 4 + 2] + 1.8556f * dcb;
+                pC[i * 4 + 3] = cf[3][i * 4 + 3];
+            }
+        }
+    const float* pfL[7];  const float* pfC[7];
+    const float* pfL2[7]; const float* pfC2[7];
+    for (int k = 0; k < 7; ++k) {
+        pfL[k]  = (cf[k] == cf[3]) ? pertL.data()  : cf[k];
+        pfC[k]  = (cf[k] == cf[3]) ? pertC.data()  : cf[k];
+        pfL2[k] = (cf[k] == cf[3]) ? pertL2.data() : cf[k];
+        pfC2[k] = (cf[k] == cf[3]) ? pertC2.data() : cf[k];
+    }
+
+    std::vector<float> outA(n), outB(n), scratch;
+    nrcore::Params cur = base;
+
+    // ---- luma coordinate descent ----
+    // {axis, step, lo, hi} in Params fractions. Steps sized to the sliders'
+    // useful granularity; one pass, adopt only on improvement, ride a
+    // winning direction at most one extra step.
+    struct Axis { int id; float step, lo, hi; };
+    static const Axis kLumaAxes[] = {
+        { kAxMotionThresh,   0.15f, 0.0f, 1.5f  },
+        { kAxPreserveDetail, 0.15f, 0.0f, 1.0f  },
+        { kAxDetailRescue,   0.25f, 0.0f, 1.0f  },
+        { kAxEqMedium,       0.35f, 0.0f, 1.5f  },
+        { kAxEffnSteer,      0.50f, 0.0f, 1.0f  },
+    };
+    static const Axis kChromaAxes[] = {
+        { kAxTemporalChroma, 0.25f, 0.0f, 1.25f },
+        { kAxSpatialChroma,  0.25f, 0.0f, 1.5f  },
+        { kAxChromaBlotch,   0.30f, 0.0f, 1.5f  },
+    };
+
+    double curScore = sureEvalLuma(cf, pfL, rad, cw, ch, cur, sigma, eps,
+                                   outA, outB, scratch);
+    ++r.evals;
+    r.lumaBase = curScore;
+    for (size_t a = 0; a < sizeof(kLumaAxes) / sizeof(kLumaAxes[0]); ++a) {
+        const Axis& ax = kLumaAxes[a];
+        for (int dir = -1; dir <= 1; dir += 2) {
+            int rides = 0;
+            for (;;) {
+                const float v0 = sureAxisGet(cur, ax.id);
+                const float v1 = clampfLocal(v0 + ax.step * static_cast<float>(dir),
+                                             ax.lo, ax.hi);
+                if (v1 == v0)
+                    break;
+                nrcore::Params cand = cur;
+                sureAxisSet(cand, ax.id, v1);
+                const double sc = sureEvalLuma(cf, pfL, rad, cw, ch, cand, sigma, eps,
+                                               outA, outB, scratch);
+                ++r.evals;
+                if (sc >= curScore - 1e-12)
+                    break;               // no improvement — stay put
+                cur = cand;
+                curScore = sc;
+                if (++rides > 1)
+                    break;               // ride a winner one extra step, max
+            }
+        }
+    }
+    r.lumaTuned = curScore;
+
+    // ---- hold-out cross-validation (luma) ----
+    // Greedy adoption can chase the driving probe's own MC variance on a
+    // near-clean crop (measured: a 46 dB stack over-cleaned by ~1.4 dB of
+    // true PSNR). Re-score the seed vs the luma winner on an INDEPENDENT
+    // probe (seed 1013) and keep the winner only if the improvement survives
+    // noise it never saw. A genuine denoising win (the whole point on real
+    // footage) generalizes; an overfit to one probe does not.
+    {
+        const double base2 = sureEvalLuma(cf, pfL2, rad2, cw, ch, base, sigma, eps,
+                                          outA, outB, scratch);
+        const double cur2  = sureEvalLuma(cf, pfL2, rad2, cw, ch, cur,  sigma, eps,
+                                          outA, outB, scratch);
+        r.evals += 2;
+        if (cur2 >= base2) {              // did not generalize — revert luma axes
+            for (size_t a = 0; a < sizeof(kLumaAxes) / sizeof(kLumaAxes[0]); ++a)
+                sureAxisSet(cur, kLumaAxes[a].id, sureAxisGet(base, kLumaAxes[a].id));
+            r.lumaTuned = curScore = r.lumaBase;
+        }
+    }
+
+    // ---- chroma descent (scored by chroma SURE, from the luma winner) ----
+    double curC = sureEvalChroma(cf, pfC, radCb, radCr, cw, ch, cur,
+                                 sigmaCb, sigmaCr, epsCb, epsCr,
+                                 outA, outB, scratch);
+    ++r.evals;
+    r.chromaBase = curC;
+    const nrcore::Params preChroma = cur;   // hold-out anchor for the chroma pass
+    for (size_t a = 0; a < sizeof(kChromaAxes) / sizeof(kChromaAxes[0]); ++a) {
+        const Axis& ax = kChromaAxes[a];
+        for (int dir = -1; dir <= 1; dir += 2) {
+            int rides = 0;
+            for (;;) {
+                const float v0 = sureAxisGet(cur, ax.id);
+                const float v1 = clampfLocal(v0 + ax.step * static_cast<float>(dir),
+                                             ax.lo, ax.hi);
+                if (v1 == v0)
+                    break;
+                nrcore::Params cand = cur;
+                sureAxisSet(cand, ax.id, v1);
+                const double sc = sureEvalChroma(cf, pfC, radCb, radCr, cw, ch, cand,
+                                                 sigmaCb, sigmaCr, epsCb, epsCr,
+                                                 outA, outB, scratch);
+                ++r.evals;
+                if (sc >= curC - 1e-12)
+                    break;
+                cur = cand;
+                curC = sc;
+                if (++rides > 1)
+                    break;
+            }
+        }
+    }
+    r.chromaTuned = curC;
+
+    // ---- hold-out cross-validation (chroma) ----
+    {
+        const double pc2  = sureEvalChroma(cf, pfC2, radCb2, radCr2, cw, ch, preChroma,
+                                           sigmaCb, sigmaCr, epsCb, epsCr,
+                                           outA, outB, scratch);
+        const double cur2 = sureEvalChroma(cf, pfC2, radCb2, radCr2, cw, ch, cur,
+                                           sigmaCb, sigmaCr, epsCb, epsCr,
+                                           outA, outB, scratch);
+        r.evals += 2;
+        if (cur2 >= pc2) {               // did not generalize — revert chroma axes
+            for (size_t a = 0; a < sizeof(kChromaAxes) / sizeof(kChromaAxes[0]); ++a)
+                sureAxisSet(cur, kChromaAxes[a].id, sureAxisGet(preChroma, kChromaAxes[a].id));
+            r.chromaTuned = r.chromaBase;
+        }
+    }
+
+    r.motionThresh   = cur.motionThresh;
+    r.preserveDetail = cur.preserveDetail;
+    r.detailRescue   = cur.detailRescue;
+    r.eqMedium       = cur.eqMedium;
+    r.effnSteer      = cur.effnSteer;
+    r.temporalChroma = cur.temporalChroma;
+    r.spatialChroma  = cur.spatialChroma;
+    r.chromaBlotch   = cur.chromaBlotch;
+    r.chromaCorr     = cB;
     r.ran = 1;
     return r;
 }

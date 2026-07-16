@@ -93,6 +93,97 @@
   .lede { font-size: 20px; color: var(--green-lt); }
   section.dark .lede { color: var(--sage-lt); }
 
+  /* ---------- design-study feature band: dark forest + procedural grain,
+       echoing the white-paper hero, so it reads as the headline it is ---------- */
+  section.study { position: relative; overflow: hidden; background: #24301F;
+    color: var(--sage-lt); border-top: 3px solid var(--amber); border-bottom: 3px solid var(--amber);
+    padding-top: 74px; padding-bottom: 74px; }
+  section.study > canvas.grain { position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: .35; mix-blend-mode: screen; pointer-events: none; z-index: 0; }
+  section.study .wrap { position: relative; z-index: 2; }
+  section.study .kicker { color: var(--amber); }
+  section.study h2 { color: #F5F3EE; font-size: clamp(30px, 4.4vw, 44px); letter-spacing: -.02em; }
+  /* study heading borrowed from the white-paper hero: big, "free" in amber */
+  section.study h2.study-title { font-size: clamp(34px, 6.2vw, 60px); line-height: 1.02;
+    letter-spacing: -.028em; max-width: 18ch; text-wrap: balance; }
+  section.study .k { color: var(--amber); }
+  section.study .lede { color: #D4E0D6; }
+  section.study .tipcard { background: rgba(255,255,255,.045); border: 1px solid rgba(197,214,204,.18);
+    backdrop-filter: blur(2px); }
+  section.study .tipcard .tn { color: var(--amber); }
+  section.study .tipcard b { color: #F5F3EE; }
+  section.study .tipcard p { color: var(--sage); }
+
+  /* ---------- combined intro: why + the Hush/Speak pair + workflow toggle ---------- */
+  section.intro { background: linear-gradient(180deg, #F4F2EC 0%, #EAE8E0 100%); }
+  .intro-h { font-size: clamp(30px, 4.6vw, 46px); letter-spacing: -.022em; max-width: 20ch; }
+  .intro .lede { margin-top: 14px; }
+  /* the pair of tool cards */
+  .pair { display: grid; grid-template-columns: 1fr auto 1fr; align-items: stretch; gap: 20px; margin: 34px 0 8px; }
+  .pcard { position: relative; background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg);
+    padding: 26px 26px 24px; box-shadow: 0 10px 30px rgba(45,58,46,.07); overflow: hidden;
+    transition: transform .25s ease, box-shadow .25s ease; }
+  .pcard::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 4px; }
+  .pcard.hush::before { background: linear-gradient(90deg, var(--green-br), var(--green)); }
+  .pcard.speak::before { background: linear-gradient(90deg, var(--orange), #D97E45); }
+  .pcard:hover { transform: translateY(-4px); box-shadow: 0 18px 44px rgba(45,58,46,.13); }
+  .pcard h3 { font: 700 30px "Space Grotesk"; margin: 4px 0 2px; }
+  .pcard.hush h3 { color: var(--green); } .pcard.speak h3 { color: #C06A32; }
+  .pc-top { display: flex; align-items: center; justify-content: space-between; }
+  .pc-tag { font: 700 10px var(--mono); letter-spacing: .13em; text-transform: uppercase; color: var(--text-lt); }
+  .pc-free { font: 800 10px var(--mono); letter-spacing: .12em; color: #2E6B3A; background: rgba(91,140,101,.14);
+    border: 1px solid rgba(91,140,101,.4); border-radius: 999px; padding: 3px 9px; }
+  .pc-lead { font-size: 17px; font-weight: 600; color: var(--green); margin: 8px 0 6px; }
+  .pcard p { font-size: 14.5px; line-height: 1.62; color: var(--text-med); }
+  .pcard p b { color: var(--green); }
+  .pair-x { display: flex; align-items: center; justify-content: center; font: 300 34px "Space Grotesk"; color: var(--sage); }
+  @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } .pair-x { transform: rotate(90deg); } }
+  /* feature chips */
+  .feat-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 26px 0 6px; }
+  .feat { font: 600 13.5px "DM Sans"; color: var(--green); background: var(--card); border: 1px solid var(--border);
+    border-radius: 999px; padding: 8px 15px; transition: transform .18s, border-color .18s, box-shadow .18s; }
+  .feat b { color: var(--amber); font-weight: 700; margin-right: 3px; }
+  .feat:hover { transform: translateY(-2px); border-color: var(--amber); box-shadow: 0 6px 16px rgba(45,58,46,.1); }
+  /* the workflow toggle — dark centerpiece */
+  .wf { margin-top: 40px; background: #22301D; border: 1px solid #33452F; border-radius: var(--r-lg);
+    padding: 26px 28px 30px; color: var(--sage-lt); box-shadow: 0 16px 44px rgba(20,28,18,.28); }
+  .wf-head { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 18px; margin-bottom: 22px; }
+  .wf .kicker { color: var(--amber); }
+  .wf-title { font: 700 22px "Space Grotesk"; color: #F5F3EE; letter-spacing: -.01em; max-width: 20ch; }
+  .wf-toggle { display: inline-flex; background: rgba(0,0,0,.28); border: 1px solid #3a4c34; border-radius: 999px; padding: 4px; gap: 4px; }
+  .wf-btn { font: 700 13.5px "Space Grotesk"; color: var(--sage); background: transparent; border: 0; cursor: pointer;
+    padding: 9px 17px; border-radius: 999px; white-space: nowrap; transition: color .2s, background .2s, box-shadow .2s; }
+  .wf-btn.is-on { color: #22301D; background: var(--amber); box-shadow: 0 3px 12px rgba(0,0,0,.3); }
+  .wf-btn:not(.is-on):hover { color: #F5F3EE; }
+  /* panes */
+  .wf-pane { display: none; }
+  .wf-stage[data-mode="quick"] .wf-pane.quick { display: block; animation: wfIn .42s ease; }
+  .wf-stage[data-mode="pro"] .wf-pane.pro { display: block; animation: wfIn .42s ease; }
+  @keyframes wfIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .wf-flow { display: flex; align-items: stretch; flex-wrap: wrap; gap: 0; }
+  .wfn { position: relative; flex: 1 1 0; min-width: 116px; background: rgba(255,255,255,.045); border: 1px solid #3a4c34;
+    border-radius: 12px; padding: 12px 13px; text-align: left; transition: transform .2s, box-shadow .2s, border-color .2s; }
+  .wfn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,.28); }
+  .wfn span { display: block; font: 700 9.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--sage); }
+  .wfn b { display: block; font: 700 17px "Space Grotesk"; color: #F5F3EE; margin: 3px 0 1px; }
+  .wfn small { display: block; font: 500 11px var(--mono); color: var(--sage); line-height: 1.35; }
+  .wfn.io { background: rgba(255,255,255,.02); border-style: dashed; }
+  .wfn.hush { border-color: var(--green-br); box-shadow: inset 0 0 0 1px rgba(91,140,101,.35), 0 0 22px rgba(91,140,101,.16); }
+  .wfn.hush b { color: #9BD3A6; }
+  .wfn.speak { border-color: var(--orange); box-shadow: inset 0 0 0 1px rgba(232,157,107,.4), 0 0 22px rgba(232,157,107,.16); }
+  .wfn.speak b { color: #F0B486; }
+  .wfn.big b { font-size: 20px; }
+  .wfw { flex: 0 0 26px; align-self: center; height: 2px; background: linear-gradient(90deg, #4a5c42, #6b8060);
+    position: relative; margin: 0 -1px; }
+  .wfw::after { content: "▸"; position: absolute; right: -3px; top: 50%; transform: translateY(-50%); color: #7f9573; font-size: 12px; }
+  @media (max-width: 680px) { .wf-flow { flex-direction: column; } .wfn { min-width: 0; } .wfw { width: 2px; height: 20px; flex-basis: 20px; margin: -1px 0 -1px 20px; background: linear-gradient(180deg, #4a5c42, #6b8060); } .wfw::after { content: "▾"; right: auto; left: -5px; top: auto; bottom: -4px; transform: none; } }
+  .wf-matte { display: flex; align-items: center; gap: 10px; margin: 16px 0 4px; font: 600 13px var(--mono);
+    color: #F0B486; background: rgba(232,157,107,.08); border: 1px dashed rgba(232,157,107,.4); border-radius: 10px; padding: 10px 14px; }
+  .wf-matte .mdot { width: 9px; height: 9px; border-radius: 999px; background: var(--orange); box-shadow: 0 0 0 4px rgba(232,157,107,.2); flex: none; animation: mpulse 1.8s ease-in-out infinite; }
+  @keyframes mpulse { 0%,100% { box-shadow: 0 0 0 3px rgba(232,157,107,.22); } 50% { box-shadow: 0 0 0 7px rgba(232,157,107,.06); } }
+  .wf-note { font-size: 15px; line-height: 1.6; color: var(--sage-lt); margin-top: 14px; max-width: 80ch; }
+  .wf-note b { color: #F5F3EE; }
+
   /* wipe slider */
   .wipe { position: relative; border-radius: var(--r-md); overflow: hidden; border: 1px solid var(--border); user-select: none; touch-action: none; margin: 26px 0 8px; }
   .wipe > img { width: 100%; display: block; pointer-events: none; }
@@ -249,7 +340,7 @@
         <a class="btn btn-green" href="https://github.com/amateurmenace/Hush-OpenNR/releases/latest">Download · macOS</a>
         <a class="btn btn-green" style="background:var(--green-lt)" href="https://github.com/amateurmenace/Hush-OpenNR/releases/latest">Download · Windows</a>
         <a class="btn btn-line" href="https://github.com/amateurmenace/Hush-OpenNR">GitHub</a>
-        <a class="btn btn-line" style="border-color:var(--amber);color:var(--green)" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html">Design Study ↗</a>
+        <a class="btn btn-line" style="border-color:var(--amber);color:var(--green)" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html" target="_blank" rel="noopener">Design Study White Paper ↗</a>
       </div>
       <div class="meta">v3.5 · Resolve 17+ free &amp; Studio · macOS 11+ (universal) · Windows 10+ x64 (OpenCL) · MIT · Linux builds from source</div>
     </div>
@@ -278,122 +369,116 @@
   </div>
 </header>
 
-<section>
+<section class="intro">
   <div class="wrap">
-    <div class="kicker">Why this exists</div>
-    <h2>The moment you go pro, the safety net disappears.</h2>
-    <p class="lede">Every phone and consumer camera quietly denoises your footage before
-    you ever see it. Step up to RAW or log — the formats that make real grading possible —
-    and that baked-in cleanup is gone.</p>
-    <p>Suddenly you're looking at the sensor's honest, noisy signal, and dealing with it is
-    your job now. This is the wall many people hit going from consumer to pro: there hasn't
-    been a <b>free, effective, efficient</b> tool for getting to a clean starting place for
-    your grade. Resolve's own NR palette is Studio-only; the third-party plugins are paid.
-    And noise isn't cosmetic — <b>color correction and VFX need a clean foundation</b>:
-    every contrast move amplifies grain, every key edges against it, every composite
-    inherits it.</p>
-    <p>Here's the thing: <b>you don't need AI for this.</b> Good noise reduction is robust
-    statistics, careful signal processing, and honest engineering — plus the will to not
-    charge for it. Hush gets you Studio-class results, free, with something even the paid
-    tools don't offer: <b>total transparency into what it's measuring and doing.</b></p>
-    <p>And it's <b>color-space aware by design: it works natively in your timeline color
-    space</b> — Rec.709, log, or wide gamut. Because every threshold is calibrated from
-    what it <em>measures</em> (per brightness band, in the space your footage actually
-    lives in) rather than from assumptions about one, there's nothing to convert and
-    nothing to mismatch.</p>
+    <div class="kicker">Why it exists · the free finishing toolkit</div>
+    <h2 class="intro-h">Go pro, and the safety net disappears.</h2>
+    <p class="lede" style="max-width:66ch">Every phone quietly denoises before you ever see the frame. Step up to RAW or log — the formats that make real grading possible — and that baked-in cleanup is gone. Resolve's own NR is Studio-only; the third-party plugins are paid. And noise isn't cosmetic: every contrast move amplifies it, every key edges against it, every composite inherits it. So we built the safety net — <b>free, transparent, and yours to control.</b></p>
+
+    <div class="pair">
+      <article class="pcard hush">
+        <div class="pc-top"><span class="pc-tag">Node one · clean</span><span class="pc-free">FREE</span></div>
+        <h3>Hush</h3>
+        <p class="pc-lead">Measures your clip, removes the noise — then puts the <b>optical character</b> back.</p>
+        <p>Auto Setup dials in every slider (you keep them all). Temporal + spatial denoise, then — new in v3.6 — lens-like acutance and film-matched grain rebuild what real optics and film would have left. It hands your grade a matte of where it succeeded, and renders its own measurements into the viewer, so nothing is a black box.</p>
+      </article>
+      <div class="pair-x" aria-hidden="true">+</div>
+      <article class="pcard speak">
+        <div class="pc-top"><span class="pc-tag">Last node · film</span><span class="pc-free">FREE</span></div>
+        <h3>Speak</h3>
+        <p class="pc-lead">The film look for the <em>end</em> of the tree — Hush's companion.</p>
+        <p>Film-stock density and subtractive color, halation, bloom and grain — built from original color science, working in DaVinci Wide Gamut. It reads Hush's clean-confidence matte downstream to lay grain exactly where the image was cleaned most. Clean early; reconstruct late.</p>
+      </article>
+    </div>
+
+    <div class="feat-row">
+      <span class="feat"><b>⌾</b> Sets itself in one click</span>
+      <span class="feat"><b>✎</b> Every slider stays yours</span>
+      <span class="feat"><b>◲</b> Rebuilds texture, not just clean</span>
+      <span class="feat"><b>◈</b> Confidence matte out</span>
+      <span class="feat"><b>◉</b> The viewer is the scope</span>
+      <span class="feat"><b>∞</b> Color-space aware</span>
+      <span class="feat"><b>↯</b> Real-time · 4 backends · MIT</span>
+    </div>
+
+    <div class="wf">
+      <div class="wf-head">
+        <div>
+          <div class="kicker" style="margin-bottom:5px">Two ways to run it</div>
+          <h3 class="wf-title">One node for speed. A few for the best image.</h3>
+        </div>
+        <div class="wf-toggle" role="tablist" aria-label="Workflow">
+          <button class="wf-btn is-on" data-mode="quick" role="tab" aria-selected="true">⚡ Quick — one node</button>
+          <button class="wf-btn" data-mode="pro" role="tab" aria-selected="false">✦ Best quality — multi-node</button>
+        </div>
+      </div>
+
+      <div class="wf-stage" data-mode="quick">
+        <div class="wf-pane quick">
+          <div class="wf-flow">
+            <div class="wfn io"><span>Media</span><b>Camera</b><small>RAW / log</small></div>
+            <div class="wfw"></div>
+            <div class="wfn hush big"><span>One node</span><b>Hush</b><small>⚡ Auto Setup · denoise + texture</small></div>
+            <div class="wfw"></div>
+            <div class="wfn io"><span>Output</span><b>Deliver</b><small>graded</small></div>
+          </div>
+          <p class="wf-note"><b>Drop one node, click Auto Setup, done.</b> Hush measures the clip and writes every setting into the sliders — clean, textured footage in seconds, still fully yours to tweak. The fastest way to a gradeable starting point.</p>
+        </div>
+        <div class="wf-pane pro">
+          <div class="wf-flow">
+            <div class="wfn io"><span>Media</span><b>Camera</b><small>RAW / log</small></div>
+            <div class="wfw"></div>
+            <div class="wfn hush"><span>Node 1</span><b>Hush</b><small>denoise · cached</small></div>
+            <div class="wfw"></div>
+            <div class="wfn"><span>Node 2</span><b>Balance</b><small>primary</small></div>
+            <div class="wfw"></div>
+            <div class="wfn"><span>Node 3</span><b>Grade</b><small>the look</small></div>
+            <div class="wfw"></div>
+            <div class="wfn speak"><span>Node 4</span><b>Speak</b><small>film · last</small></div>
+            <div class="wfw"></div>
+            <div class="wfn io"><span>Output</span><b>Deliver</b><small>via RCM</small></div>
+          </div>
+          <div class="wf-matte"><span class="mdot"></span>Hush's clean-confidence matte rides downstream → Speak lays grain where the image was cleaned most</div>
+          <p class="wf-note"><b>Denoise early, reconstruct late.</b> Hush cleans first on its own cached node — before the grade amplifies the noise — and exports the confidence matte. Grade in the middle. Speak lays the film look last and reads that matte. Two coupled nodes, the best possible image.</p>
+        </div>
+      </div>
+    </div>
   </div>
 </section>
 
-<section class="alt">
+<section class="study">
+  <canvas class="grain" aria-hidden="true"></canvas>
   <div class="wrap">
-    <div class="kicker">v3 → v3.5 · Intelligence, power, transparency</div>
-    <h2>One click. Every slider, set.</h2>
-    <p class="lede"><b>Auto Setup</b> analyzes your clip and dials in the whole
-    plugin — then hands you the sliders.</p>
-    <p>Click <b>Auto Setup (Analyze Footage)</b> and Hush measures frames from
-    across the clip: how noisy it is, how much of the noise is color, whether
-    it's blocky compressed grunge or clean sensor grain, how much the camera
-    moves. Then it decides — strengths, frame counts, search radius, motion
-    threshold, the Noise EQ bands — and <b>writes the answers into the visible
-    controls</b>, so you see exactly what it chose and can dial anything in or
-    back from there. It is not a mode, and there is nothing to trust blindly:
-    afterwards it's all ordinary manual state, plus a read-only report of what
-    it found:</p>
-    <p style="font: 500 14px var(--mono); color: var(--green-br); background: var(--ink, #21301f); border-radius: 8px; padding: 12px 16px; max-width: 60ch">
-    Analyzed 5 frames · noise 3.2%Y / 4.1%C (noisy) · steady camera · profile locked</p>
-    <p>One <b>Cmd+Z undoes the entire setup</b> (it applies as a single edit
-    block), and a <b>Revert Auto Setup</b> button does the same job later. It
-    never touches your Step 4 look choices — grain, texture, shadow
-    desaturation and debanding stay yours. Under the hood it also
-    <b>locks the measured noise profile</b>, so every frame of the clip
-    filters against the same numbers and renders stay repeatable.</p>
+    <div class="kicker">The design study · white paper</div>
+    <h2 class="study-title">Toward the world's best <span class="k">free</span> video noise reducer</h2>
+    <p class="lede" style="max-width:62ch">A nine-lens panel of AI experts and an audit on real 4K night footage reached the same conclusion: Hush's denoising is already strong — the frontier isn't removing <em>more</em> noise, it's <b>reconstructing the image's optical character</b> once the noise is gone. Strip the noise, then put back lens-like sharpness and film-like grain, and couple the whole thing to your grade. <b style="color:var(--amber)">v3.6 shipped the first wave.</b></p>
 
-    <h3 style="margin-top:38px">v3.1 — power &amp; transparency</h3>
-    <p><b>Detail Rescue: smoothing without blur.</b> The classic failure mode
-    of cranked noise reduction is that "smoother" and "blurrier" arrive
-    together. Detail Rescue breaks that link: after the spatial stage, anything
-    the filter changed by <em>more than a noise-sized amount</em> is put back.
-    Push the strengths as hard as you like — flat areas and faces go buttery
-    while edges physically cannot blur, because the worst case is bounded by
-    construction. Auto Setup raises it automatically with the noise class.</p>
-    <p><b>Every range goes further, and the dead zones are gone.</b> Strength
-    to 3, spatial strengths to 150, EQ Fine to 300 — and its top half now
-    genuinely widens the filter (it used to saturate silently). The band
-    sliders reach 150, where the extra drive widens tolerance and reach
-    instead of overshooting. Auto Setup uses the new headroom: on the test
-    suite it now beats stock defaults by up to <b>+5 dB</b>.</p>
-    <p><b>Scopes where you need them.</b> Each step has a checkbox that draws
-    a panel right in the viewer: <b>Measurements</b> (Step 1), a live
-    <b>Motion Map</b> mini-view (Step 2), and the <b>Noise EQ scope</b>
-    (Step 3) — which appears by itself the first time you touch an EQ slider,
-    showing one lane per band: the bar is how much you're cutting, the amber
-    line is how much noise was measured at that size. The bands themselves now
-    carry plain names — Fine Grain (~1 px), Clumps (3–8 px), Stains (16 px+),
-    Color Blotches.</p>
+    <div class="tips" style="margin-top:26px">
+      <div class="tipcard"><span class="tn">Sharpen</span>
+        <b>Sharpness that reads optical.</b>
+        <p>Add edge slope on the <em>cleaned</em> signal, gated by the noise field and clamped so it can't ring — the acutance of a lens, not the halo of a video sharpen filter. <b style="color:var(--sage-lt)">Shipped in v3.6</b> — the first denoiser that does.</p></div>
+      <div class="tipcard"><span class="tn">Re-grain</span>
+        <b>Grain matched to the noise removed.</b>
+        <p>Amplitude, spectrum and placement modelled on the noise actually taken out — real emulsion texture refilling the waxed shadows, weighted to where the image was cleaned most, not a flat white-noise dither.</p></div>
+      <div class="tipcard"><span class="tn">Couple to the grade</span>
+        <b>One system with your color.</b>
+        <p>A clean-confidence matte out, a qualifier matte in, halation finishing — so noise reduction and grading run as one coupled pipeline instead of two nodes fighting each other.</p></div>
+    </div>
 
-    <h3 style="margin-top:38px">v3.2 &amp; v3.3 — field-review fixes, reach &amp; depth</h3>
-    <p><b>Ghost Guard (v3.2)</b> added a second, independent motion test to the temporal
-    gate — on the <em>signed</em> patch mean, where pure noise cancels toward zero but
-    slow coherent motion doesn't — catching the subtle slow-motion smear the magnitude
-    gate can't see, for ~0.01 dB on static footage. v3.2 also taught the residual
-    re-measurement to see <b>compression blotch</b> at two scales.
-    <b>v3.3</b> quadrupled Motion Tracking's reach (a hierarchical search out to
-    <b>~±8 px</b>, so real pans keep their temporal averaging), added a <b>7-frame
-    stack</b> for locked-off noisy shots, <b>Deep Clean</b> — a gentle bounded pre-pass
-    for severe or compressed noise — and <b>per-channel chroma profiles</b>, because
-    blue-channel night noise reads very differently on Cb than Cr.</p>
-
-    <h3 style="margin-top:38px">v3.4 — lock what you see</h3>
-    <p><b>Lock Profile now freezes exactly the measurement you are looking at.</b>
-    Until v3.4, locking silently swapped your live playhead measurement for a median of
-    five frames spread across the whole clip — on anything that moves, the box covers
-    different content at those times, and locking could visibly bring the noise back.
-    Now the lock is the playhead measurement, confirmed by a <b>tracked sweep</b> of the
-    ±4 neighbouring frames: the patch is followed frame-to-frame, measured at its
-    tracked position, and a frame only votes if its measurement agrees with the
-    playhead's — a subject crossing your patch is simply rejected. Worst case, the lock
-    is exactly what you saw.</p>
-    <p><b>Auto Region</b> finds the flattest patch on the current frame (scored against
-    the expected noise at its brightness, so dark noisy flats aren't penalized), moves
-    the yellow sampling box there and shows it. And the box finally tells you its mode:
-    <b>yellow with handles = live</b>, re-measured every frame; <b>ice-blue with a
-    padlock = frozen</b>, dragging disabled. The <b>temporal gate went
-    brightness-aware</b> too — details in the math section below.</p>
-
-    <p style="font: 500 13px var(--mono); color: var(--text-med); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; max-width: 74ch; line-height: 2">
-    <b style="color:var(--green)">Since v1, in one breath:</b><br>
-    v1.1 &nbsp;video-native noise estimators, step-by-step UI, analysis views<br>
-    v1.2 &nbsp;hard-knee temporal gate — ghosting became structurally impossible<br>
-    v2.0 &nbsp;residual re-measurement, brightness-aware profiling, chroma blotch pass, film grain &amp; finishing stage<br>
-    v2.1 &nbsp;"Hush" name, draggable sampling region, Windows builds<br>
-    v3.0 &nbsp;Auto Setup, motion tracking, firefly zapper, Noise EQ, profile lock, deband, noisiness matte<br>
-    v3.1 &nbsp;Detail Rescue, per-step viewer scopes, extended ranges, bolder Auto Setup<br>
-    v3.2 &nbsp;Ghost Guard, two-scale residual, lock/region field fixes<br>
-    v3.3 &nbsp;±8 px hierarchical motion search, 7-frame stack, Deep Clean, per-channel chroma, lock fast path<br>
-    v3.4 &nbsp;playhead lock + tracked sweep, Auto Region, live/frozen box states, brightness-aware temporal gate<br>
-    v3.5 &nbsp;Render Boost (sequential renders compound the stack), self-tuning Auto Setup (Monte-Carlo SURE), exposure match</p>
+    <div style="margin-top:30px;background:rgba(0,0,0,.28);border:1px solid rgba(229,168,53,.28);border-radius:var(--r-lg);padding:30px 32px;color:var(--sage-lt);display:flex;flex-wrap:wrap;gap:28px;align-items:center;justify-content:space-between">
+      <div style="display:flex;flex-wrap:wrap;gap:0;flex:1;min-width:240px">
+        <div style="padding-right:24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">68</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Ideas raised</div></div>
+        <div style="padding:0 24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:var(--amber);line-height:1">22</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Kept, filtered</div></div>
+        <div style="padding-left:24px"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">77</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">AI agents run</div></div>
+      </div>
+      <div style="flex:none">
+        <a class="btn" style="background:var(--amber);color:#4A3A10" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html" target="_blank" rel="noopener">Read the design study →</a>
+        <div style="font:500 12px var(--mono);color:var(--sage);margin-top:12px;letter-spacing:.02em">Authored by Claude, commissioned by <a href="https://weirdmachine.org" style="color:var(--amber);text-decoration:none">Stephen Walter</a></div>
+      </div>
+    </div>
   </div>
 </section>
+
 
 <section>
   <div class="wrap">
@@ -499,6 +584,97 @@
       </div>
     </div>
     <p class="cap" id="scopeCap" style="margin-top:12px">The Measurements panel — input noise (blue) vs what's left after temporal stacking (amber), frames averaged, SNR gain, the noise-vs-brightness curve, and the histogram with its median. Tick it in Step 1; LOCKED appears when the profile is frozen.</p>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="kicker">v3 → v3.5 · Intelligence, power, transparency</div>
+    <h2>One click. Every slider, set. Or many clicks. All control, yours.</h2>
+    <p class="lede"><b>Auto Setup</b> analyzes your clip and dials in the whole
+    plugin — then hands you the sliders.</p>
+    <p>Click <b>Auto Setup (Analyze Footage)</b> and Hush measures frames from
+    across the clip: how noisy it is, how much of the noise is color, whether
+    it's blocky compressed grunge or clean sensor grain, how much the camera
+    moves. Then it decides — strengths, frame counts, search radius, motion
+    threshold, the Noise EQ bands — and <b>writes the answers into the visible
+    controls</b>, so you see exactly what it chose and can dial anything in or
+    back from there. It is not a mode, and there is nothing to trust blindly:
+    afterwards it's all ordinary manual state, plus a read-only report of what
+    it found:</p>
+    <p style="font: 500 14px var(--mono); color: var(--green-br); background: var(--ink, #21301f); border-radius: 8px; padding: 12px 16px; max-width: 60ch">
+    Analyzed 5 frames · noise 3.2%Y / 4.1%C (noisy) · steady camera · profile locked</p>
+    <p>One <b>Cmd+Z undoes the entire setup</b> (it applies as a single edit
+    block), and a <b>Revert Auto Setup</b> button does the same job later. It
+    never touches your Step 4 look choices — grain, texture, shadow
+    desaturation and debanding stay yours. Under the hood it also
+    <b>locks the measured noise profile</b>, so every frame of the clip
+    filters against the same numbers and renders stay repeatable.</p>
+
+    <h3 style="margin-top:38px">v3.1 — power &amp; transparency</h3>
+    <p><b>Detail Rescue: smoothing without blur.</b> The classic failure mode
+    of cranked noise reduction is that "smoother" and "blurrier" arrive
+    together. Detail Rescue breaks that link: after the spatial stage, anything
+    the filter changed by <em>more than a noise-sized amount</em> is put back.
+    Push the strengths as hard as you like — flat areas and faces go buttery
+    while edges physically cannot blur, because the worst case is bounded by
+    construction. Auto Setup raises it automatically with the noise class.</p>
+    <p><b>Every range goes further, and the dead zones are gone.</b> Strength
+    to 3, spatial strengths to 150, EQ Fine to 300 — and its top half now
+    genuinely widens the filter (it used to saturate silently). The band
+    sliders reach 150, where the extra drive widens tolerance and reach
+    instead of overshooting. Auto Setup uses the new headroom: on the test
+    suite it now beats stock defaults by up to <b>+5 dB</b>.</p>
+    <p><b>Scopes where you need them.</b> Each step has a checkbox that draws
+    a panel right in the viewer: <b>Measurements</b> (Step 1), a live
+    <b>Motion Map</b> mini-view (Step 2), and the <b>Noise EQ scope</b>
+    (Step 3) — which appears by itself the first time you touch an EQ slider,
+    showing one lane per band: the bar is how much you're cutting, the amber
+    line is how much noise was measured at that size. The bands themselves now
+    carry plain names — Fine Grain (~1 px), Clumps (3–8 px), Stains (16 px+),
+    Color Blotches.</p>
+
+    <h3 style="margin-top:38px">v3.2 &amp; v3.3 — field-review fixes, reach &amp; depth</h3>
+    <p><b>Ghost Guard (v3.2)</b> added a second, independent motion test to the temporal
+    gate — on the <em>signed</em> patch mean, where pure noise cancels toward zero but
+    slow coherent motion doesn't — catching the subtle slow-motion smear the magnitude
+    gate can't see, for ~0.01 dB on static footage. v3.2 also taught the residual
+    re-measurement to see <b>compression blotch</b> at two scales.
+    <b>v3.3</b> quadrupled Motion Tracking's reach (a hierarchical search out to
+    <b>~±8 px</b>, so real pans keep their temporal averaging), added a <b>7-frame
+    stack</b> for locked-off noisy shots, <b>Deep Clean</b> — a gentle bounded pre-pass
+    for severe or compressed noise — and <b>per-channel chroma profiles</b>, because
+    blue-channel night noise reads very differently on Cb than Cr.</p>
+
+    <h3 style="margin-top:38px">v3.4 — lock what you see</h3>
+    <p><b>Lock Profile now freezes exactly the measurement you are looking at.</b>
+    Until v3.4, locking silently swapped your live playhead measurement for a median of
+    five frames spread across the whole clip — on anything that moves, the box covers
+    different content at those times, and locking could visibly bring the noise back.
+    Now the lock is the playhead measurement, confirmed by a <b>tracked sweep</b> of the
+    ±4 neighbouring frames: the patch is followed frame-to-frame, measured at its
+    tracked position, and a frame only votes if its measurement agrees with the
+    playhead's — a subject crossing your patch is simply rejected. Worst case, the lock
+    is exactly what you saw.</p>
+    <p><b>Auto Region</b> finds the flattest patch on the current frame (scored against
+    the expected noise at its brightness, so dark noisy flats aren't penalized), moves
+    the yellow sampling box there and shows it. And the box finally tells you its mode:
+    <b>yellow with handles = live</b>, re-measured every frame; <b>ice-blue with a
+    padlock = frozen</b>, dragging disabled. The <b>temporal gate went
+    brightness-aware</b> too — details in the math section below.</p>
+
+    <p style="font: 500 13px var(--mono); color: var(--text-med); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; max-width: 74ch; line-height: 2">
+    <b style="color:var(--green)">Since v1, in one breath:</b><br>
+    v1.1 &nbsp;video-native noise estimators, step-by-step UI, analysis views<br>
+    v1.2 &nbsp;hard-knee temporal gate — ghosting became structurally impossible<br>
+    v2.0 &nbsp;residual re-measurement, brightness-aware profiling, chroma blotch pass, film grain &amp; finishing stage<br>
+    v2.1 &nbsp;"Hush" name, draggable sampling region, Windows builds<br>
+    v3.0 &nbsp;Auto Setup, motion tracking, firefly zapper, Noise EQ, profile lock, deband, noisiness matte<br>
+    v3.1 &nbsp;Detail Rescue, per-step viewer scopes, extended ranges, bolder Auto Setup<br>
+    v3.2 &nbsp;Ghost Guard, two-scale residual, lock/region field fixes<br>
+    v3.3 &nbsp;±8 px hierarchical motion search, 7-frame stack, Deep Clean, per-channel chroma, lock fast path<br>
+    v3.4 &nbsp;playhead lock + tracked sweep, Auto Region, live/frozen box states, brightness-aware temporal gate<br>
+    v3.5 &nbsp;Render Boost (sequential renders compound the stack), self-tuning Auto Setup (Monte-Carlo SURE), exposure match</p>
   </div>
 </section>
 
@@ -608,38 +784,6 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
   </div>
 </section>
 
-<section class="alt">
-  <div class="wrap">
-    <div class="kicker">The design study</div>
-    <h2>Where Hush goes next.</h2>
-    <p class="lede" style="max-width:60ch">A nine-lens panel of AI experts and an audit on real 4K night footage reached the same conclusion: Hush's denoising is already strong — the frontier isn't removing <em>more</em> noise, it's <b>reconstructing the image's optical character</b> once the noise is gone. Strip the noise, then put back lens-like sharpness and film-like grain, and couple the whole thing to your grade.</p>
-
-    <div class="tips" style="margin-top:26px">
-      <div class="tipcard"><span class="tn">Sharpen</span>
-        <b>Sharpness that reads optical.</b>
-        <p>Add edge slope on the <em>cleaned</em> signal, gated by the noise field and clamped so it can't ring — the acutance of a lens, not the halo of a video sharpen filter. Nothing in a denoiser does this today.</p></div>
-      <div class="tipcard"><span class="tn">Re-grain</span>
-        <b>Grain matched to the noise removed.</b>
-        <p>Amplitude, spectrum and placement modelled on the noise actually taken out — real emulsion texture refilling the waxed shadows, weighted to where the image was cleaned most, not a flat white-noise dither.</p></div>
-      <div class="tipcard"><span class="tn">Couple to the grade</span>
-        <b>One system with your color.</b>
-        <p>A clean-confidence matte out, a qualifier matte in, halation finishing — so noise reduction and grading run as one coupled pipeline instead of two nodes fighting each other.</p></div>
-    </div>
-
-    <div style="margin-top:30px;background:var(--darker,#24301F);border-radius:var(--r-lg);padding:30px 32px;color:var(--sage-lt);display:flex;flex-wrap:wrap;gap:28px;align-items:center;justify-content:space-between">
-      <div style="display:flex;flex-wrap:wrap;gap:0;flex:1;min-width:240px">
-        <div style="padding-right:24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">68</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Ideas raised</div></div>
-        <div style="padding:0 24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:var(--amber);line-height:1">22</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Kept, filtered</div></div>
-        <div style="padding-left:24px"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">77</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">AI agents run</div></div>
-      </div>
-      <div style="flex:none">
-        <a class="btn" style="background:var(--amber);color:#4A3A10" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html">Read the design study →</a>
-        <div style="font:500 12px var(--mono);color:var(--sage);margin-top:12px;letter-spacing:.02em">Authored by Claude, commissioned by Stephen Walter</div>
-      </div>
-    </div>
-  </div>
-</section>
-
 <section class="dark">
   <div class="wrap">
     <div class="kicker" style="color:var(--orange)">The next tool · in design</div>
@@ -684,7 +828,7 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
         <b style="color:#e6e6ee">Halation, bloom, gate weave, grain.</b>
         <p style="color:#a9a9b8">The optical layer in linear light: red-weighted halation, veiling bloom, print shoulder, gate weave — finished with the design study's measured film grain.</p></div>
     </div>
-    <p style="color:var(--sage);font-size:15px;margin-top:22px">A free rival to paid film tools like Dehancer and Film Look Creator — built from original color science, working in the free version of Resolve, and it shows its work. <a href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html" style="color:var(--orange)">Read the approach →</a></p>
+    <p style="color:var(--sage);font-size:15px;margin-top:22px">A free rival to paid film tools like Dehancer and Film Look Creator — built from original color science, working in the free version of Resolve, and it shows its work. <a href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html" target="_blank" rel="noopener" style="color:var(--orange)">Read the approach →</a></p>
   </div>
 </section>
 
@@ -980,6 +1124,43 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
     n.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(n); } });
   });
   select(tree.querySelector('.nt.speak') || nodes[0]);
+})();
+
+// Procedural film grain over the design-study band — the same amber-tinted
+// "grain boil" as the white-paper hero (the study is, after all, about grain).
+(function () {
+  var c = document.querySelector('section.study > canvas.grain');
+  if (!c) return;
+  var ctx = c.getContext('2d'), reduce = matchMedia('(prefers-reduced-motion:reduce)').matches;
+  function draw() {
+    c.width = Math.max(2, c.clientWidth >> 1); c.height = Math.max(2, c.clientHeight >> 1);
+    var img = ctx.createImageData(c.width, c.height), d = img.data;
+    for (var i = 0; i < d.length; i += 4) {
+      var g = (Math.random() * 255) | 0;
+      d[i] = g; d[i + 1] = (g * 0.9) | 0; d[i + 2] = (g * 0.6) | 0; d[i + 3] = (Math.random() * 60) | 0;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  draw();
+  if (!reduce) setInterval(draw, 460);
+  addEventListener('resize', draw);
+})();
+
+// Workflow toggle: Quick (one node) ↔ Best quality (multi-node)
+(function () {
+  var stage = document.querySelector('.wf-stage');
+  var btns = document.querySelectorAll('.wf-toggle .wf-btn');
+  if (!stage || !btns.length) return;
+  btns.forEach(function (b) {
+    b.addEventListener('click', function () {
+      stage.setAttribute('data-mode', b.getAttribute('data-mode'));
+      btns.forEach(function (o) {
+        var on = o === b;
+        o.classList.toggle('is-on', on);
+        o.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+    });
+  });
 })();
 </script>
 
