@@ -376,11 +376,15 @@ void SpeakPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, O
     {
         OFX::ChoiceParamDescriptor* c = p_Desc.defineChoiceParam("outputMode");
         c->setLabels("Output", "Output", "Output");
-        c->setHint("Working space lets Resolve Color Management deliver Rec.709/P3/HDR from "
-                   "the same look (the delivery-agnostic default). Bake to Rec.709 is a "
-                   "fallback for non-managed projects.");
+        c->setHint("Speak returns the working space so Resolve Color Management delivers "
+                   "Rec.709 / P3 / HDR from the same look (delivery-agnostic). A self-baked "
+                   "\"Bake to Rec.709\" mode for non-managed projects will be added once the "
+                   "DaVinci Wide Gamut -> Rec.709 gamut transform ships.");
+        // Only the implemented mode is offered — the "Bake to Rec.709" option is
+        // intentionally withheld until the gamut matrix exists (its enum value
+        // SPEAK_OUT_BAKE_REC709 and the processPixel branch land together), so
+        // the UI never advertises a conversion that doesn't happen.
         c->appendOption("Working space (let RCM deliver)");
-        c->appendOption("Bake to Rec.709");
         c->setDefault(SPEAK_OUT_WORKING);
         c->setParent(*grpColor);
         page->addChild(*c);

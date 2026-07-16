@@ -100,9 +100,14 @@ __device__ inline float toneChannel(float lin, int ch, const SpeakProfile& p)
     float Dref = chainDensity(0.0f, ch, p);
     return k18Gray * pow10f(-(Dprn - Dref));
 }
-__device__ inline float scopeYStops(float inStops, int ch, const SpeakProfile& p)
+__device__ inline float scopeYStops(float inStops, int ch, const SpeakParams& pr)
 {
-    float outLin = toneChannel(k18Gray * exp2f(inStops), ch, p);
+    float lin = k18Gray * exp2f(inStops);
+    float outLin = lin;
+    if ((pr.enableTone != 0) && (pr.strength > 0.0f)) {
+        float s = clampf(pr.strength, 0.0f, 1.0f);
+        outLin = lerpf(lin, toneChannel(lin, ch, pr.profile), s);
+    }
     return log2f((outLin < kLinTiny ? kLinTiny : outLin) / k18Gray);
 }
 
@@ -140,8 +145,8 @@ __device__ inline bool hdScopePixel(int x, int y, int W, int H, const SpeakParam
     for (int ch = 0; ch < 3; ++ch) {
         float inS  = -6.0f + 12.0f * ((float)gx       / (plotW - 1));
         float inS2 = -6.0f + 12.0f * ((float)(gx + 1) / (plotW - 1));
-        float y0 = scopeYStops(inS,  ch, pr.profile);
-        float y1 = scopeYStops(inS2, ch, pr.profile);
+        float y0 = scopeYStops(inS,  ch, pr);
+        float y1 = scopeYStops(inS2, ch, pr);
         if (y0 > y1) { float tt = y0; y0 = y1; y1 = tt; }
         float lo = y1 < y0 ? y1 : y0, hi = y1 > y0 ? y1 : y0;
         if (rowStops <= hi + 0.09f && rowStops >= lo - 0.09f) {

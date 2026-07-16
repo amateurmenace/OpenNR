@@ -117,9 +117,14 @@ inline float toneChannel(float lin, int ch, constant SpeakProfile& p)
     float Dref = chainDensity(0.0f, ch, p);
     return k18Gray * pow10f(-(Dprn - Dref));
 }
-inline float scopeYStops(float inStops, int ch, constant SpeakProfile& p)
+inline float scopeYStops(float inStops, int ch, constant SpeakParams& pr)
 {
-    float outLin = toneChannel(k18Gray * exp2(inStops), ch, p);
+    float lin = k18Gray * exp2(inStops);
+    float outLin = lin;
+    if ((pr.enableTone != 0) && (pr.strength > 0.0f)) {
+        float s = clampf(pr.strength, 0.0f, 1.0f);
+        outLin = lerpf(lin, toneChannel(lin, ch, pr.profile), s);
+    }
     return log2((outLin < kLinTiny ? kLinTiny : outLin) / k18Gray);
 }
 
@@ -157,8 +162,8 @@ inline bool hdScopePixel(int x, int y, int W, int H, constant SpeakParams& pr,
     for (int ch = 0; ch < 3; ++ch) {
         float inS  = -6.0f + 12.0f * (float(gx)     / (plotW - 1));
         float inS2 = -6.0f + 12.0f * (float(gx + 1) / (plotW - 1));
-        float y0 = scopeYStops(inS,  ch, pr.profile);
-        float y1 = scopeYStops(inS2, ch, pr.profile);
+        float y0 = scopeYStops(inS,  ch, pr);
+        float y1 = scopeYStops(inS2, ch, pr);
         if (y0 > y1) { float tt = y0; y0 = y1; y1 = tt; }
         float lo = y1 < y0 ? y1 : y0, hi = y1 > y0 ? y1 : y0;
         if (rowStops <= hi + 0.09f && rowStops >= lo - 0.09f) {

@@ -174,23 +174,34 @@ static void gateGrayPivot()
 // ----------------------------------------------------------- G7 scope==kernel
 static void gateScopeMatchesKernel()
 {
-    printf("G7 scope curve is sampled from the production kernel (plot == pixels)\n");
-    SpeakProfile p = neutralProfile();
-    p.negGamma[0] = 0.66f; p.prnGamma[1] = 2.7f;  // non-trivial, per-channel
+    printf("G7 scope curve tracks the pixels at every strength (plot == pixels)\n");
+    SpeakProfile prof = neutralProfile();
+    prof.negGamma[0] = 0.66f; prof.prnGamma[1] = 2.7f;  // non-trivial, per-channel
+    const float strengths[] = { 0.0f, 0.5f, 1.0f };     // incl. identity (s=0)
     float maxErr = 0.0f;
-    for (int i = 0; i <= 200; ++i) {
-        const float inStops = -6.0f + 12.0f * (i / 200.0f);
-        for (int ch = 0; ch < 3; ++ch) {
-            // What the scope plots:
-            const float scopeOut = scopeYStops(inStops, ch, p);
-            // What a real pixel of that input gray becomes, read back in stops:
+    for (int si = 0; si < 3; ++si) {
+        SpeakParams pr = {};
+        pr.inputColorSpace = SPEAK_CS_DWG_INTERMEDIATE;
+        pr.enableTone = 1; pr.strength = strengths[si]; pr.viewMode = SPEAK_VIEW_RESULT;
+        pr.scopeHD = 0;                                  // measure the transform, not the overlay
+        pr.profile = prof;
+        for (int i = 0; i <= 200; ++i) {
+            const float inStops = -6.0f + 12.0f * (i / 200.0f);
             const float lin = k18Gray * std::exp2(inStops);
-            const float pxLin = toneChannel(lin, ch, p);
-            const float pxStops = std::log2((pxLin < kLinTiny ? kLinTiny : pxLin) / k18Gray);
-            maxErr = std::fmax(maxErr, std::fabs(scopeOut - pxStops));
+            const float enc = diEncode(lin);
+            float oR, oG, oB;
+            processPixel(enc, enc, enc, 4, 4, 100, 100, pr, oR, oG, oB); // the REAL pixel path
+            for (int ch = 0; ch < 3; ++ch) {
+                const float scopeOut = scopeYStops(inStops, ch, pr);
+                const float outCh = (ch == 0) ? oR : (ch == 1) ? oG : oB;
+                const float pxLin = decodeToLinear(pr.inputColorSpace, outCh);
+                const float pxStops = std::log2((pxLin < kLinTiny ? kLinTiny : pxLin) / k18Gray);
+                maxErr = std::fmax(maxErr, std::fabs(scopeOut - pxStops));
+            }
         }
     }
-    check(maxErr == 0.0f, "scope value == pixel value at every sample",
+    // Bounded by the CST encode/decode round-trip (~1e-6), not a scope discrepancy.
+    check(maxErr < 1e-4f, "scope value == pixel value at every strength",
           (std::string("maxErr=") + std::to_string(maxErr)).c_str());
 }
 

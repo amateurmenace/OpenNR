@@ -177,17 +177,19 @@ static inline float toneChannel(float lin, int ch, const SpeakProfile& p)
 // with an 18% gray crosshair and R/G/B legend swatches. Text labels and the
 // live exposure histogram land in the next increment.
 // ---------------------------------------------------------------------------
-static inline float scopeXStops(int col, int panelW) // panel column -> input stops
+// The APPLIED transform for one input exposure, in stops. It mirrors the pixel
+// path EXACTLY — including the Strength mix and the enable toggle — so the plot
+// can never disagree with the pixels (at strength 0 it collapses to the y=x
+// diagonal, matching the identity pass-through). Output encode is a display
+// transform applied equally to curve and diagonal, so it cancels in stops.
+static inline float scopeYStops(float inStops, int ch, const SpeakParams& pr)
 {
-    // 12-stop window, -6..+6 around 18% gray.
-    return -6.0f + 12.0f * (static_cast<float>(col) / static_cast<float>(panelW - 1));
-}
-
-// Output of the applied tone scale expressed in stops (for a square-ish plot):
-// out stops = log2(toneLinear / 0.18). At identity this is the y=x diagonal.
-static inline float scopeYStops(float inStops, int ch, const SpeakProfile& p)
-{
-    const float outLin = toneChannel(k18Gray * std::exp2(inStops), ch, p);
+    const float lin = k18Gray * std::exp2(inStops);
+    float outLin = lin;
+    if ((pr.enableTone != 0) && (pr.strength > 0.0f)) {
+        const float s = clampf(pr.strength, 0.0f, 1.0f);
+        outLin = lerpf(lin, toneChannel(lin, ch, pr.profile), s);
+    }
     return std::log2((outLin < kLinTiny ? kLinTiny : outLin) / k18Gray);
 }
 
@@ -218,8 +220,6 @@ static inline bool hdScopePixel(int x, int y, int W, int H, const SpeakParams& p
     }
     if (gx < 0 || gy < 0 || gx >= plotW || gy >= plotH) return true;
 
-    // The stops window mapped to the plot box.
-    const float inStops = -6.0f + 12.0f * (static_cast<float>(gx) / (plotW - 1));
     // gy runs DOWN the plot; convert to an output-stops value at this row.
     const float rowStops = 6.0f - 12.0f * (static_cast<float>(gy) / (plotH - 1));
 
@@ -233,12 +233,11 @@ static inline bool hdScopePixel(int x, int y, int W, int H, const SpeakParams& p
     // row's output-stops straddles the curve value between this and the next
     // column (so the trace stays connected on steep segments).
     const int chR[3] = { 1, 0, 0 }, chG[3] = { 0, 1, 0 }, chB[3] = { 0, 0, 1 };
-    (void)inStops;
     for (int ch = 0; ch < 3; ++ch) {
         const float inS  = -6.0f + 12.0f * (static_cast<float>(gx)     / (plotW - 1));
         const float inS2 = -6.0f + 12.0f * (static_cast<float>(gx + 1) / (plotW - 1));
-        float y0 = scopeYStops(inS,  ch, pr.profile);
-        float y1 = scopeYStops(inS2, ch, pr.profile);
+        float y0 = scopeYStops(inS,  ch, pr);
+        float y1 = scopeYStops(inS2, ch, pr);
         if (y0 > y1) { const float t = y0; y0 = y1; y1 = t; }
         const float lo = y1 < y0 ? y1 : y0, hi = y1 > y0 ? y1 : y0;
         if (rowStops <= hi + 0.09f && rowStops >= lo - 0.09f) {
@@ -295,8 +294,9 @@ static inline void processPixel(float r, float g, float b,
         const float mb = lerpf(lb, tb, s);
 
         // outputMode: WORKING re-encodes to the input space and lets RCM
-        // deliver. BAKE_REC709 is added with the DWG->Rec.709 gamut matrix in
-        // a later increment; until then it behaves as WORKING (documented).
+        // deliver. This is the only mode the UI exposes; the BAKE_REC709 branch
+        // (DWG->Rec.709 gamut matrix + transfer) lands here in a later increment
+        // and the option is only offered once it actually converts.
         outR = encodeFromLinear(cs, mr);
         outG = encodeFromLinear(cs, mg);
         outB = encodeFromLinear(cs, mb);
