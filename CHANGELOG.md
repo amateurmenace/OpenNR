@@ -1,5 +1,70 @@
 # OpenNR changelog
 
+## 3.6.0 — 2026-07-16
+
+The texture-reconstruction release. A real-footage audit found the denoising
+core is already strong — so this release builds the *other half*: after the
+noise is gone, put the image's optical character back. There is now a stage
+that ADDS high-frequency energy (nothing before this could), grain that is
+matched to the noise that was removed instead of a flat mid-gray dither, a
+texture path that no longer re-noises the shadows it fills, a fix for the
+blotchy color speckle left deep in shadows, and a confidence matte that hands
+downstream nodes a map of where the denoiser actually succeeded.
+
+Everything here is off by default, so existing projects render bit-for-bit
+identically until you reach for it. All new math is ported across the CPU
+reference and the Metal / CUDA / OpenCL kernels at the usual ~2e-5 parity, and
+every idea was CPU-prototyped and gated on real 4K night footage before it
+shipped.
+
+### Added
+- **Optical Acutance** (Refine). The first stage in the whole pipeline that
+  raises high-frequency energy: an edginess-gated high-pass on the cleaned
+  luma, hard-clamped to the local 3×3 min/max so edges get their slope back
+  with **zero ringing by construction** — sharpness that reads like a lens,
+  not a halo. Gated to real edges by the noise field, so it never amplifies
+  noise. Measured +7.9% edge slope on the reference clip; flats untouched.
+- **Shadow Color Cleanup** (Refine, the WEAK-1 fix). The residual mid-frequency
+  color speckle in deep shadows sits *above* the ~23 px reach of the chroma
+  bands. A wide luma-guided chroma pass averages it — guided by the clean luma
+  so it never crosses a real object edge, and kept to a moderate reach so the
+  frame-scale lighting gradient (warm vs cool ambient over dark fabric) stays
+  put. −70% shadow chroma speckle on the clip with the real color preserved.
+- **Clean-Confidence matte** (view mode). Exports the per-pixel effective
+  sample count — how deep the temporal stage averaged — calibrated into
+  RGB + alpha. A downstream node can key shadow-lift, grain and local contrast
+  off *where the denoiser succeeded* (high on static, low on the motion the
+  gate had to protect). The complement of the existing noisiness matte.
+- **Grain Fineness** (blue-noise spectrum). High-passes the grain toward the
+  eye's contrast-sensitivity peak; at matched RMS it reads sharper and hides
+  the plasticky look better than full-band grain.
+
+### Changed
+- **Film Grain is now reconstructed, not dithered.** Amplitude follows the
+  measured brightness-noise curve (loud in shadows, quiet in highlights —
+  where real noise and the plasticky waxing actually live) instead of a
+  mid-gray parabola, and it is contrast-masked off edges so it never dithers
+  over detail or acutance. (Only affects clips that had grain turned on.)
+- **Luma Texture now cores the noise out first.** The re-injected texture is
+  soft-thresholded at the input-noise scale, so it puts back real
+  micro-structure without pushing the removed noise back into the shadows —
+  measured shadow re-noising dropped from ~4.7× to ~1.2×. (Only affects clips
+  that had Luma Texture turned on.)
+- **Adaptive Strength** (effN-steered spatial): the spatial cleaning is now
+  spent per pixel where frame-averaging couldn't help (moving subjects) and
+  relaxed where it already worked, keeping the residual uniform across motion.
+- **Auto Setup deep-tune**: the self-tuner now also runs a coordinate descent
+  over the motion/detail/EQ axes and a chroma-SURE pass, with hold-out
+  cross-validation so a tune that only fits the probe's own noise is rejected.
+
+### Fixed
+- **Chroma auto-tune on correlated speckle.** Plain MC-SURE is only a valid
+  error estimate for white noise; on the spatially-correlated shadow chroma
+  speckle it read the win backwards and de-tuned a good profile by ~0.9 dB.
+  The probe is now matched to the measured chroma-noise correlation length, so
+  the estimator becomes generalized SURE and tracks true error — turning that
+  0.9 dB loss into a 3.0 dB gain on the correlated case.
+
 ## 3.5.0 — 2026-07-15
 
 The compounding release: sequential renders now stack up past the frame

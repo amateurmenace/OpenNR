@@ -92,6 +92,13 @@ struct Params {
     float spatialChroma  = 1.0f;
     float preserveDetail = 0.35f;
     float chromaBlotch   = 0.25f;  // 0..1 -> large-radius chroma pass
+    float chromaSpeckle  = 0.0f;   // v3.6: WEAK-1 shadow chroma-speckle pass.
+                                   // Luma-guided wide chroma mean at moderate
+                                   // reach — averages the mid-freq speckle that
+                                   // sits ABOVE the chroma bands' ~23px reach,
+                                   // while real color edges (luma-guided) and
+                                   // the frame-scale lighting gradient (window
+                                   // < gradient scale) are preserved. 0 = off.
 
     int   enableRefine   = 1;
     float shadowDesat    = 0.0f;   // 0..1
@@ -100,6 +107,14 @@ struct Params {
     float grainAmount    = 0.0f;   // 0..1
     float grainSize      = 1.6f;   // 1..4 px
     float grainChroma    = 0.25f;  // 0..1
+    float grainBlue      = 0.0f;   // v3.6: blue-noise spectrum 0..1 — subtract
+                                   // a coarser octave so grain energy sits near
+                                   // the CSF peak (0 = full-band, back-compat)
+    float acutance       = 0.0f;   // v3.6: optical acutance 0..~2 — edginess-
+                                   // gated high-pass on the cleaned luma, hard-
+                                   // clamped to the local min/max (zero-ring
+                                   // sharpening). 0 = off. First stage that ADDS
+                                   // high-frequency energy (gain > 1)
     int   frameIndex     = 0;
 
     float master         = 1.0f;   // 0..2
@@ -153,6 +168,17 @@ struct Params {
     int   renderBoost    = 0;      // R1: recursive accumulation against the
                                    // previous frame's temporal result
     int   histValid      = 0;      // host-set validity of that history
+
+    // ---- v3.6 ----
+    float effnSteer      = 0.0f;   // S1: effN-steered spatial strength. The
+                                   // temporal stage counts, per pixel, how
+                                   // many frames actually averaged (tmp.w);
+                                   // steer widens the spatial h where the
+                                   // gate protected motion (effN ~ 1, full
+                                   // input noise survives) and tightens it
+                                   // where averaging already worked
+                                   // (effN >> median). 0 = off, bit-exact
+                                   // with v3.5.
 };
 
 // Sigmas and everything the analysis HUD displays.
@@ -1120,15 +1146,23 @@ inline void deepCleanPass(const float* tmp, int W, int H,
                           const Params& p, const Stats& s, float* out)
 {
     const int R = 2;
+    // v3.6 S1: the pre-pass follows the main stage's effN steering — the
+    // scaled sigmas carry it into h, the bias correction and the output
+    // clamps together. See spatialNLM for the derivation and gating.
+    const float steer = (p.enableTemporal != 0) ? clampf(p.effnSteer, 0.0f, 1.0f) : 0.0f;
     for (int y = 0; y < H; ++y) {
         for (int x = 0; x < W; ++x) {
             const size_t idx = (static_cast<size_t>(y) * W + x) * 4;
             const float* tc = tmp + idx;
             const int lb = clampi(static_cast<int>(tc[0] * kLumaBins), 0, kLumaBins - 1);
-            const float sigY = clampf(s.ry * s.gainY[lb], 1e-5f, 1.0f);
+            const float eSteer = (steer > 0.0f)
+                ? 1.0f + steer * (std::sqrt(clampf(s.effNMed / std::max(tc[3], 1.0f),
+                                                   0.0625f, 16.0f)) - 1.0f)
+                : 1.0f;
+            const float sigY = clampf(s.ry * s.gainY[lb] * eSteer, 1e-5f, 1.0f);
             // v3.3 B5: per-channel chroma h — see spatialNLM
-            const float sigCb = clampf(s.rcb * s.gainC[lb], 1e-5f, 1.0f);
-            const float sigCr = clampf(s.rcr * s.gainC[lb], 1e-5f, 1.0f);
+            const float sigCb = clampf(s.rcb * s.gainC[lb] * eSteer, 1e-5f, 1.0f);
+            const float sigCr = clampf(s.rcr * s.gainC[lb] * eSteer, 1e-5f, 1.0f);
             const float hY = 0.6f * kNlmHLuma * sigY;
             // v3.3 B5: pooled-normalized chroma weight — see spatialNLM
             const float invHY2 = 1.0f / std::max(hY * hY, 1e-12f);
@@ -1627,6 +1661,24 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
     const float invSpatial2 = 1.0f / (2.0f * spatialSigma * spatialSigma);
     // v3.1 Detail Rescue: bound on the fine band's correction (see below)
     const float rescue = clampf(p.detailRescue, 0.0f, 1.0f);
+    // v3.6 S1: effN-steered spatial strength. The residual sigma ry
+    // describes the MEDIAN pixel (effNMed); by inverse variance a pixel's
+    // actual leftover noise scales with sqrt(effNMed/effN_local) — the gate-
+    // protected motion pixel (effN ~ 1) carries close to full input noise
+    // while a Render-Boosted static pixel (effN up to 12) carries far less
+    // than ry. Steer moves the pixel's WHOLE noise model (sigY and both
+    // chroma sigmas) toward that local truth, so the similarity h, the
+    // 2 sigma^2 bias correction and the edginess normalizer stay mutually
+    // consistent — modulating h alone was measured at +0.16 dB on the
+    // mixed-scene test because the un-scaled bias made motion-pixel patch
+    // distances read high (weights collapse) and the un-scaled edginess
+    // floor read their noise as structure (h choked right back down).
+    // The ratio clamp keeps sigma within [x0.25, x4] at full steer
+    // (Render Boost legitimately spreads effN 1..12, a sqrt-ratio of 3.5).
+    // Gated on enableTemporal: no temporal stage means no effN signal
+    // (and effNMed's half-bin decode reads 1.0625 on an all-ones field,
+    // which would nudge h globally) — steer 0 keeps bit-exactness.
+    const float steer = (p.enableTemporal != 0) ? clampf(p.effnSteer, 0.0f, 1.0f) : 0.0f;
 
     // v3.1: the band sliders reach 150 — the applied amount still caps at 1
     // (an over-unity blend would overshoot), the extra drive widens the
@@ -1660,9 +1712,29 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
     const float debandAmt = refine ? clampf(p.deband, 0.0f, 1.0f) * mLow : 0.0f;
     const float dbThrY = std::max(0.010f, 1.5f * s.ry);
     const float dbThrC = std::max(0.010f, 1.5f * s.rc);
+    // v3.6 WEAK-1 chroma-speckle pass — see the param comment and the refine
+    // block. kChromaGuide: luma-guide scale in multiples of the input luma
+    // noise (real edges break the weight, flat-shadow luma variation does not).
+    // kSpeckleReach: ring radius in px — past the chroma bands' ~23 px limit so
+    // it spans the mid-frequency speckle, yet short of the frame-scale gradient.
+    const float chromaSpeckle = refine ? clampf(p.chromaSpeckle, 0.0f, 1.0f) * mLow : 0.0f;
+    const float kChromaGuide = 6.0f;
+    const float kSpeckleReach = 48.0f;
     const float grainAmt = refine ? clampf(p.grainAmount, 0.0f, 1.0f) * 0.06f : 0.0f;
     const float grainSize = clampf(p.grainSize, 0.5f, 6.0f);
     const float grainCh = clampf(p.grainChroma, 0.0f, 1.0f);
+    const float grainBlue = clampf(p.grainBlue, 0.0f, 1.0f);
+    // v3.6 grain contrast-masking strength: how hard grain fades on structure
+    // (1 = none on a full edge). Reuses the refine local edginess; keeps grain
+    // in the waxed flats and off hair/glasses rims so acutance isn't dithered.
+    const float kGrainMask = 0.9f;
+    // v3.6 detail-transfer coring threshold (multiples of the single-frame
+    // input-noise scale): the removed (input - cleaned) delta below this is the
+    // noise the pipeline correctly killed and is discarded; above it is real
+    // micro-structure and is re-injected. See the refine block.
+    const float kCore = 1.5f;
+    // v3.6 optical acutance: edginess-gated high-pass on the cleaned luma
+    const float acut = refine ? std::max(0.0f, p.acutance) : 0.0f;
     const uint32_t frame = static_cast<uint32_t>(p.frameIndex);
     // v3.2: final crossfade original -> processed (a plain output mix, unlike
     // Strength which reshapes the filters themselves)
@@ -1674,13 +1746,20 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
             const float* tc = tmp + idx;
 
             const int lb = clampi(static_cast<int>(tc[0] * kLumaBins), 0, kLumaBins - 1);
-            const float sigY = clampf(s.ry * s.gainY[lb], 1e-5f, 1.0f);
+            // v3.6 S1: local noise model from the per-pixel sample count
+            // (exactly 1.0 when steer is 0 or the pixel sits at the median,
+            // so those paths stay bit-exact — see the block comment above).
+            const float eSteer = (steer > 0.0f)
+                ? 1.0f + steer * (std::sqrt(clampf(s.effNMed / std::max(tc[3], 1.0f),
+                                                   0.0625f, 16.0f)) - 1.0f)
+                : 1.0f;
+            const float sigY = clampf(s.ry * s.gainY[lb] * eSteer, 1e-5f, 1.0f);
             // v3.3 B5: the fine band works per chroma channel (blue-channel
             // night noise wants a wide Cb h and a tight Cr h); the medium/
             // coarse/deband bands keep the combined colour-distance metric
             // and use the pair mean below.
-            const float sigCb = clampf(s.rcb * s.gainC[lb], 1e-5f, 1.0f);
-            const float sigCr = clampf(s.rcr * s.gainC[lb], 1e-5f, 1.0f);
+            const float sigCb = clampf(s.rcb * s.gainC[lb] * eSteer, 1e-5f, 1.0f);
+            const float sigCr = clampf(s.rcr * s.gainC[lb] * eSteer, 1e-5f, 1.0f);
             const float sigC = 0.5f * (sigCb + sigCr);
 
             float Yo = tc[0], Cbo = tc[1], Cro = tc[2];
@@ -1785,17 +1864,29 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
                 // hard as they like — anything bigger than noise (edges,
                 // texture the weights failed to protect) is restored, so
                 // smoothing cannot become blur. 0 = off, the exact v3.0 blend.
+                // v3.6 S1: the blend follows the steering too. A starved
+                // pixel (effN ~ 1) needs the full correction, not the
+                // static-taste fraction — temporal already took the static
+                // majority down by sqrt(effN), so a 60% spatial pass lands
+                // them clean, while the moving subject starts at full input
+                // noise and 60% of one spatial pass leaves it visibly
+                // noisier than its surroundings. Steering the amount toward
+                // 1 exactly where the merge could not average keeps the
+                // RESIDUAL uniform across the frame (eSteer == 1.0 -> aYl
+                // == aY bit-exact, so the default path is untouched).
+                const float aYl = std::min(aY * eSteer, 1.0f);
+                const float aCl = std::min(aC * eSteer, 1.0f);
                 if (rescue > 0.0f) {
                     const float kY = sigY * (2.0f + 6.0f * (1.0f - rescue));
                     const float kCb = sigCb * (3.0f + 9.0f * (1.0f - rescue));
                     const float kCr = sigCr * (3.0f + 9.0f * (1.0f - rescue));
-                    Yo  = tc[0] - aY * clampf(tc[0] - Yf,  -kY, kY);
-                    Cbo = tc[1] - aC * clampf(tc[1] - Cbf, -kCb, kCb);
-                    Cro = tc[2] - aC * clampf(tc[2] - Crf, -kCr, kCr);
+                    Yo  = tc[0] - aYl * clampf(tc[0] - Yf,  -kY, kY);
+                    Cbo = tc[1] - aCl * clampf(tc[1] - Cbf, -kCb, kCb);
+                    Cro = tc[2] - aCl * clampf(tc[2] - Crf, -kCr, kCr);
                 } else {
-                    Yo  = tc[0] + aY * (Yf  - tc[0]);
-                    Cbo = tc[1] + aC * (Cbf - tc[1]);
-                    Cro = tc[2] + aC * (Crf - tc[2]);
+                    Yo  = tc[0] + aYl * (Yf  - tc[0]);
+                    Cbo = tc[1] + aCl * (Cbf - tc[1]);
+                    Cro = tc[2] + aCl * (Crf - tc[2]);
                 }
             }
 
@@ -1899,10 +1990,59 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
             // ---- refine: sat-vs-lum, texture, grain -------------------------
             float Yr = Yo, Cbr = Cbo, Crr = Cro;
             if (refine) {
+                // v3.6 refine local structure of the post-temporal luma: the
+                // same 3x3 measure the spatial band uses, recomputed here
+                // because that scope has closed. redg (edginess) drives grain
+                // contrast-masking and the acutance gate; rMean/rMin/rMax feed
+                // the acutance high-pass and its overshoot clamp. Computed only
+                // when a feature needs it, so neutral refine stays identity.
+                float redg = 0.0f, rMean = Yo, rMin = 0.0f, rMax = 0.0f;
+                if (grainAmt > 0.0f || acut > 0.0f) {
+                    float m1 = 0.0f, m2 = 0.0f;
+                    rMin = 1e30f; rMax = -1e30f;
+                    for (int dyr = -1; dyr <= 1; ++dyr)
+                        for (int dxr = -1; dxr <= 1; ++dxr) {
+                            const float v = tmpAt(tmp, W, H, x + dxr, y + dyr)[0];
+                            m1 += v; m2 += v * v;
+                            rMin = std::min(rMin, v); rMax = std::max(rMax, v);
+                        }
+                    m1 *= (1.0f / 9.0f);
+                    rMean = m1;
+                    const float rv = std::max(0.0f, m2 * (1.0f / 9.0f) - m1 * m1);
+                    redg = clampf(std::sqrt(std::max(rv - sigY * sigY, 0.0f)) / (3.0f * sigY), 0.0f, 1.0f);
+                }
                 const float sat = 1.0f - desat * (1.0f - smooth01(Yr / desatRange));
                 Cbr *= sat;
                 Crr *= sat;
-                Yr += tex * (cyIn - Yr);
+                // v3.6 detail-transfer by CORING the removed delta. The old
+                // path re-added the raw (input - cleaned) delta, noise and all
+                // — re-noising exactly the shadow the denoiser just waxed (the
+                // plasticky "fix" that put the grain back). Soft-threshold it
+                // at the single-frame input-noise scale (s.sy*gainY): drop
+                // |delta| < kCore*sigIn (the noise the pipeline correctly
+                // removed), re-inject only the supra-noise micro-structure, so
+                // texture returns without the noise. kCore=0 recovers the old
+                // uncored blend exactly.
+                if (tex > 0.0f) {
+                    const float sigIn = clampf(s.sy * s.gainY[lb], 1e-5f, 1.0f);
+                    const float kc = kCore * sigIn;
+                    const float delta = cyIn - Yr;
+                    const float cored = (delta > kc) ? (delta - kc)
+                                      : ((delta < -kc) ? (delta + kc) : 0.0f);
+                    Yr += tex * cored;
+                }
+                // v3.6 overshoot-bounded optical acutance. The high-pass
+                // (post-temporal centre luma minus its 3x3 mean) is the edge
+                // slope; add it back GATED by edginess (redg — so flat-field
+                // noise, where redg~0, is never amplified) and HARD-CLAMPED to
+                // the local 3x3 min/max, so the edge steepens but can never
+                // overshoot into the bright/dark halo that reads "video". This
+                // is the only stage that raises high-frequency energy; the rest
+                // of the pipeline can only preserve or remove it.
+                if (acut > 0.0f) {
+                    const float hp = tc[0] - rMean;
+                    Yr = clampf(Yr + acut * redg * hp, rMin, rMax);
+                }
                 // v3 deband: ring average of 2x2 block means accepted only
                 // within the banding-scale threshold (edges are rejected by
                 // the threshold itself), then a triangular micro-dither so
@@ -1947,13 +2087,70 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
                     Yr += dith * 0.5f * (hashNoise(static_cast<uint32_t>(x), static_cast<uint32_t>(y), frame, 3u) +
                                          hashNoise(static_cast<uint32_t>(x), static_cast<uint32_t>(y), frame + 977u, 3u));
                 }
+                // v3.6 chroma-speckle suppression (WEAK-1). A wide 8-direction
+                // ring of chroma block-means, each weighted by how close its
+                // block-mean LUMA is to the centre (guided by the clean luma, so
+                // the average never crosses a real object edge), pulls the
+                // chroma toward its locally-smooth value — averaging the mid-
+                // frequency shadow speckle the ~23 px chroma bands can't reach.
+                // The moderate reach keeps the frame-scale real lighting
+                // gradient locally flat (so warm-vs-cool ambient over dark
+                // fabric is preserved, not smeared).
+                if (chromaSpeckle > 0.0f) {
+                    float b0Y, b0Cb, b0Cr;
+                    blockMeanTmp(tmp, W, H, x, y, b0Y, b0Cb, b0Cr);
+                    const float sigIn = clampf(s.sy * s.gainY[lb], 1e-5f, 1.0f);
+                    const float invLg = 1.0f / std::max(kChromaGuide * sigIn, 1e-4f);
+                    float accCb = b0Cb, accCr = b0Cr, sumWc = 1.0f;
+                    for (int d = 0; d < 8; ++d)
+                        for (int ri = 1; ri <= 3; ++ri) {
+                            const float rr = kSpeckleReach * (static_cast<float>(ri) / 3.0f);
+                            float bY, bCb, bCr;
+                            blockMeanTmp(tmp, W, H,
+                                         x + static_cast<int>(kDirX[d] * rr + (kDirX[d] > 0 ? 0.5f : -0.5f)),
+                                         y + static_cast<int>(kDirY[d] * rr + (kDirY[d] > 0 ? 0.5f : -0.5f)),
+                                         bY, bCb, bCr);
+                            const float dl = (bY - b0Y) * invLg;
+                            const float wl = std::exp(-dl * dl);
+                            accCb += wl * bCb; accCr += wl * bCr; sumWc += wl;
+                        }
+                    Cbr += chromaSpeckle * (accCb / sumWc - Cbr);
+                    Crr += chromaSpeckle * (accCr / sumWc - Crr);
+                }
                 if (grainAmt > 0.0f) {
-                    const float resp = 0.25f + 0.75f * (4.0f * clampf(Yr, 0.0f, 1.0f) * (1.0f - clampf(Yr, 0.0f, 1.0f)));
-                    const float gn = valueNoise(static_cast<float>(x), static_cast<float>(y), grainSize, frame, 0u);
-                    Yr += grainAmt * resp * gn;
+                    // v3.6 reconstructed grain: amplitude MATCHED to the noise
+                    // that was removed, not a mid-gray dither.
+                    //  * shadow-loud: drive amplitude off the measured 16-bin
+                    //    gainY curve (loud in shadows, quiet in highlights).
+                    //    Real noise and the plasticky waxing both live in the
+                    //    shadows; the old parabola peaked at mid-gray (backwards).
+                    //  * contrast-masked: fade grain out on structure (redg,
+                    //    the refine local edginess) so detail edges / acutance
+                    //    are not dithered over.
+                    //  * blue-noise spectrum: subtract a coarser octave so the
+                    //    energy sits near the eye's contrast-sensitivity peak;
+                    //    at matched RMS this reads as sharp grain, not LF dirt.
+                    const float gResp = s.gainY[lb];
+                    const float gAmp  = grainAmt * gResp * (1.0f - kGrainMask * redg);
+                    const float gfx = static_cast<float>(x), gfy = static_cast<float>(y);
+                    float gn = valueNoise(gfx, gfy, grainSize, frame, 0u);
+                    if (grainBlue > 0.0f) {
+                        // high-pass the grain by subtracting a low-pass of the
+                        // SAME field (its 4-neighbour mean a grain-cell away).
+                        // A coarser INDEPENDENT octave would only add low-
+                        // frequency energy; this removes gn's own LF so the
+                        // spectrum sits near the CSF peak (blue at grainBlue=1).
+                        const float gLow = 0.25f * (
+                            valueNoise(gfx - grainSize, gfy, grainSize, frame, 0u) +
+                            valueNoise(gfx + grainSize, gfy, grainSize, frame, 0u) +
+                            valueNoise(gfx, gfy - grainSize, grainSize, frame, 0u) +
+                            valueNoise(gfx, gfy + grainSize, grainSize, frame, 0u));
+                        gn -= grainBlue * gLow;
+                    }
+                    Yr += gAmp * gn;
                     if (grainCh > 0.0f) {
-                        Cbr += grainAmt * grainCh * 0.6f * resp * valueNoise(static_cast<float>(x), static_cast<float>(y), grainSize, frame, 1u);
-                        Crr += grainAmt * grainCh * 0.6f * resp * valueNoise(static_cast<float>(x), static_cast<float>(y), grainSize, frame, 2u);
+                        Cbr += gAmp * grainCh * 0.6f * valueNoise(static_cast<float>(x), static_cast<float>(y), grainSize, frame, 1u);
+                        Crr += gAmp * grainCh * 0.6f * valueNoise(static_cast<float>(x), static_cast<float>(y), grainSize, frame, 2u);
                     }
                 }
             }
@@ -2070,6 +2267,17 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
                 const float snrDb = 20.0f * std::log10(std::max(sigSignal, 1e-6f) / sigNoise);
                 const float m = 1.0f - clampf((snrDb + 6.0f) / 36.0f, 0.0f, 1.0f);
                 o[0] = m; o[1] = m; o[2] = m; o[3] = m;
+                break;
+            }
+            case 9: { // v3.6 clean-confidence matte: the per-pixel effective
+                      // sample count (tmp[3].w — how many frames actually
+                      // averaged here) calibrated to [0,1] in RGB+alpha. High
+                      // where the temporal stage averaged deep (static, safe to
+                      // lift/grade/grain hard downstream); low on the motion the
+                      // gate had to protect (effN ~ 1). The complement of the
+                      // noisiness matte: this keys on where cleaning SUCCEEDED.
+                const float conf = clampf((tc[3] - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
+                o[0] = conf; o[1] = conf; o[2] = conf; o[3] = conf;
                 break;
             }
             default:

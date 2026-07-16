@@ -81,6 +81,20 @@ typedef struct NRParams
                            // temporal result (sequential renders only)
     int   histValid;       // host-set: the history buffer matches frame-1,
                            // same dims, same params hash
+
+    // ---- v3.6 ----
+    float effnSteer;       // S1: effN-steered spatial strength, 0..1.
+                           // Scales the spatial noise model per pixel by
+                           // sqrt(effNMed/effN) — full cleaning where the
+                           // temporal gate protected motion, relaxed where
+                           // averaging already worked. 0 = off (bit-exact
+                           // v3.5 path). Spatial-only: zeroed in
+                           // boostParamsHash, never invalidates history.
+    float grainBlue;       // v3.6: blue-noise grain spectrum 0..1 (high-pass
+                           // the luma grain toward the CSF peak; 0 = full-band)
+    float acutance;        // v3.6: optical acutance 0..~2 (edginess-gated high-
+                           // pass on the cleaned luma, overshoot-clamped)
+    float chromaSpeckle;   // v3.6: WEAK-1 luma-guided wide chroma pass 0..1
 } NRParams;
 
 // stats buffer layout (uint32 slots). v3.3 B5 re-layout: every chroma
