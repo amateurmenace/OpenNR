@@ -95,6 +95,21 @@
 #hush-embed section.dark p { color: var(--sage); }
 #hush-embed .lede { font-size: 20px; color: var(--green-lt); }
 #hush-embed section.dark .lede { color: var(--sage-lt); }
+#hush-embed /* ---------- design-study feature band: dark forest + procedural grain, #hush-embed echoing the white-paper hero, #hush-embed so it reads as the headline it is ---------- */
+  section.study { position: relative; overflow: hidden; background: #24301F;
+    color: var(--sage-lt); border-top: 3px solid var(--amber); border-bottom: 3px solid var(--amber);
+    padding-top: 74px; padding-bottom: 74px; }
+#hush-embed section.study > canvas.grain { position: absolute; inset: 0; width: 100%; height: 100%;
+    opacity: .35; mix-blend-mode: screen; pointer-events: none; z-index: 0; }
+#hush-embed section.study .wrap { position: relative; z-index: 2; }
+#hush-embed section.study .kicker { color: var(--amber); }
+#hush-embed section.study h2 { color: #F5F3EE; font-size: clamp(30px, 4.4vw, 44px); letter-spacing: -.02em; }
+#hush-embed section.study .lede { color: #D4E0D6; }
+#hush-embed section.study .tipcard { background: rgba(255,255,255,.045); border: 1px solid rgba(197,214,204,.18);
+    backdrop-filter: blur(2px); }
+#hush-embed section.study .tipcard .tn { color: var(--amber); }
+#hush-embed section.study .tipcard b { color: #F5F3EE; }
+#hush-embed section.study .tipcard p { color: var(--sage); }
 #hush-embed /* wipe slider */
   .wipe { position: relative; border-radius: var(--r-md); overflow: hidden; border: 1px solid var(--border); user-select: none; touch-action: none; margin: 26px 0 8px; }
 #hush-embed .wipe > img { width: 100%; display: block; pointer-events: none; }
@@ -256,7 +271,7 @@
         <a class="btn btn-green" href="https://github.com/amateurmenace/Hush-OpenNR/releases/latest">Download · macOS</a>
         <a class="btn btn-green" style="background:var(--green-lt)" href="https://github.com/amateurmenace/Hush-OpenNR/releases/latest">Download · Windows</a>
         <a class="btn btn-line" href="https://github.com/amateurmenace/Hush-OpenNR">GitHub</a>
-        <a class="btn btn-line" style="border-color:var(--amber);color:var(--green)" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html">Design Study ↗</a>
+        <a class="btn btn-line" style="border-color:var(--amber);color:var(--green)" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html">Design Study White Paper ↗</a>
       </div>
       <div class="meta">v3.5 · Resolve 17+ free &amp; Studio · macOS 11+ (universal) · Windows 10+ x64 (OpenCL) · MIT · Linux builds from source</div>
     </div>
@@ -314,7 +329,7 @@
 <section class="alt">
   <div class="wrap">
     <div class="kicker">v3 → v3.5 · Intelligence, power, transparency</div>
-    <h2>One click. Every slider, set.</h2>
+    <h2>One click. Every slider, set. Or many clicks. All control, yours.</h2>
     <p class="lede"><b>Auto Setup</b> analyzes your clip and dials in the whole
     plugin — then hands you the sliders.</p>
     <p>Click <b>Auto Setup (Analyze Footage)</b> and Hush measures frames from
@@ -615,9 +630,10 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
   </div>
 </section>
 
-<section class="alt">
+<section class="study">
+  <canvas class="grain" aria-hidden="true"></canvas>
   <div class="wrap">
-    <div class="kicker">The design study</div>
+    <div class="kicker">The design study · white paper</div>
     <h2>Where Hush goes next.</h2>
     <p class="lede" style="max-width:60ch">A nine-lens panel of AI experts and an audit on real 4K night footage reached the same conclusion: Hush's denoising is already strong — the frontier isn't removing <em>more</em> noise, it's <b>reconstructing the image's optical character</b> once the noise is gone. Strip the noise, then put back lens-like sharpness and film-like grain, and couple the whole thing to your grade.</p>
 
@@ -633,7 +649,7 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
         <p>A clean-confidence matte out, a qualifier matte in, halation finishing — so noise reduction and grading run as one coupled pipeline instead of two nodes fighting each other.</p></div>
     </div>
 
-    <div style="margin-top:30px;background:var(--darker,#24301F);border-radius:var(--r-lg);padding:30px 32px;color:var(--sage-lt);display:flex;flex-wrap:wrap;gap:28px;align-items:center;justify-content:space-between">
+    <div style="margin-top:30px;background:rgba(0,0,0,.28);border:1px solid rgba(229,168,53,.28);border-radius:var(--r-lg);padding:30px 32px;color:var(--sage-lt);display:flex;flex-wrap:wrap;gap:28px;align-items:center;justify-content:space-between">
       <div style="display:flex;flex-wrap:wrap;gap:0;flex:1;min-width:240px">
         <div style="padding-right:24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">68</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Ideas raised</div></div>
         <div style="padding:0 24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:var(--amber);line-height:1">22</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Kept, filtered</div></div>
@@ -987,6 +1003,26 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
     n.addEventListener('keydown', function (e) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(n); } });
   });
   select(tree.querySelector('.nt.speak') || nodes[0]);
+})();
+
+// Procedural film grain over the design-study band — the same amber-tinted
+// "grain boil" as the white-paper hero (the study is, after all, about grain).
+(function () {
+  var c = document.querySelector('section.study > canvas.grain');
+  if (!c) return;
+  var ctx = c.getContext('2d'), reduce = matchMedia('(prefers-reduced-motion:reduce)').matches;
+  function draw() {
+    c.width = Math.max(2, c.clientWidth >> 1); c.height = Math.max(2, c.clientHeight >> 1);
+    var img = ctx.createImageData(c.width, c.height), d = img.data;
+    for (var i = 0; i < d.length; i += 4) {
+      var g = (Math.random() * 255) | 0;
+      d[i] = g; d[i + 1] = (g * 0.9) | 0; d[i + 2] = (g * 0.6) | 0; d[i + 3] = (Math.random() * 60) | 0;
+    }
+    ctx.putImageData(img, 0, 0);
+  }
+  draw();
+  if (!reduce) setInterval(draw, 460);
+  addEventListener('resize', draw);
 })();
 </script>
 

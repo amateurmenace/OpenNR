@@ -55,6 +55,11 @@
   .credit .by { font:700 15px "Space Grotesk",sans-serif; color:#F5F3EE; }
   .credit .by b { color:var(--amber); font-weight:700; }
   .credit .substamp { font:500 12.5px var(--mono); color:var(--sage); letter-spacing:.03em; }
+  .credit .pdfbtn { margin-left:auto; display:inline-flex; align-items:center; gap:7px;
+    background:var(--amber); color:#2A2109; font:700 13px "Space Grotesk",sans-serif;
+    padding:9px 17px; border-radius:9px; text-decoration:none; white-space:nowrap;
+    box-shadow:0 3px 12px rgba(0,0,0,.25); }
+  .credit .pdfbtn:hover { background:#F0B84A; }
 
   .metrics { position:relative; z-index:2; display:flex; flex-wrap:wrap;
     border-top:1px solid rgba(197,214,204,.22); margin-top:26px; }
@@ -169,6 +174,45 @@
     .mast h1 { font-size:32px; }
   }
   @media (prefers-reduced-motion:reduce){ *{ animation:none!important; transition:none!important; } }
+
+  /* ---- print / PDF: a clean, traditional white-paper document ---- */
+  @media print {
+    @page { margin: 16mm 15mm 18mm; }
+    html, body { background:#fff !important; color:#1b1b1b !important; font-size:10.5pt; line-height:1.5; }
+    a { color:#1b1b1b !important; text-decoration:none !important; }
+    .mast { background:#fff !important; color:#1b1b1b !important; border-bottom:2.5px solid var(--amber) !important; }
+    .mast > canvas, .topline, .credit .pdfbtn, .backbar, footer .bars { display:none !important; }
+    .mast .wrap { padding-top:4mm !important; padding-bottom:5mm !important; }
+    .eyebrow { color:#B5791C !important; }
+    .mast h1, .mast h1 .k, .k { color:#111 !important; }
+    .dek { color:#333 !important; }
+    .credit { border-top-color:#ccc !important; }
+    .credit .by { color:#111 !important; } .credit .by b { color:#B5791C !important; }
+    .credit .substamp { color:#555 !important; }
+    .metrics { border-top-color:#ccc !important; }
+    .metrics .m { border-right-color:#ddd !important; }
+    .metrics .n { color:#111 !important; } .metrics .n.sig { color:#B5791C !important; }
+    .metrics .lbl { color:#555 !important; }
+    main { padding-top:4mm !important; }
+    section { padding:5mm 0 !important; border-bottom:1px solid #e6e6e6 !important; }
+    h2, h3 { color:#111 !important; break-after:avoid; }
+    h2 .sn { color:var(--amber) !important; }
+    .kicker { color:#B5791C !important; }
+    p, li { color:#1b1b1b !important; orphans:3; widows:3; }
+    .lead { color:#111 !important; }
+    .pull { color:#111 !important; background:none !important; border-left:3px solid var(--amber); break-inside:avoid; }
+    code { background:#eee !important; color:#111 !important; }
+    .sub, .idea, .kill, table, tr, .formula { break-inside:avoid; }
+    .sub, .card { background:#faf9f5 !important; border-color:#ddd !important; box-shadow:none !important; }
+    .chip { background:#f3edd9 !important; border-color:#e5cc86 !important; color:#5A4A18 !important; }
+    .chip.maybe { background:#fff !important; }
+    table td, table th { border-color:#ddd !important; color:#1b1b1b !important; }
+    .vd.strong { color:#2E6B3A !important; background:#e8f2ea !important; }
+    .vd.weak { color:#9A6510 !important; background:#faf1dd !important; }
+    footer { background:#fff !important; border-top-color:#ccc !important; }
+    footer, .credit2, .credit2 a { color:#333 !important; }
+    * { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
 </style>
 </head>
 <body>
@@ -178,14 +222,15 @@
   <div class="wrap">
     <div class="topline">
       <span>Hush · Open NR — design study</span>
-      <span><a href="index.html">← hush home</a> &nbsp; <a href="https://github.com/amateurmenace/Hush-OpenNR">source ↗</a></span>
+      <span><a href="index.html">← hush home</a> &nbsp; <a href="hush-whitepaper.pdf" download>download PDF ↓</a> &nbsp; <a href="https://github.com/amateurmenace/Hush-OpenNR">source ↗</a></span>
     </div>
     <p class="eyebrow">Design Study</p>
     <h1>Toward the world's best <span class="k">free</span> video noise reducer</h1>
     <p class="dek">A nine-lens agent panel and a real-footage audit agree on an inversion: the frontier isn't removing more noise — it's <span class="k" style="color:var(--amber)">reconstructing the image's optical character</span> once the noise is gone.</p>
     <div class="credit">
       <span class="by">Authored by <b>Claude</b> · Commissioned by Stephen Walter</span>
-      <span class="substamp">2026-07-15 · Anthropic's Claude, from a 77-agent design panel</span>
+      <span class="substamp">2026-07-15 · from a 77-agent design panel · build postscript 2026-07-16 (v3.6)</span>
+      <a class="pdfbtn" href="hush-whitepaper.pdf" download>Download PDF ↓</a>
     </div>
     <div class="metrics">
       <div class="m"><div class="n">68</div><div class="lbl">Ideas raised</div></div>
@@ -337,6 +382,31 @@
   </section>
 
   <section>
+    <h2><span class="sn">07</span>Postscript: from study to shipped</h2>
+    <p style="color:var(--text-lt);font:600 12px var(--mono);letter-spacing:.04em;margin:-4px 0 18px;text-transform:uppercase">Added 2026-07-16 · after v3.6 built Phase&nbsp;0 and the first Phase-1 fix</p>
+    <p class="lead">The study was a design panel. The next day a second Claude instance <strong>built</strong> its Phase&nbsp;0 and the start of Phase&nbsp;1 — across the CPU reference and all three GPU kernels at parity, gated on the same night clip. Building it did what a panel cannot: it shipped the thesis, and it <strong>corrected the paper in three places</strong>. That correction is the entire point of the X3 "prototype before code" law — here is what it caught.</p>
+
+    <p><strong>Shipped in v3.6.</strong> The full Phase-0 quartet — shadow-loud, contrast-masked, blue-noise grain; overshoot-bounded optical acutance; detail-transfer coring; and the clean-confidence matte — plus the Phase-1 shadow chroma-speckle fix. Everything is off by default, so existing projects render bit-for-bit identical until you reach for it.</p>
+
+    <div class="pull">Three things the panel got wrong on paper only surfaced when the code met the real clip.</div>
+
+    <p><strong>1 · The blue-noise grain formula was backwards for this codebase.</strong> The study proposed <code>gn − gHi·valueNoise(2·size)</code>. But here <code>valueNoise</code> at a coarser scale is an <em>independent</em> field — subtracting it <em>adds</em> low-frequency energy, the opposite of blue. On the real clip the high-frequency fraction moved the wrong way (0.41&nbsp;→&nbsp;0.29). The true high-pass subtracts a low-pass of the <em>same</em> grain field (its four-neighbour mean, a grain-cell away), which put the spectrum where it belongs: 0.41&nbsp;→&nbsp;0.69. A one-line error no panel could have caught without measuring.</p>
+
+    <p><strong>2 · Auto-tuning correlated chroma noise needs <em>generalized</em> SURE — the build's most transferable result.</strong> The self-tuner's chroma pass read the real shadow speckle backwards and de-tuned a good profile by ~0.9&nbsp;dB. The cause is textbook but easy to miss: Monte-Carlo SURE is an unbiased error estimate only for <em>white</em> noise, and the speckle is spatially correlated. Match the probe's own correlation to the measured noise — a block-constant Rademacher field at the estimated correlation length — and the estimator becomes generalized SURE (it measures <code>tr(AΣ)</code>, not <code>σ²·tr(A)</code>); its argmin tracks true error again. The 0.9&nbsp;dB loss became a <strong>3.0&nbsp;dB gain</strong>. The lesson outlives this plugin: <em class="t">if you tune against SURE, the probe must carry the noise's covariance, or it will confidently tune the wrong way on anything but white noise.</em></p>
+
+    <p><strong>3 · The chroma-speckle "safety" is just the window size.</strong> The panel asked for a block-mean-subtracted chroma pass so real low-frequency color scores zero. In practice no subtraction is needed: a luma-guided wide chroma mean at <em>moderate</em> reach averages the ~30&nbsp;px speckle while the frame-scale lighting gradient — warm streetlight against cool ambient over dark fabric — is locally flat across the window and passes straight through. The protection falls out of the geometry: <strong>−70% shadow speckle</strong>, the real color untouched.</p>
+
+    <p><strong>And two the build sharpened.</strong> Acutance's halo bound must reference the <em>pre-spatial</em> (post-temporal) 3×3 min/max, not the over-smoothed spatial output — exceeding the smoothed range is precisely how it <em>restores</em> the slope the smoother removed, while staying halo-free against the true signal. And coring belongs at the <em>input</em>-noise scale (<code>s.sy·gainY</code>), not the residual: the removed delta carries a single frame's full noise, so thresholding at the residual under-cores and re-noises the shadow — the correct scale cut shadow re-noising from 4.7×&nbsp;to&nbsp;1.2×.</p>
+
+    <p><strong>One honest limitation — for the graveyard.</strong> Scoring the whole temporal-plus-spatial pipeline against the <em>input</em> sigma over-credits the spatial stage once the temporal average has already crushed the residual, so on a near-lossless static shot the tuner can nudge toward over-smoothing (a 46&nbsp;dB stack drifting to 45&nbsp;dB — imperceptible, but the wrong direction). Hold-out cross-validation against an independent probe catches the <em>variance</em> form of this; the <em>systematic</em> bias wants scoring against the post-temporal residual, and is logged for a later pass. The panel's discipline was to publish its graveyard — this belongs in it.</p>
+
+    <h3 style="margin-top:1.5em">The thesis grew a second tool</h3>
+    <p>Section 06's conclusion — <em class="t">clean early, reconstruct late, on a final node</em> — was a prediction about the shape of the node graph. Building it produced <strong>both halves</strong>. Hush denoises early and now exports the clean-confidence matte; the reconstruction half became <strong>Speak</strong>, a standalone film-emulation effect for the <em>end</em> of the tree — film-stock density, subtractive color, halation, bloom, grain — that reads Hush's confidence matte downstream to lay grain exactly where the image was cleaned most. Node one measures and cleans; the last node reconstructs the optical image; a matte crosses the graph between them. The study didn't just steer a denoiser — it specified an interface, and a second product grew into it.</p>
+
+    <div class="pull" style="max-width:24em">The frontier the panel named — texture reconstruction — turned out to be big enough to be its own tool.</div>
+  </section>
+
+  <section>
     <p class="kicker">Ultimate finding</p>
     <p>The world's best free video noise reducer won't win by removing the most noise — that race is against paid tools with large teams, and Hush is already close. It wins by being the only free tool that treats denoising as <strong>step one of texture management</strong>: strip the noise, then reconstruct the optical image — lens-like acutance without a digital halo, emulsion-grade grain matched to exactly what was removed — and couple that reconstruction to the grade through confidence mattes, qualifier inputs, and film-optic finishing.</p>
     <div class="pull" style="max-width:22em">Clean early. Reconstruct late. Match the grain to the noise you took. Sharpen only what the noise field says is real.</div>
@@ -350,6 +420,7 @@
     <div class="bars" style="margin-bottom:26px"><span style="background:#3D5A47"></span><span style="background:#5B8C65"></span><span style="background:#A3C0B0"></span><span style="background:#E5A835"></span><span style="background:#E89D6B"></span><span style="background:#C5D6CC"></span><span style="background:#2D3A2E"></span></div>
     <div class="backbar">
       <a class="primary" href="index.html">← Back to Hush</a>
+      <a class="line" href="hush-whitepaper.pdf" download>Download PDF ↓</a>
       <a class="line" href="https://github.com/amateurmenace/Hush-OpenNR">GitHub</a>
     </div>
     <p class="credit2">Authored by <b>Claude</b> (Anthropic), commissioned by <a href="https://weirdmachine.org">Stephen Walter</a>.</p>
