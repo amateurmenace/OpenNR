@@ -10,7 +10,7 @@
 import os, re
 
 here = os.path.dirname(os.path.abspath(__file__))
-PAGES = "https://amateurmenace.github.io/Hush-OpenNR/assets"
+PAGES = "https://control-z.org/assets"
 
 t = open(os.path.join(here, "index.template.html")).read()
 
@@ -34,6 +34,19 @@ style = style.replace("body {", "#hush-embed {")                 # body rule -> 
 def prefix_selectors(css):
     out, i, n = [], 0, len(css)
     while i < n:
+        # @keyframes / @font-face: copy the whole at-rule verbatim — their
+        # inner "selectors" (from/to/0%/100%) must NOT be prefixed.
+        m = re.match(r'\s*@(?:-webkit-|-moz-)?(?:keyframes|font-face)[^{]*\{', css[i:])
+        if m:
+            start = i + m.end()
+            depth, j = 1, start
+            while j < n and depth:
+                if css[j] == '{': depth += 1
+                elif css[j] == '}': depth -= 1
+                j += 1
+            out.append(css[i:j])   # verbatim
+            i = j
+            continue
         m = re.match(r'\s*@media[^{]*\{', css[i:])
         if m:
             # find matching closing brace of the media block
@@ -80,7 +93,7 @@ out = f"""<!-- ============================================================
   3. JavaScript in Code Blocks requires a Business plan or higher —
      on Personal plans the live demo/interactions are stripped, so use
      the iframe embed instead:
-       <iframe src="https://amateurmenace.github.io/Hush-OpenNR/"
+       <iframe src="https://control-z.org/"
                style="width:100%;height:5200px;border:0"
                loading="lazy" title="Hush Open NR"></iframe>
   Images load from GitHub Pages; nothing to upload to Squarespace.

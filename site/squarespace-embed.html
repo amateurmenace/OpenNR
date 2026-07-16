@@ -8,7 +8,7 @@
   3. JavaScript in Code Blocks requires a Business plan or higher —
      on Personal plans the live demo/interactions are stripped, so use
      the iframe embed instead:
-       <iframe src="https://amateurmenace.github.io/Hush-OpenNR/"
+       <iframe src="https://control-z.org/"
                style="width:100%;height:5200px;border:0"
                loading="lazy" title="Hush Open NR"></iframe>
   Images load from GitHub Pages; nothing to upload to Squarespace.
@@ -163,9 +163,7 @@
 #hush-embed .wf-stage[data-mode="quick"] .wf-pane.quick { display: block; animation: wfIn .42s ease; }
 #hush-embed .wf-stage[data-mode="pro"] .wf-pane.pro { display: block; animation: wfIn .42s ease; }
 
-  @keyframes wfIn {#hush-embed from { opacity: 0; transform: translateY(8px); }
-#hush-embed to { opacity: 1; transform: none; }
- }#hush-embed .wf-flow { display: flex; align-items: stretch; flex-wrap: wrap; gap: 0; }
+  @keyframes wfIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }#hush-embed .wf-flow { display: flex; align-items: stretch; flex-wrap: wrap; gap: 0; }
 #hush-embed .wfn { position: relative; flex: 1 1 0; min-width: 116px; background: rgba(255,255,255,.045); border: 1px solid #3a4c34;
     border-radius: 12px; padding: 12px 13px; text-align: left; transition: transform .2s, box-shadow .2s, border-color .2s; }
 #hush-embed .wfn:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,.28); }
@@ -190,9 +188,7 @@
     color: #F0B486; background: rgba(232,157,107,.08); border: 1px dashed rgba(232,157,107,.4); border-radius: 10px; padding: 10px 14px; }
 #hush-embed .wf-matte .mdot { width: 9px; height: 9px; border-radius: 999px; background: var(--orange); box-shadow: 0 0 0 4px rgba(232,157,107,.2); flex: none; animation: mpulse 1.8s ease-in-out infinite; }
 
-  @keyframes mpulse {#hush-embed 0%, #hush-embed 100% { box-shadow: 0 0 0 3px rgba(232,157,107,.22); }
-#hush-embed 50% { box-shadow: 0 0 0 7px rgba(232,157,107,.06); }
- }#hush-embed .wf-note { font-size: 15px; line-height: 1.6; color: var(--sage-lt); margin-top: 14px; max-width: 80ch; }
+  @keyframes mpulse { 0%,100% { box-shadow: 0 0 0 3px rgba(232,157,107,.22); } 50% { box-shadow: 0 0 0 7px rgba(232,157,107,.06); } }#hush-embed .wf-note { font-size: 15px; line-height: 1.6; color: var(--sage-lt); margin-top: 14px; max-width: 80ch; }
 #hush-embed .wf-note b { color: #F5F3EE; }
 #hush-embed /* wipe slider */
   .wipe { position: relative; border-radius: var(--r-md); overflow: hidden; border: 1px solid var(--border); user-select: none; touch-action: none; margin: 26px 0 8px; }
@@ -309,9 +305,7 @@
 #hush-embed .wire { flex: none; align-self: center; width: 30px; height: 2px; background: #45454f; position: relative; overflow: hidden; }
 #hush-embed .wire i { position: absolute; top: -2px; left: -6px; width: 6px; height: 6px; border-radius: 50%; background: var(--amber); animation: ntflow 3.2s linear infinite; }
 
-  @keyframes ntflow {#hush-embed from { left: -6px; }
-#hush-embed to { left: 30px; }
- }#hush-embed .wire:nth-of-type(2) i { animation-delay: .35s; }
+  @keyframes ntflow { from { left: -6px; } to { left: 30px; } }#hush-embed .wire:nth-of-type(2) i { animation-delay: .35s; }
 #hush-embed .wire:nth-of-type(4) i { animation-delay: .7s; }
 #hush-embed .wire:nth-of-type(6) i { animation-delay: 1.05s; }
 #hush-embed .wire:nth-of-type(8) i { animation-delay: 1.4s; }
@@ -500,8 +494,8 @@
     <div class="kicker">Before / After</div>
     <h2>Drag the line.</h2>
     <div class="wipe" id="hush-wipe">
-      <img src="https://amateurmenace.github.io/Hush-OpenNR/assets/after.jpg" alt="denoised">
-      <div class="top" id="hush-wipeTop"><img src="https://amateurmenace.github.io/Hush-OpenNR/assets/before.jpg" alt="noisy"></div>
+      <img src="https://control-z.org/assets/after.jpg" alt="denoised">
+      <div class="top" id="hush-wipeTop"><img src="https://control-z.org/assets/before.jpg" alt="noisy"></div>
       <div class="handle" id="hush-wipeHandle"></div>
       <span class="lab" style="left:10px">NOISY IN</span>
       <span class="lab" style="right:10px">HUSHED</span>
@@ -557,19 +551,19 @@
 
     <div class="tabs" id="hush-scopeTabs">
       <button class="tab on"
-        data-img="https://amateurmenace.github.io/Hush-OpenNR/assets/scope-measure.jpg"
+        data-img="https://control-z.org/assets/scope-measure.jpg"
         data-chk="Scope: Measurements" data-step="Step 1 · Measure"
         data-cap="The Measurements panel — input noise (blue) vs what's left after temporal stacking (amber), frames averaged, SNR gain, the noise-vs-brightness curve, and the histogram with its median. Tick it in Step 1; LOCKED appears when the profile is frozen.">Measurements</button>
       <button class="tab"
-        data-img="https://amateurmenace.github.io/Hush-OpenNR/assets/scope-motion.jpg"
+        data-img="https://control-z.org/assets/scope-motion.jpg"
         data-chk="Scope: Motion Map" data-step="Step 2 · Temporal"
         data-cap="The Motion Map — green where frames are being stacked, red where motion protection kicked in. This frame is from a drifting camera: motion tracking keeps the flats stacking while every moving edge stays protected. If something ghosts, it should be reading red here.">Motion Map</button>
       <button class="tab"
-        data-img="https://amateurmenace.github.io/Hush-OpenNR/assets/scope-eq.jpg"
+        data-img="https://control-z.org/assets/scope-eq.jpg"
         data-chk="Scope: Noise EQ" data-step="Step 3 · Spatial · Noise EQ"
         data-cap="The Noise EQ scope — one lane per band (Fine ~1 px, Clumps 3–8 px, Stains 16 px+, Color). The bar is how much you're cutting; the amber line is how much noise was actually measured at that size. It pops up by itself the first time you touch an EQ slider.">Noise EQ</button>
       <button class="tab"
-        data-img="https://amateurmenace.github.io/Hush-OpenNR/assets/scope-snr.jpg"
+        data-img="https://control-z.org/assets/scope-snr.jpg"
         data-chk="View: SNR Map" data-step="Step 5 · Inspect"
         data-cap="The SNR Map view — signal-to-noise per pixel: magenta where noise dominates (where NR matters most), green where the image wins. The whole pipeline is inspectable: Input, After Temporal, Noise Removed, Temporal Activity, and a keyable Noisiness matte.">SNR Map</button>
     </div>
@@ -579,7 +573,7 @@
       <div class="rbar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
         <span class="rtitle">viewer — simulated color page</span></div>
       <div class="rmain">
-        <div class="rview"><img id="hush-scopeImg" src="https://amateurmenace.github.io/Hush-OpenNR/assets/scope-measure.jpg" alt="Hush scope in the viewer"></div>
+        <div class="rview"><img id="hush-scopeImg" src="https://control-z.org/assets/scope-measure.jpg" alt="Hush scope in the viewer"></div>
         <aside class="rfx">
           <div class="rfxhead">OpenFX · Effects</div>
           <div class="rfxplug">Hush Open NR</div>
@@ -891,7 +885,7 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
     <div class="credit">Produced by <a href="https://weirdmachine.org">Stephen Walter</a> with DaVinci Resolve 21 and Claude Code in 2026.</div>
     <p class="credit2">An open-source tool of the <a href="https://communityai.studio">Community AI Project</a>,
     made in partnership with <a href="https://brooklineinteractive.org">Brookline Interactive Group</a>.</p>
-    <a href="https://weirdmachine.org"><img class="wmlogo" src="https://amateurmenace.github.io/Hush-OpenNR/assets/wm-logo.png" alt="Weird Machine"></a>
+    <a href="https://weirdmachine.org"><img class="wmlogo" src="https://control-z.org/assets/wm-logo.png" alt="Weird Machine"></a>
     <p>MIT licensed — free for any use, forever. Source, issues and releases on
     <a href="https://github.com/amateurmenace/Hush-OpenNR">GitHub</a>.</p>
   </div>
