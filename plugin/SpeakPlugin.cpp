@@ -132,6 +132,15 @@ public:
         m_SubSat        = fetchDoubleParam("subSat");
         m_DyeCoupler    = fetchDoubleParam("dyeCoupler");
         m_DyeKnee       = fetchDoubleParam("dyeKnee");
+        m_EnableSplit   = fetchBooleanParam("enableSplit");
+        m_SplitShadowR  = fetchDoubleParam("splitShadowR");
+        m_SplitShadowG  = fetchDoubleParam("splitShadowG");
+        m_SplitShadowB  = fetchDoubleParam("splitShadowB");
+        m_SplitHighR    = fetchDoubleParam("splitHighR");
+        m_SplitHighG    = fetchDoubleParam("splitHighG");
+        m_SplitHighB    = fetchDoubleParam("splitHighB");
+        m_SplitPivot    = fetchDoubleParam("splitPivot");
+        m_SplitBalance  = fetchDoubleParam("splitBalance");
         m_ViewMode      = fetchChoiceParam("viewMode");
         m_ScopeHD       = fetchBooleanParam("scopeHD");
         m_ScopeDensity  = fetchBooleanParam("scopeDensity");
@@ -159,13 +168,18 @@ public:
         const bool toneOn = m_EnableTone->getValueAtTime(t) && (m_Strength->getValueAtTime(t) > 0.0);
         const bool dyeOn  = m_EnableDye->getValueAtTime(t) &&
                             (m_SubSat->getValueAtTime(t) > 0.0 || m_DyeCoupler->getValueAtTime(t) > 0.0);
-        if (!toneOn && !dyeOn) { p_IdentityClip = m_SrcClip; p_IdentityTime = t; return true; }
+        const bool splitOn = m_EnableSplit->getValueAtTime(t) &&
+                             (m_SplitShadowR->getValueAtTime(t) != 0.0 || m_SplitShadowG->getValueAtTime(t) != 0.0 ||
+                              m_SplitShadowB->getValueAtTime(t) != 0.0 || m_SplitHighR->getValueAtTime(t) != 0.0 ||
+                              m_SplitHighG->getValueAtTime(t) != 0.0 || m_SplitHighB->getValueAtTime(t) != 0.0);
+        if (!toneOn && !dyeOn && !splitOn) { p_IdentityClip = m_SrcClip; p_IdentityTime = t; return true; }
         return false;
     }
 
     virtual void changedParam(const OFX::InstanceChangedArgs& /*p_Args*/, const std::string& p_ParamName)
     {
-        if (p_ParamName == "enableTone" || p_ParamName == "enableDye") updateEnabledness();
+        if (p_ParamName == "enableTone" || p_ParamName == "enableDye" ||
+            p_ParamName == "enableSplit") updateEnabledness();
     }
 
 private:
@@ -184,6 +198,10 @@ private:
         m_SubSat->setEnabled(dye);
         m_DyeCoupler->setEnabled(dye);
         m_DyeKnee->setEnabled(dye);
+        const bool sp = m_EnableSplit->getValue();
+        m_SplitShadowR->setEnabled(sp); m_SplitShadowG->setEnabled(sp); m_SplitShadowB->setEnabled(sp);
+        m_SplitHighR->setEnabled(sp); m_SplitHighG->setEnabled(sp); m_SplitHighB->setEnabled(sp);
+        m_SplitPivot->setEnabled(sp); m_SplitBalance->setEnabled(sp);
     }
 
     SpeakParams gatherParams(double t)
@@ -201,7 +219,8 @@ private:
         p.viewMode        = vm;
         p.enableTone      = m_EnableTone->getValueAtTime(t) ? 1 : 0;
         p.enableDye       = m_EnableDye->getValueAtTime(t) ? 1 : 0;
-        p.enableSplit = p.enableOptics = 0;
+        p.enableSplit     = m_EnableSplit->getValueAtTime(t) ? 1 : 0;
+        p.enableOptics    = 0;
         p.scopeHD         = m_ScopeHD->getValueAtTime(t) ? 1 : 0;
         p.scopeDensity    = m_ScopeDensity->getValueAtTime(t) ? 1 : 0;
         p.scopeVector     = 0;
@@ -229,6 +248,16 @@ private:
         const float knee = static_cast<float>(m_DyeKnee->getValueAtTime(t));
         for (int c = 0; c < 3; ++c) { prof.subSat[c] = sat; prof.subSatKnee[c] = knee; }
         speakcore::setDyeCoupler(prof, static_cast<float>(m_DyeCoupler->getValueAtTime(t)));
+
+        // Split toning (Phase 3): per-channel density offsets per tonal zone.
+        prof.splitShadow[0] = static_cast<float>(m_SplitShadowR->getValueAtTime(t));
+        prof.splitShadow[1] = static_cast<float>(m_SplitShadowG->getValueAtTime(t));
+        prof.splitShadow[2] = static_cast<float>(m_SplitShadowB->getValueAtTime(t));
+        prof.splitHigh[0]   = static_cast<float>(m_SplitHighR->getValueAtTime(t));
+        prof.splitHigh[1]   = static_cast<float>(m_SplitHighG->getValueAtTime(t));
+        prof.splitHigh[2]   = static_cast<float>(m_SplitHighB->getValueAtTime(t));
+        prof.splitPivot     = static_cast<float>(m_SplitPivot->getValueAtTime(t));
+        prof.splitBalance   = static_cast<float>(m_SplitBalance->getValueAtTime(t));
 
         p.profile = prof;
         return p;
@@ -304,6 +333,15 @@ private:
     OFX::DoubleParam*  m_SubSat;
     OFX::DoubleParam*  m_DyeCoupler;
     OFX::DoubleParam*  m_DyeKnee;
+    OFX::BooleanParam* m_EnableSplit;
+    OFX::DoubleParam*  m_SplitShadowR;
+    OFX::DoubleParam*  m_SplitShadowG;
+    OFX::DoubleParam*  m_SplitShadowB;
+    OFX::DoubleParam*  m_SplitHighR;
+    OFX::DoubleParam*  m_SplitHighG;
+    OFX::DoubleParam*  m_SplitHighB;
+    OFX::DoubleParam*  m_SplitPivot;
+    OFX::DoubleParam*  m_SplitBalance;
     OFX::ChoiceParam*  m_ViewMode;
     OFX::BooleanParam* m_ScopeHD;
     OFX::BooleanParam* m_ScopeDensity;
@@ -484,6 +522,39 @@ void SpeakPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, O
                "Soft ceiling on dye density, so deep colours self-limit like a real emulsion "
                "instead of running away. Lower = tighter. 0 = no ceiling.",
                2.2, 0.0, 4.0, 0.05, grpDye);
+
+    // ----------------------------------------------------- 4 · Split Toning
+    OFX::GroupParamDescriptor* grpSplit = p_Desc.defineGroupParam("grpSplit");
+    grpSplit->setLabels("4 \xC2\xB7 Split Toning", "4 \xC2\xB7 Split Toning", "4 \xC2\xB7 Split");
+    grpSplit->setOpen(false);
+    grpSplit->setHint("The lift/gamma/gain replacement, done in density like a real emulsion. "
+                      "Tints are per-channel DENSITY offsets weighted by tonal zones anchored to "
+                      "the working H&D curve — so mid-gray cannot drift (its zone weight is zero) "
+                      "and hues stay put where lift/gamma/gain swings them. Opposite shadow and "
+                      "highlight tints give film's chromogenic crossover.");
+
+    sDefBool(p_Desc, page, "enableSplit", "Enable Split Toning",
+             "Toggle the density-domain split to compare.", true, grpSplit);
+    sDefDouble(p_Desc, page, "splitShadowR", "Shadow Tint R (density)",
+               "Red density added in the shadows. POSITIVE removes red (cooler); negative adds "
+               "red (warmer). Density offsets are multiplicative in light, which is why hue holds.",
+               0.0, -0.3, 0.3, 0.005, grpSplit);
+    sDefDouble(p_Desc, page, "splitShadowG", "Shadow Tint G (density)",
+               "Green density added in the shadows.", 0.0, -0.3, 0.3, 0.005, grpSplit);
+    sDefDouble(p_Desc, page, "splitShadowB", "Shadow Tint B (density)",
+               "Blue density added in the shadows.", 0.0, -0.3, 0.3, 0.005, grpSplit);
+    sDefDouble(p_Desc, page, "splitHighR", "Highlight Tint R (density)",
+               "Red density added in the highlights.", 0.0, -0.3, 0.3, 0.005, grpSplit);
+    sDefDouble(p_Desc, page, "splitHighG", "Highlight Tint G (density)",
+               "Green density added in the highlights.", 0.0, -0.3, 0.3, 0.005, grpSplit);
+    sDefDouble(p_Desc, page, "splitHighB", "Highlight Tint B (density)",
+               "Blue density added in the highlights.", 0.0, -0.3, 0.3, 0.005, grpSplit);
+    sDefDouble(p_Desc, page, "splitPivot", "Split Pivot (stops)",
+               "Moves the untouched mid zone up or down the tone scale, in stops from 18% gray. "
+               "Whatever sits at the pivot is never tinted.", 0.0, -3.0, 3.0, 0.05, grpSplit);
+    sDefDouble(p_Desc, page, "splitBalance", "Zone Width",
+               "How wide the untouched mid zone is. Narrow = shadows and highlights tint close to "
+               "mid-gray; wide = only the extremes tint.", 0.5, 0.0, 1.0, 0.01, grpSplit);
 
     // -------------------------------------------------------------- 5 · Inspect
     OFX::GroupParamDescriptor* grpInspect = p_Desc.defineGroupParam("grpInspect");

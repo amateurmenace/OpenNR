@@ -209,6 +209,33 @@ inline bool dyeActive(constant SpeakProfile& p)
            p.dyeCouple[5] != 0.0f || p.dyeCouple[6] != 0.0f || p.dyeCouple[7] != 0.0f;
 }
 
+inline float smooth01(float t) { t = clampf(t, 0.0f, 1.0f); return t * t * (3.0f - 2.0f * t); }
+inline void splitWeights(float Dbar, constant SpeakProfile& p, thread float& wShadow, thread float& wHigh)
+{
+    float grayD  = 0.744727f;
+    float pivotD = grayD - p.splitPivot * kLog10_2;
+    float halfW  = 0.25f + 1.5f * clampf(p.splitBalance, 0.0f, 1.0f);
+    float x = (Dbar - pivotD) / halfW;
+    wShadow = smooth01(x);
+    wHigh   = smooth01(-x);
+}
+inline void splitTone(float r, float g, float b, constant SpeakProfile& p,
+                      thread float& oR, thread float& oG, thread float& oB)
+{
+    float DR = density10(r), DG = density10(g), DB = density10(b);
+    float Dbar = (DR + DG + DB) * (1.0f / 3.0f);
+    float wS, wH;
+    splitWeights(Dbar, p, wS, wH);
+    oR = pow10f(-(DR + wS * p.splitShadow[0] + wH * p.splitHigh[0]));
+    oG = pow10f(-(DG + wS * p.splitShadow[1] + wH * p.splitHigh[1]));
+    oB = pow10f(-(DB + wS * p.splitShadow[2] + wH * p.splitHigh[2]));
+}
+inline bool splitActive(constant SpeakProfile& p)
+{
+    return p.splitShadow[0] != 0.0f || p.splitShadow[1] != 0.0f || p.splitShadow[2] != 0.0f ||
+           p.splitHigh[0] != 0.0f || p.splitHigh[1] != 0.0f || p.splitHigh[2] != 0.0f;
+}
+
 inline void lookLinear(float r, float g, float b, constant SpeakParams& pr,
                        thread float& oR, thread float& oG, thread float& oB)
 {
@@ -224,6 +251,7 @@ inline void lookLinear(float r, float g, float b, constant SpeakParams& pr,
         mb = lerpf(lb, toneChannel(lb, 2, pr.profile), s);
     }
     if ((pr.enableDye != 0) && dyeActive(pr.profile)) subtractiveColor(mr, mg, mb, pr.profile, mr, mg, mb);
+    if ((pr.enableSplit != 0) && splitActive(pr.profile)) splitTone(mr, mg, mb, pr.profile, mr, mg, mb);
     oR = mr; oG = mg; oB = mb;
 }
 
@@ -382,8 +410,9 @@ inline void processPixel(float r, float g, float b, int x, int y, int W, int H,
     int cs = pr.inputColorSpace;
     bool toneOn = (pr.enableTone != 0) && (pr.strength > 0.0f);
     bool dyeOn = (pr.enableDye != 0) && dyeActive(pr.profile);
+    bool splitOn = (pr.enableSplit != 0) && splitActive(pr.profile);
     bool bake = (pr.outputMode == 1);
-    if (!toneOn && !dyeOn && !bake) {
+    if (!toneOn && !dyeOn && !splitOn && !bake) {
         outR = r; outG = g; outB = b;
     } else {
         float mr, mg, mb;

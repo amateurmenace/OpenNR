@@ -270,6 +270,56 @@ static inline bool dyeActive(const SpeakProfile& p)
            p.dyeCouple[5] != 0.0f || p.dyeCouple[6] != 0.0f || p.dyeCouple[7] != 0.0f;
 }
 
+// ---------------------------------------------------------------------------
+// Split toning / film-referred tonal-zone balance (Phase 3) — the lift-gamma-
+// gain replacement, done in the density domain.
+//
+// Per-channel density offsets weighted by a 3-zone partition of unity (toe /
+// mid / shoulder) anchored to the WORKING H&D CURVE rather than fixed luma
+// cuts: the tone position is the pixel's own neutral density, and the spine
+// pivots 18% gray to D = -log10(0.18) = 0.745, so that IS the mid anchor.
+//
+// Two structural properties fall out, both of which LGG cannot offer:
+//  - MIDS STAY NEUTRAL BY CONSTRUCTION: at the pivot both zone weights are
+//    exactly 0, so the mid tone receives no offset at all — you cannot tint
+//    shadows and highlights and accidentally drag mid-gray.
+//  - HUE-STABLE: additive in density == MULTIPLICATIVE in linear, so a tint
+//    scales a channel rather than offsetting it the way LGG's lift does (which
+//    is what desaturates and swings hue in the shadows).
+// Chromogenic crossover (cool shadows / warm highlights) is simply opposite
+// shadow and highlight offsets; cross-process is a more extreme pair.
+// ---------------------------------------------------------------------------
+static inline float smooth01(float t)
+{
+    t = clampf(t, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+static inline void splitWeights(float Dbar, const SpeakProfile& p, float& wShadow, float& wHigh)
+{
+    const float grayD  = 0.744727f;                          // D of 18% gray (the spine's pivot)
+    const float pivotD = grayD - p.splitPivot * kLog10_2;    // pivot: stops -> density
+    const float halfW  = 0.25f + 1.5f * clampf(p.splitBalance, 0.0f, 1.0f);
+    const float x = (Dbar - pivotD) / halfW;                 // signed: + = darker, - = brighter
+    wShadow = smooth01(x);        // -> 1 into the toe (shadows)
+    wHigh   = smooth01(-x);       // -> 1 into the shoulder (highlights)
+}                                 // at the pivot both are 0 => the mid zone is untouched
+static inline void splitTone(float r, float g, float b, const SpeakProfile& p,
+                             float& oR, float& oG, float& oB)
+{
+    const float DR = density10(r), DG = density10(g), DB = density10(b);
+    const float Dbar = (DR + DG + DB) * (1.0f / 3.0f);
+    float wS, wH;
+    splitWeights(Dbar, p, wS, wH);
+    oR = pow10f(-(DR + wS * p.splitShadow[0] + wH * p.splitHigh[0]));
+    oG = pow10f(-(DG + wS * p.splitShadow[1] + wH * p.splitHigh[1]));
+    oB = pow10f(-(DB + wS * p.splitShadow[2] + wH * p.splitHigh[2]));
+}
+static inline bool splitActive(const SpeakProfile& p)
+{
+    return p.splitShadow[0] != 0.0f || p.splitShadow[1] != 0.0f || p.splitShadow[2] != 0.0f ||
+           p.splitHigh[0] != 0.0f || p.splitHigh[1] != 0.0f || p.splitHigh[2] != 0.0f;
+}
+
 // The generic dye cross-absorption pattern. The hue skew lives ENTIRELY in the
 // within-row asymmetry (the density deviations sum to zero, so equal cross terms
 // in a row would collapse to a plain saturation boost). Follows the classic
@@ -317,6 +367,7 @@ static inline void lookLinear(float r, float g, float b, const SpeakParams& pr,
         mb = lerpf(lb, toneChannel(lb, 2, p), s);
     }
     if ((pr.enableDye != 0) && dyeActive(p)) subtractiveColor(mr, mg, mb, p, mr, mg, mb);
+    if ((pr.enableSplit != 0) && splitActive(p)) splitTone(mr, mg, mb, p, mr, mg, mb);
     oR = mr; oG = mg; oB = mb;
 }
 
@@ -572,11 +623,12 @@ static inline void processPixel(float r, float g, float b,
 {
     const SpeakProfile& p = pr.profile;
     const int cs = pr.inputColorSpace;
-    const bool toneOn = (pr.enableTone != 0) && (pr.strength > 0.0f);
-    const bool dyeOn  = (pr.enableDye != 0) && dyeActive(p);
-    const bool bake   = (pr.outputMode == SPEAK_OUT_BAKE_REC709);
+    const bool toneOn  = (pr.enableTone != 0) && (pr.strength > 0.0f);
+    const bool dyeOn   = (pr.enableDye != 0) && dyeActive(p);
+    const bool splitOn = (pr.enableSplit != 0) && splitActive(p);
+    const bool bake    = (pr.outputMode == SPEAK_OUT_BAKE_REC709);
 
-    if (!toneOn && !dyeOn && !bake) {
+    if (!toneOn && !dyeOn && !splitOn && !bake) {
         // Working space + no look: bit-exact pass-through (identity). Scopes
         // may still overwrite below.
         outR = r; outG = g; outB = b;

@@ -148,6 +148,19 @@ int main()
       run(device, queue, W, H, p, "density scope on", 1); }
     { SpeakParams p = baseParams(); p.scopeHD = 1; p.scopeDensity = 1; p.strength = 0.7f; p.profile = stockProfile();
       run(device, queue, W, H, p, "both scopes on", 1); }
+    // 5g — Split toning (Phase 3): crossover standalone, and the full stack.
+    { SpeakParams p = baseParams(); p.strength = 0.0f; p.enableSplit = 1;
+      p.profile.splitShadow[0] = 0.10f; p.profile.splitShadow[2] = -0.10f;
+      p.profile.splitHigh[0] = -0.08f;  p.profile.splitHigh[2] = 0.08f;
+      p.profile.splitBalance = 0.5f;
+      run(device, queue, W, H, p, "split toning standalone", 0); }
+    { SpeakParams p = baseParams(); p.profile = stockProfile(); p.enableDye = 1; p.enableSplit = 1;
+      p.profile.subSat[0] = p.profile.subSat[1] = p.profile.subSat[2] = 0.6f;
+      speakcore::setDyeCoupler(p.profile, 0.8f);
+      p.profile.subSatKnee[0] = p.profile.subSatKnee[1] = p.profile.subSatKnee[2] = 2.2f;
+      p.profile.splitShadow[2] = -0.09f; p.profile.splitHigh[0] = -0.07f;
+      p.profile.splitBalance = 0.4f;
+      run(device, queue, W, H, p, "tone + dye + split (full stack)", 0); }
     // 6 — H&D scope on (hud-tolerant).
     { SpeakParams p = baseParams(); p.scopeHD = 1; p.strength = 0.6f; p.profile = stockProfile();
       run(device, queue, W, H, p, "scope H&D on s0.6", 1); }
