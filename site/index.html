@@ -103,6 +103,10 @@
   section.study .wrap { position: relative; z-index: 2; }
   section.study .kicker { color: var(--amber); }
   section.study h2 { color: #F5F3EE; font-size: clamp(30px, 4.4vw, 44px); letter-spacing: -.02em; }
+  /* study heading borrowed from the white-paper hero: big, "free" in amber */
+  section.study h2.study-title { font-size: clamp(34px, 6.2vw, 60px); line-height: 1.02;
+    letter-spacing: -.028em; max-width: 18ch; text-wrap: balance; }
+  section.study .k { color: var(--amber); }
   section.study .lede { color: #D4E0D6; }
   section.study .tipcard { background: rgba(255,255,255,.045); border: 1px solid rgba(197,214,204,.18);
     backdrop-filter: blur(2px); }
@@ -442,6 +446,39 @@
   </div>
 </section>
 
+<section class="study">
+  <canvas class="grain" aria-hidden="true"></canvas>
+  <div class="wrap">
+    <div class="kicker">The design study · white paper</div>
+    <h2 class="study-title">Toward the world's best <span class="k">free</span> video noise reducer</h2>
+    <p class="lede" style="max-width:62ch">A nine-lens panel of AI experts and an audit on real 4K night footage reached the same conclusion: Hush's denoising is already strong — the frontier isn't removing <em>more</em> noise, it's <b>reconstructing the image's optical character</b> once the noise is gone. Strip the noise, then put back lens-like sharpness and film-like grain, and couple the whole thing to your grade. <b style="color:var(--amber)">v3.6 shipped the first wave.</b></p>
+
+    <div class="tips" style="margin-top:26px">
+      <div class="tipcard"><span class="tn">Sharpen</span>
+        <b>Sharpness that reads optical.</b>
+        <p>Add edge slope on the <em>cleaned</em> signal, gated by the noise field and clamped so it can't ring — the acutance of a lens, not the halo of a video sharpen filter. <b style="color:var(--sage-lt)">Shipped in v3.6</b> — the first denoiser that does.</p></div>
+      <div class="tipcard"><span class="tn">Re-grain</span>
+        <b>Grain matched to the noise removed.</b>
+        <p>Amplitude, spectrum and placement modelled on the noise actually taken out — real emulsion texture refilling the waxed shadows, weighted to where the image was cleaned most, not a flat white-noise dither.</p></div>
+      <div class="tipcard"><span class="tn">Couple to the grade</span>
+        <b>One system with your color.</b>
+        <p>A clean-confidence matte out, a qualifier matte in, halation finishing — so noise reduction and grading run as one coupled pipeline instead of two nodes fighting each other.</p></div>
+    </div>
+
+    <div style="margin-top:30px;background:rgba(0,0,0,.28);border:1px solid rgba(229,168,53,.28);border-radius:var(--r-lg);padding:30px 32px;color:var(--sage-lt);display:flex;flex-wrap:wrap;gap:28px;align-items:center;justify-content:space-between">
+      <div style="display:flex;flex-wrap:wrap;gap:0;flex:1;min-width:240px">
+        <div style="padding-right:24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">68</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Ideas raised</div></div>
+        <div style="padding:0 24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:var(--amber);line-height:1">22</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Kept, filtered</div></div>
+        <div style="padding-left:24px"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">77</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">AI agents run</div></div>
+      </div>
+      <div style="flex:none">
+        <a class="btn" style="background:var(--amber);color:#4A3A10" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html">Read the design study →</a>
+        <div style="font:500 12px var(--mono);color:var(--sage);margin-top:12px;letter-spacing:.02em">Authored by Claude, commissioned by <a href="https://weirdmachine.org" style="color:var(--amber);text-decoration:none">Stephen Walter</a></div>
+      </div>
+    </div>
+  </div>
+</section>
+
 
 <section>
   <div class="wrap">
@@ -744,39 +781,6 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
       <tr><td>HD 1920×1080</td><td>10.2 ms/frame — 98 fps</td><td>8.5 ms — 118 fps</td><td>11.0 ms — 91 fps</td><td>6.2 ms — 162 fps</td></tr>
       <tr><td>UHD 3840×2160</td><td>39 ms/frame — 26 fps</td><td>33 ms — 30 fps</td><td>41 ms — 24 fps</td><td>22 ms — 45 fps</td></tr>
     </table>
-  </div>
-</section>
-
-<section class="study">
-  <canvas class="grain" aria-hidden="true"></canvas>
-  <div class="wrap">
-    <div class="kicker">The design study · white paper</div>
-    <h2>Where Hush goes next.</h2>
-    <p class="lede" style="max-width:60ch">A nine-lens panel of AI experts and an audit on real 4K night footage reached the same conclusion: Hush's denoising is already strong — the frontier isn't removing <em>more</em> noise, it's <b>reconstructing the image's optical character</b> once the noise is gone. Strip the noise, then put back lens-like sharpness and film-like grain, and couple the whole thing to your grade.</p>
-
-    <div class="tips" style="margin-top:26px">
-      <div class="tipcard"><span class="tn">Sharpen</span>
-        <b>Sharpness that reads optical.</b>
-        <p>Add edge slope on the <em>cleaned</em> signal, gated by the noise field and clamped so it can't ring — the acutance of a lens, not the halo of a video sharpen filter. Nothing in a denoiser does this today.</p></div>
-      <div class="tipcard"><span class="tn">Re-grain</span>
-        <b>Grain matched to the noise removed.</b>
-        <p>Amplitude, spectrum and placement modelled on the noise actually taken out — real emulsion texture refilling the waxed shadows, weighted to where the image was cleaned most, not a flat white-noise dither.</p></div>
-      <div class="tipcard"><span class="tn">Couple to the grade</span>
-        <b>One system with your color.</b>
-        <p>A clean-confidence matte out, a qualifier matte in, halation finishing — so noise reduction and grading run as one coupled pipeline instead of two nodes fighting each other.</p></div>
-    </div>
-
-    <div style="margin-top:30px;background:rgba(0,0,0,.28);border:1px solid rgba(229,168,53,.28);border-radius:var(--r-lg);padding:30px 32px;color:var(--sage-lt);display:flex;flex-wrap:wrap;gap:28px;align-items:center;justify-content:space-between">
-      <div style="display:flex;flex-wrap:wrap;gap:0;flex:1;min-width:240px">
-        <div style="padding-right:24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">68</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Ideas raised</div></div>
-        <div style="padding:0 24px;border-right:1px solid rgba(197,214,204,.18)"><div style="font:700 26px 'Space Grotesk';color:var(--amber);line-height:1">22</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">Kept, filtered</div></div>
-        <div style="padding-left:24px"><div style="font:700 26px 'Space Grotesk';color:#F5F3EE;line-height:1">77</div><div style="font:600 10px var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--sage);margin-top:6px">AI agents run</div></div>
-      </div>
-      <div style="flex:none">
-        <a class="btn" style="background:var(--amber);color:#4A3A10" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html">Read the design study →</a>
-        <div style="font:500 12px var(--mono);color:var(--sage);margin-top:12px;letter-spacing:.02em">Authored by Claude, commissioned by <a href="https://weirdmachine.org" style="color:var(--amber);text-decoration:none">Stephen Walter</a></div>
-      </div>
-    </div>
   </div>
 </section>
 
