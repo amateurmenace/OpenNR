@@ -1,5 +1,21 @@
 # OpenNR changelog
 
+## 3.7.1 — 2026-07-17
+
+- **Fix: Export Clean Matte to Alpha no longer blows out the frame.** The
+  exported image is RGB-untouched with a utility matte in alpha — an
+  UNPREMULTIPLIED image — but 3.7.0 never said so, and a premult-aware host
+  stage would divide the picture by the matte downstream ("unpremult"). On
+  Resolve's color page a handheld night shot (motion-protected matte ~0.2–0.5
+  across the frame) brightened 2–5× the moment the toggle went on. The plugin
+  now declares `unpremultiplied` output while the export is enabled (clip
+  preferences slaved to the toggle, so flipping it re-declares live). Off
+  remains bit-identical, as promised in 3.7.0.
+- Workflow note, learned from the same desk: the matte rides INSIDE the
+  ordinary image connection — do not draw a key/mask line from Hush to Speak,
+  and leave "Use OFX Alpha" off on these nodes. Grade nodes between Hush and
+  Speak pass the alpha through untouched; that topology is the design.
+
 ## 3.7.0 — 2026-07-16
 
 The handoff release: Hush can now hand its clean-confidence matte to the next
