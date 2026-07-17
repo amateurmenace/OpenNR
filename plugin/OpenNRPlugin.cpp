@@ -302,18 +302,6 @@ public:
         p_FramesNeededSetter.setFramesNeeded(*m_SrcClip, range);
     }
 
-    // v3.7.1: when Export Clean Matte is on, the output alpha is a utility
-    // matte and RGB is NOT multiplied by it. Left undeclared, a premult-aware
-    // host divides the picture by the matte downstream ("unpremult") and the
-    // whole frame blows out by 1/alpha — measured on Resolve's color page,
-    // where a handheld shot's motion-protected matte (~0.2-0.5 everywhere)
-    // brightened the frame 2-5x. Say what the image actually is.
-    virtual void getClipPreferences(OFX::ClipPreferencesSetter& p_Prefs)
-    {
-        if (m_ExportMatte && m_ExportMatte->getValue())
-            p_Prefs.setOutputPremultiplication(OFX::eImageUnPreMultiplied);
-    }
-
     virtual void changedParam(const OFX::InstanceChangedArgs& p_Args, const std::string& p_ParamName)
     {
         // m_InAutoApply guards recursion: Auto Setup / Revert set many params
@@ -1998,14 +1986,12 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
 
     // v3.7: the downstream handoff. Result view only; the inspection views keep
     // the true alpha. The hint states plainly that it REPLACES incoming alpha.
-    OFX::BooleanParamDescriptor* expMatte =
     defineBool(p_Desc, page, "exportMatteAlpha", "Export Clean Matte to Alpha",
                "In the Result view, writes the clean-confidence matte into the output ALPHA "
                "(clamp((effN-1)/6), identical to the Clean Confidence view) so a downstream "
                "node - Speak's grain, or any qualifier - can key on where cleaning succeeded. "
                "Replaces the incoming alpha while on; RGB is untouched.",
                false, grpOutput);
-    p_Desc.addClipPreferencesSlaveParam(*expMatte);
 }
 
 OFX::ImageEffect* OpenNRPluginFactory::createInstance(OfxImageEffectHandle p_Handle, OFX::ContextEnum /*p_Context*/)

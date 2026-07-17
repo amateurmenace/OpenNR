@@ -922,13 +922,16 @@ int main()
         check(sConf > mConf + 0.3, "confidence matte: high where averaging was deep, low on motion");
     }
 
-    // v3.7 feature — Export Clean Matte to Alpha: in the RESULT view, the
-    // toggle writes view 9's exact map into output ALPHA while RGB stays
-    // bit-identical to the toggle-off render. This is the downstream handoff
-    // (Speak keys grain on it), so its three claims are gated separately:
-    // same calibration as view 9, RGB untouched, and off = bit-exact alpha
-    // passthrough (the golden default path).
+    // v3.7 feature — Export Clean Matte to Alpha (v3.7.2 premultiplied): in the
+    // RESULT view the toggle writes view 9's map into output ALPHA (floored to
+    // eps) AND premultiplies RGB by it, because Resolve treats plugin output as
+    // premultiplied and UNPREMULTIPLIES (RGB / alpha) at the node — straight RGB
+    // there divides by a fractional matte and blows the frame out (the bug this
+    // fixes). Premultiplying makes that unpremult a round-trip. So the claims:
+    // the host unpremult RESTORES the off-render RGB, alpha carries view 9's
+    // map (eps-floored), and off = bit-exact passthrough (the golden default).
     {
+        const float kEps = 1.0f / 1000.0f;
         nrcore::Params p0 = p; p0.viewMode = 0; p0.temporalFrames = 7;
         nrcore::Params p1 = p0; p1.exportMatteAlpha = 1;
         nrcore::Params p9 = p0; p9.viewMode = 9;
@@ -936,22 +939,31 @@ int main()
         runCase(0.04f, 0.0f, 0.0f, NOISE_IID, p0, &off);
         runCase(0.04f, 0.0f, 0.0f, NOISE_IID, p1, &on);
         runCase(0.04f, 0.0f, 0.0f, NOISE_IID, p9, &view9);
-        bool rgbSame = true, alphaIsMap = true, offPassthrough = true;
-        float maxAD = 0.0f;
+        bool restoreOK = true, alphaIsMap = true, offPassthrough = true;
+        float maxRestoreErr = 0.0f, maxAD = 0.0f;
         for (int y = 0; y < H; ++y)
             for (int x = 0; x < W; ++x) {
                 const size_t i = (static_cast<size_t>(y) * W + x) * 4;
-                if (on[i] != off[i] || on[i + 1] != off[i + 1] || on[i + 2] != off[i + 2])
-                    rgbSame = false;               // RGB must be untouched by the toggle
-                const float d = std::fabs(on[i + 3] - view9[i + 3]);
-                if (d > maxAD) maxAD = d;          // alpha must equal view 9's map
-                if (d > 1e-6f) alphaIsMap = false; // (same code path, same calibration)
-                if (off[i + 3] != 1.0f) offPassthrough = false; // scene alpha is 1.0
+                const float a = on[i + 3];
+                // the host does exactly this — divide the premultiplied RGB by
+                // the output alpha — and must land back on the off-render RGB
+                for (int c = 0; c < 3; ++c) {
+                    const float restored = on[i + c] / a;
+                    const float e = std::fabs(restored - off[i + c]);
+                    if (e > maxRestoreErr) maxRestoreErr = e;
+                    if (e > 1e-3f) restoreOK = false;
+                }
+                const float expA = std::max(view9[i + 3], kEps);   // eps-floored map
+                const float d = std::fabs(a - expA);
+                if (d > maxAD) maxAD = d;
+                if (d > 1e-6f) alphaIsMap = false;
+                if (off[i + 3] != 1.0f) offPassthrough = false;
             }
-        printf("v3.7 matte->alpha export: RGB bit-same %s, alpha==view9 map (maxD %.2e), off passthrough %s\n",
-               rgbSame ? "yes" : "NO", maxAD, offPassthrough ? "yes" : "NO");
-        check(rgbSame, "matte export: RGB is bit-identical with the toggle on");
-        check(alphaIsMap, "matte export: alpha carries view 9's exact calibrated map");
+        printf("v3.7.2 premult matte export: host-unpremult restores RGB (maxErr %.2e), "
+               "alpha==eps-floored view9 (maxD %.2e), off passthrough %s\n",
+               maxRestoreErr, maxAD, offPassthrough ? "yes" : "NO");
+        check(restoreOK, "matte export: host unpremult (RGB/alpha) restores the off RGB — color-page safe");
+        check(alphaIsMap, "matte export: alpha carries view 9's map, floored to eps");
         check(offPassthrough, "matte export off: alpha is the untouched input alpha");
     }
 

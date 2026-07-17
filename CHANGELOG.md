@@ -1,5 +1,23 @@
 # OpenNR changelog
 
+## 3.7.2 — 2026-07-17
+
+- **Fix: Export Clean Matte to Alpha now works on the COLOR PAGE, not just
+  Fusion.** 3.7.1 declared the output unpremultiplied so a premult-aware host
+  wouldn't divide RGB by the matte — but Resolve's **color page ignores that
+  per-instance clip preference** (Fusion honors it) and unconditionally
+  unpremultiplies an OFX plugin's output by its alpha. So straight RGB over a
+  fractional matte still blew the frame out by 1/alpha on the color page.
+  3.7.2 stops fighting the host and feeds it what it expects: when the export
+  is on, the picture is **premultiplied by the matte** (alpha floored to
+  1/1000 so it's reversible where the matte is 0), and the host's unpremult
+  becomes an exact round-trip — measured in the test harness: host-unpremult
+  restores the off-render RGB to 6e-08. Correct on the color page AND Fusion;
+  the clip-preference override and its render-breaking Opaque variant are gone.
+- The exported alpha is the same view-9 calibration, now floored to eps.
+- Test rewritten to assert the round-trip (RGB/alpha == off-render RGB), which
+  is exactly the operation the color-page host performs.
+
 ## 3.7.1 — 2026-07-17
 
 - **Fix: Export Clean Matte to Alpha no longer blows out the frame.** The

@@ -2016,7 +2016,7 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
     }
     // v3.7: Result-view handoff — same calibration as view 9 into ALPHA only.
     if (p.exportMatteAlpha != 0 && p.viewMode == 0)
-        o.w = clamp((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
+        o.w = max(clamp((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f), 1.0f / 1000.0f);
 
     // ---- v3.1 scope overlays: drawn over ANY view, never into alpha ----
     {
@@ -2055,6 +2055,12 @@ kernel void SpatialNLMKernel(constant NRParams& p [[buffer(0)]],
         }
     }
 
+    // v3.7.2: premultiply the picture by the exported matte so a premult-aware
+    // host (Resolve's color page AND Fusion) restores true RGB on its unpremult
+    // instead of dividing STRAIGHT RGB by the matte and blowing the frame out.
+    // The eps floor on o.w above keeps this reversible where the matte is 0.
+    if (p.exportMatteAlpha != 0 && p.viewMode == 0)
+        o.xyz *= o.w;
     dst[y * W + x] = o;
 }
 

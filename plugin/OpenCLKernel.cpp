@@ -1971,7 +1971,7 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
     }
     /* v3.7: Result-view handoff — same calibration as view 9 into ALPHA only. */
     if (p.exportMatteAlpha != 0 && p.viewMode == 0)
-        o.w = clamp((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
+        o.w = max(clamp((tc.w - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f), 1.0f / 1000.0f);
 
     // ---- v3.1 scope overlays: drawn over ANY view, never into alpha ----
     {
@@ -2009,6 +2009,8 @@ __kernel void SpatialNLMKernel(NRParams p, int W, int H,
             if (drew) o.xyz = sco;
         }
     }
+
+    if (p.exportMatteAlpha != 0 && p.viewMode == 0) { o.x *= o.w; o.y *= o.w; o.z *= o.w; }
 
     dst[y * W + x] = o;
 }

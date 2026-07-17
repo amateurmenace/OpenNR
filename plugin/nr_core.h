@@ -2182,7 +2182,7 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
             // on where cleaning succeeded. REPLACES incoming alpha (stated in the
             // UI hint); RGB untouched; the inspection views keep the true alpha.
             if (p.exportMatteAlpha != 0 && p.viewMode == 0)
-                o[3] = clampf((tc[3] - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f);
+                o[3] = std::max(clampf((tc[3] - 1.0f) * (1.0f / 6.0f), 0.0f, 1.0f), 1.0f / 1000.0f);
 
             switch (p.viewMode) {
             case 1: { // split: input | result
@@ -2325,6 +2325,13 @@ inline void spatialNLM(const float* tmp, const float* tmpTrue, const float* curr
                     }
                     if (drew) { o[0] = rr; o[1] = gg; o[2] = bb; }
                 }
+            }
+            // v3.7.2: premultiply the finished pixel by the exported matte so a
+            // premult-aware host restores true RGB on its unpremult (color page
+            // AND Fusion). The eps floor on o[3] above keeps it reversible where
+            // the matte is 0, instead of a 0/0 black hole.
+            if (p.exportMatteAlpha != 0 && p.viewMode == 0) {
+                o[0] *= o[3]; o[1] *= o[3]; o[2] *= o[3];
             }
         }
     }
