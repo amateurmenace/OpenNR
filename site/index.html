@@ -326,8 +326,8 @@
   @media (prefers-reduced-motion: reduce) { .wire i { display: none; } }
 
   /* ---------- the ballet: how Hush + Speak complete each other ---------- */
-  .ballet { padding: 64px 0; }
-  .ballet .duo { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0; align-items: stretch; margin-top: 30px; border-radius: var(--r-lg); overflow: hidden; border: 1px solid var(--border); }
+  .ballet { padding: 72px 0; background: linear-gradient(180deg, transparent, rgba(163,192,176,.10) 30%, rgba(192,96,58,.07) 75%, transparent); }
+  .ballet .duo { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0; align-items: stretch; margin-top: 34px; border-radius: var(--r-lg); overflow: hidden; border: 1px solid var(--border); box-shadow: 0 18px 44px rgba(45,58,46,.10); }
   @media (max-width: 760px) { .ballet .duo { grid-template-columns: 1fr; } }
   .ballet .side { padding: 28px 26px; }
   .ballet .side.hush { background: #EEF3EF; }
@@ -344,8 +344,8 @@
   .ballet .side li::before { content: "→"; position: absolute; left: 0; }
   .ballet .side.hush li::before { color: var(--green-br); }
   .ballet .side.speak li::before { color: var(--speak-br); }
-  .ballet .seam { display: flex; align-items: center; justify-content: center; background: linear-gradient(180deg,#EEF3EF,var(--speak-bg)); padding: 0 8px; }
-  .ballet .seam span { font: 700 13px var(--mono); color: var(--text-lt); writing-mode: vertical-rl; letter-spacing: .18em; text-transform: uppercase; }
+  .ballet .seam { display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg,#EEF3EF 20%, var(--amber-bg) 50%, var(--speak-bg) 80%); padding: 0 10px; border-left: 1px solid rgba(45,58,46,.06); border-right: 1px solid rgba(192,96,58,.10); }
+  .ballet .seam span { font: 700 12.5px var(--mono); letter-spacing: .18em; text-transform: uppercase; writing-mode: vertical-rl; background: linear-gradient(180deg, var(--green-br), var(--amber) 50%, var(--speak)); -webkit-background-clip: text; background-clip: text; color: transparent; }
   @media (max-width: 760px) { .ballet .seam span { writing-mode: horizontal-tb; padding: 12px 0; } }
   .ballet .handoff { margin-top: 26px; background: var(--amber-bg); border: 1px solid #F0DFB0; border-radius: var(--r-md); padding: 20px 24px; }
   .ballet .handoff b { color: var(--green); }
@@ -399,7 +399,6 @@
       <div class="cta">
         <a class="btn btn-green" href="https://github.com/amateurmenace/Hush-OpenNR/releases/latest">Download Hush</a>
         <a class="btn btn-speak" href="https://github.com/amateurmenace/Speak/releases/latest">Download Speak</a>
-        <a class="btn btn-line" href="#speak">Meet Speak ↓</a>
         <a class="btn btn-line" style="border-color:var(--amber);color:var(--green)" href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html" target="_blank" rel="noopener">Design Study White Paper ↗</a>
       </div>
       <div class="meta">Hush v3.5 · Speak v1.0 · Resolve 17+ free &amp; Studio · macOS 11+ · Windows 10+ · MIT · Linux builds from source</div>
@@ -555,6 +554,53 @@
   </div>
 </section>
 
+<section class="ballet">
+  <div class="wrap">
+    <div class="kicker">Two tools, one idea</div>
+    <h2 class="intro-h">The ballet: clean early, reconstruct late.</h2>
+    <p class="lede" style="max-width:66ch">Hush and Speak are the two ends of the same node tree — and they were built to
+    dance. One takes noise <em>out</em> at the top, before the grade can amplify it. The other puts optical
+    character <em>back</em> at the bottom, after the grade is done. Between them, your creative work sits on a
+    clean signal and ships wearing real film. Neither needs the other to be useful — but together they're a
+    complete finishing pipeline that used to cost hundreds of dollars and a Studio license.</p>
+
+    <div class="duo">
+      <div class="side hush">
+        <div class="role">First node · the safety net</div>
+        <h3>Hush opens the tree</h3>
+        <p>Measures the clip, removes the noise while it can still see the neighbour frames, and hands your
+        grade a clean signal to build on.</p>
+        <ul>
+          <li>Denoise before contrast and keys amplify it</li>
+          <li>Rebuilds acutance and grain it had to smooth</li>
+          <li>Exports a <b>clean-confidence matte</b> — a map of where it worked hardest</li>
+        </ul>
+      </div>
+      <div class="seam"><span>the handoff</span></div>
+      <div class="side speak">
+        <div class="role">Last node · the signature</div>
+        <h3>Speak closes it</h3>
+        <p>Takes the graded image and gives it a voice — film-stock density, subtractive color, halation and
+        grain, built from real color science.</p>
+        <ul>
+          <li>Film character after the creative grade is locked</li>
+          <li><b>Reads Hush's matte</b> to lay grain exactly where the image was cleaned most</li>
+          <li>One look in wide gamut → Rec.709, P3 or HDR</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="handoff">
+      <div class="h-t">Why the handoff matters</div>
+      <p style="font-size:15.5px;color:var(--text-med)">Denoising and re-graining are usually strangers — you
+      smooth at the start and sprinkle grain at the end, hoping they meet. Because Speak reads the exact matte
+      Hush wrote, <b>grain lands heaviest precisely where the denoiser cleaned deepest</b> — the shadows and
+      flat skies that lost their texture get it back, and the areas that were always sharp stay sharp. Clean
+      early, reconstruct late, and let the two tools compare notes in the middle.</p>
+    </div>
+  </div>
+</section>
+
 <section class="alt">
   <div class="wrap">
     <div class="kicker">How it works</div>
@@ -644,97 +690,6 @@
       </div>
     </div>
     <p class="cap" id="scopeCap" style="margin-top:12px">The Measurements panel — input noise (blue) vs what's left after temporal stacking (amber), frames averaged, SNR gain, the noise-vs-brightness curve, and the histogram with its median. Tick it in Step 1; LOCKED appears when the profile is frozen.</p>
-  </div>
-</section>
-
-<section class="alt">
-  <div class="wrap">
-    <div class="kicker">v3 → v3.5 · Intelligence, power, transparency</div>
-    <h2>One click. Every slider, set. Or many clicks. All control, yours.</h2>
-    <p class="lede"><b>Auto Setup</b> analyzes your clip and dials in the whole
-    plugin — then hands you the sliders.</p>
-    <p>Click <b>Auto Setup (Analyze Footage)</b> and Hush measures frames from
-    across the clip: how noisy it is, how much of the noise is color, whether
-    it's blocky compressed grunge or clean sensor grain, how much the camera
-    moves. Then it decides — strengths, frame counts, search radius, motion
-    threshold, the Noise EQ bands — and <b>writes the answers into the visible
-    controls</b>, so you see exactly what it chose and can dial anything in or
-    back from there. It is not a mode, and there is nothing to trust blindly:
-    afterwards it's all ordinary manual state, plus a read-only report of what
-    it found:</p>
-    <p style="font: 500 14px var(--mono); color: var(--green-br); background: var(--ink, #21301f); border-radius: 8px; padding: 12px 16px; max-width: 60ch">
-    Analyzed 5 frames · noise 3.2%Y / 4.1%C (noisy) · steady camera · profile locked</p>
-    <p>One <b>Cmd+Z undoes the entire setup</b> (it applies as a single edit
-    block), and a <b>Revert Auto Setup</b> button does the same job later. It
-    never touches your Step 4 look choices — grain, texture, shadow
-    desaturation and debanding stay yours. Under the hood it also
-    <b>locks the measured noise profile</b>, so every frame of the clip
-    filters against the same numbers and renders stay repeatable.</p>
-
-    <h3 style="margin-top:38px">v3.1 — power &amp; transparency</h3>
-    <p><b>Detail Rescue: smoothing without blur.</b> The classic failure mode
-    of cranked noise reduction is that "smoother" and "blurrier" arrive
-    together. Detail Rescue breaks that link: after the spatial stage, anything
-    the filter changed by <em>more than a noise-sized amount</em> is put back.
-    Push the strengths as hard as you like — flat areas and faces go buttery
-    while edges physically cannot blur, because the worst case is bounded by
-    construction. Auto Setup raises it automatically with the noise class.</p>
-    <p><b>Every range goes further, and the dead zones are gone.</b> Strength
-    to 3, spatial strengths to 150, EQ Fine to 300 — and its top half now
-    genuinely widens the filter (it used to saturate silently). The band
-    sliders reach 150, where the extra drive widens tolerance and reach
-    instead of overshooting. Auto Setup uses the new headroom: on the test
-    suite it now beats stock defaults by up to <b>+5 dB</b>.</p>
-    <p><b>Scopes where you need them.</b> Each step has a checkbox that draws
-    a panel right in the viewer: <b>Measurements</b> (Step 1), a live
-    <b>Motion Map</b> mini-view (Step 2), and the <b>Noise EQ scope</b>
-    (Step 3) — which appears by itself the first time you touch an EQ slider,
-    showing one lane per band: the bar is how much you're cutting, the amber
-    line is how much noise was measured at that size. The bands themselves now
-    carry plain names — Fine Grain (~1 px), Clumps (3–8 px), Stains (16 px+),
-    Color Blotches.</p>
-
-    <h3 style="margin-top:38px">v3.2 &amp; v3.3 — field-review fixes, reach &amp; depth</h3>
-    <p><b>Ghost Guard (v3.2)</b> added a second, independent motion test to the temporal
-    gate — on the <em>signed</em> patch mean, where pure noise cancels toward zero but
-    slow coherent motion doesn't — catching the subtle slow-motion smear the magnitude
-    gate can't see, for ~0.01 dB on static footage. v3.2 also taught the residual
-    re-measurement to see <b>compression blotch</b> at two scales.
-    <b>v3.3</b> quadrupled Motion Tracking's reach (a hierarchical search out to
-    <b>~±8 px</b>, so real pans keep their temporal averaging), added a <b>7-frame
-    stack</b> for locked-off noisy shots, <b>Deep Clean</b> — a gentle bounded pre-pass
-    for severe or compressed noise — and <b>per-channel chroma profiles</b>, because
-    blue-channel night noise reads very differently on Cb than Cr.</p>
-
-    <h3 style="margin-top:38px">v3.4 — lock what you see</h3>
-    <p><b>Lock Profile now freezes exactly the measurement you are looking at.</b>
-    Until v3.4, locking silently swapped your live playhead measurement for a median of
-    five frames spread across the whole clip — on anything that moves, the box covers
-    different content at those times, and locking could visibly bring the noise back.
-    Now the lock is the playhead measurement, confirmed by a <b>tracked sweep</b> of the
-    ±4 neighbouring frames: the patch is followed frame-to-frame, measured at its
-    tracked position, and a frame only votes if its measurement agrees with the
-    playhead's — a subject crossing your patch is simply rejected. Worst case, the lock
-    is exactly what you saw.</p>
-    <p><b>Auto Region</b> finds the flattest patch on the current frame (scored against
-    the expected noise at its brightness, so dark noisy flats aren't penalized), moves
-    the yellow sampling box there and shows it. And the box finally tells you its mode:
-    <b>yellow with handles = live</b>, re-measured every frame; <b>ice-blue with a
-    padlock = frozen</b>, dragging disabled. The <b>temporal gate went
-    brightness-aware</b> too — details in the math section below.</p>
-
-    <p style="font: 500 13px var(--mono); color: var(--text-med); background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 18px; max-width: 74ch; line-height: 2">
-    <b style="color:var(--green)">Since v1, in one breath:</b><br>
-    v1.1 &nbsp;video-native noise estimators, step-by-step UI, analysis views<br>
-    v1.2 &nbsp;hard-knee temporal gate — ghosting became structurally impossible<br>
-    v2.0 &nbsp;residual re-measurement, brightness-aware profiling, chroma blotch pass, film grain &amp; finishing stage<br>
-    v2.1 &nbsp;"Hush" name, draggable sampling region, Windows builds<br>
-    v3.0 &nbsp;Auto Setup, motion tracking, firefly zapper, Noise EQ, profile lock, deband, noisiness matte<br>
-    v3.1 &nbsp;Detail Rescue, per-step viewer scopes, extended ranges, bolder Auto Setup<br>
-    v3.2 &nbsp;Ghost Guard, two-scale residual, lock/region field fixes<br>
-    v3.3 &nbsp;±8 px hierarchical motion search, 7-frame stack, Deep Clean, per-channel chroma, lock fast path<br>
-    v3.4 &nbsp;playhead lock + tracked sweep, Auto Region, live/frozen box states, brightness-aware temporal gate<br>
-    v3.5 &nbsp;Render Boost (sequential renders compound the stack), self-tuning Auto Setup (Monte-Carlo SURE), exposure match</p>
   </div>
 </section>
 
@@ -885,62 +840,15 @@ gain(band) = 1 + w · (σ_band/σ_ref − 1)      w = n/(n + 2000)   (confidence
     <div class="tips" style="grid-template-columns:repeat(3,1fr);margin-top:24px">
       <div class="tipcard" style="background:#20202a;border-color:#33333e"><span class="tn" style="color:var(--orange)">Stock &amp; density</span>
         <b style="color:#e6e6ee">Emulate film, from physics.</b>
-        <p style="color:#a9a9b8">Characteristic (H&amp;D) density curves and a subtractive dye model, with every curve plotted live on screen — the scope samples the exact math the pixels use. Original science, not cloned profiles. Stock families and shoot-a-chart calibration are next on the roadmap.</p></div>
+        <p style="color:#a9a9b8">Characteristic (H&amp;D) density curves and a subtractive dye model, with every curve plotted live on screen — the scope samples the exact math the pixels use. Original color science, not cloned profiles, and every module gated by measurement: all four compute backends agree to ~2×10⁻⁵.</p></div>
       <div class="tipcard" style="background:#20202a;border-color:#33333e"><span class="tn" style="color:var(--orange)">Subtractive color</span>
         <b style="color:#e6e6ee">Saturation that behaves like film.</b>
         <p style="color:#a9a9b8">Subtractive CMY mixing compresses highlight saturation and bends hue toward the dyes — the reason film reads like film — plus split toning by tonal range, done in the right domain.</p></div>
       <div class="tipcard" style="background:#20202a;border-color:#33333e"><span class="tn" style="color:var(--orange)">Light &amp; grain</span>
-        <b style="color:#e6e6ee">Halation and grain, shipped. Bloom and gate weave, next.</b>
-        <p style="color:#a9a9b8">Halation re-exposes the negative before the curve — so a blown highlight blooms white-hot, and a blue neon halates blue, never a pasted red overlay. Grain is density noise per dye layer: loud in the shadows, gone at paper white, boiling every frame — and it reads Hush's clean-confidence matte to land exactly where the denoiser cleaned. Bloom and gate weave follow behind the same measurement gates.</p></div>
+        <b style="color:#e6e6ee">Light behaves like light.</b>
+        <p style="color:#a9a9b8">Halation re-exposes the negative before the curve — so a blown highlight blooms white-hot, and a blue neon halates blue, never a pasted red overlay. Grain is density noise per dye layer: loud in the shadows, gone at paper white, boiling every frame — and it reads Hush's clean-confidence matte to land exactly where the denoiser cleaned. Clean early, reconstruct late, in one handoff.</p></div>
     </div>
     <p style="color:var(--sage);font-size:15px;margin-top:22px">A free rival to paid film tools like Dehancer and Film Look Creator — built from original color science, working in the free version of Resolve, and it shows its work. <a href="https://amateurmenace.github.io/Hush-OpenNR/whitepaper.html" target="_blank" rel="noopener" style="color:var(--speak-br)">Read the approach →</a></p>
-  </div>
-</section>
-
-<section class="ballet">
-  <div class="wrap">
-    <div class="kicker">Two tools, one idea</div>
-    <h2 class="intro-h">The ballet: clean early, reconstruct late.</h2>
-    <p class="lede" style="max-width:66ch">Hush and Speak are the two ends of the same node tree — and they were built to
-    dance. One takes noise <em>out</em> at the top, before the grade can amplify it. The other puts optical
-    character <em>back</em> at the bottom, after the grade is done. Between them, your creative work sits on a
-    clean signal and ships wearing real film. Neither needs the other to be useful — but together they're a
-    complete finishing pipeline that used to cost hundreds of dollars and a Studio license.</p>
-
-    <div class="duo">
-      <div class="side hush">
-        <div class="role">First node · the safety net</div>
-        <h3>Hush opens the tree</h3>
-        <p>Measures the clip, removes the noise while it can still see the neighbour frames, and hands your
-        grade a clean signal to build on.</p>
-        <ul>
-          <li>Denoise before contrast and keys amplify it</li>
-          <li>Rebuilds acutance and grain it had to smooth</li>
-          <li>Exports a <b>clean-confidence matte</b> — a map of where it worked hardest</li>
-        </ul>
-      </div>
-      <div class="seam"><span>the handoff</span></div>
-      <div class="side speak">
-        <div class="role">Last node · the signature</div>
-        <h3>Speak closes it</h3>
-        <p>Takes the graded image and gives it a voice — film-stock density, subtractive color, halation and
-        grain, built from real color science.</p>
-        <ul>
-          <li>Film character after the creative grade is locked</li>
-          <li><b>Reads Hush's matte</b> to lay grain exactly where the image was cleaned most</li>
-          <li>One look in wide gamut → Rec.709, P3 or HDR</li>
-        </ul>
-      </div>
-    </div>
-
-    <div class="handoff">
-      <div class="h-t">Why the handoff matters</div>
-      <p style="font-size:15.5px;color:var(--text-med)">Denoising and re-graining are usually strangers — you
-      smooth at the start and sprinkle grain at the end, hoping they meet. Because Speak reads the exact matte
-      Hush wrote, <b>grain lands heaviest precisely where the denoiser cleaned deepest</b> — the shadows and
-      flat skies that lost their texture get it back, and the areas that were always sharp stay sharp. Clean
-      early, reconstruct late, and let the two tools compare notes in the middle.</p>
-    </div>
   </div>
 </section>
 
