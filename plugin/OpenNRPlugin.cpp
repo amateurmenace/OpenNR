@@ -83,7 +83,7 @@ static uint32_t boostParamsHash(const NRParams& p)
     "MIT-licensed and free forever."
 #define kPluginIdentifier "org.opennr.Denoise"
 #define kPluginVersionMajor 3
-#define kPluginVersionMinor 7
+#define kPluginVersionMinor 8
 
 #define kSupportsTiles false
 #define kSupportsMultiResolution false
@@ -1987,10 +1987,16 @@ void OpenNRPluginFactory::describeInContext(OFX::ImageEffectDescriptor& p_Desc, 
     // v3.7: the downstream handoff. Result view only; the inspection views keep
     // the true alpha. The hint states plainly that it REPLACES incoming alpha.
     defineBool(p_Desc, page, "exportMatteAlpha", "Export Clean Matte to Alpha",
-               "In the Result view, writes the clean-confidence matte into the output ALPHA "
-               "(clamp((effN-1)/6), identical to the Clean Confidence view) so a downstream "
-               "node - Speak's grain, or any qualifier - can key on where cleaning succeeded. "
-               "Replaces the incoming alpha while on; RGB is untouched.",
+               "Hands the clean-confidence matte (clamp((effN-1)/6), the Clean Confidence "
+               "view) to a downstream consumer. The picture is premultiplied by the matte "
+               "under the hood and the host restores it exactly - the image you see does "
+               "not change when you flip this.\n\n"
+               "COLOR PAGE: right-click this node -> OFX Alpha -> Enable, then drag the "
+               "BLUE key wire from this node's key output to Speak's key input and turn "
+               "on Speak's Use Incoming Matte. Speak consumes the matte there.\n\n"
+               "Turn this OFF when nothing consumes the matte - an unconsumed matte riding "
+               "the alpha channel invites host alpha math further down the chain. Off is "
+               "bit-identical to 3.6.",
                false, grpOutput);
 }
 
